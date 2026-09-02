@@ -1,0 +1,30 @@
+# 编译产物
+target/
+*.exe
+*.pdb
+
+# 离线Rust工具链与vendor依赖（体积大，另行同步）
+rust_toolchain_*/
+vendor/
+offline_env_snapshot.tar.gz
+
+# 录像文件与数据库（体积大，另行同步）
+*.dem
+*.db
+
+# 运行时依赖DLL（可用脚本重新下载，体积小可选保留）
+sqlite3.dll
+
+# 密钥/环境变量
+.env
+.env.*
+
+# 临时/草稿目录
+.tmp/
+.cargo-home/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+downloads/
