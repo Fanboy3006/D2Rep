@@ -26,28 +26,13 @@ pub fn team_text(code: i32) -> Option<&'static str> {
     }
 }
 
-/// "npc_dota_hero_legion_commander" -> "CDOTA_Unit_Hero_Legion_Commander"
-pub fn hero_npc_to_class(npc: &str) -> String {
-    let short = npc.strip_prefix("npc_dota_hero_").unwrap_or(npc);
-    let mut out = String::from("CDOTA_Unit_Hero_");
-    let mut cap = true;
-    for ch in short.chars() {
-        if ch == '_' {
-            out.push('_');
-            cap = true;
-        } else if cap {
-            out.push(ch.to_ascii_uppercase());
-            cap = false;
-        } else {
-            out.push(ch);
-        }
-    }
-    out
-}
-
-/// Inverse of [`hero_npc_to_class`]: "CDOTA_Unit_Hero_Legion_Commander" ->
-/// "npc_dota_hero_legion_commander". Used only as a fallback when the replay
-/// header has no entry for an entity (the header npc is authoritative).
+/// "CDOTA_Unit_Hero_Legion_Commander" -> "npc_dota_hero_legion_commander".
+/// Fallback only for hero-class entities without a header player (summons and
+/// the like). Real-player identity never relies on this guess: the parser
+/// resolves heroes via m_iPlayerID -> header (see parse.rs), because entity
+/// class strings are not guaranteed to match the npc name CamelCase-wise
+/// (e.g. newer builds use `CDOTA_Unit_Hero_Spiritbreaker` while the header
+/// npc is `npc_dota_hero_spirit_breaker`).
 pub fn hero_class_to_npc(class: &str) -> String {
     let short = class
         .strip_prefix("CDOTA_Unit_Hero_")

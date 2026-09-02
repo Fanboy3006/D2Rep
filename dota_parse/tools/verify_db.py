@@ -69,28 +69,38 @@ assert {"z", "pid", "player_slot", "class", "team_code"} <= set(e.keys()), "extr
 # Verified fact (§6.6): radiant fountain sits in the negative coordinate
 # quadrant, dire fountain in the positive one. Mid-game bboxes span the whole
 # map, so we only check each entity's earliest sample.
-print("\nfountain-side sanity (earliest sample per entity):")
-rows = list(cur.execute(
-    """SELECT entity_id, team, game_time_sec, x, y
-       FROM entity_snapshots WHERE match_id=? ORDER BY entity_id, game_time_sec""",
-    (MATCH,),
-))
-side_bad = 0
-first_of = {}
-for entity_id, team, t, x, y in rows:
-    if entity_id not in first_of:
-        first_of[entity_id] = (team, t, x, y)
-for entity_id, (team, t, x, y) in sorted(first_of.items()):
-    if team == "radiant":
-        ok = x < 0 and y < 0
-    elif team == "dire":
-        ok = x > 0 and y > 0
-    else:
-        ok = True  # unknown team: nothing to assert
-    if not ok:
-        side_bad += 1
-    print(f"  {entity_id:<46} {team:<8} t={t:<5} x={x:9.0f} y={y:9.0f} ok={ok}")
-assert side_bad == 0, f"{side_bad} heroes start on the wrong map half"
+# §4.2 note: some CDN recordings start mid-match (demo time axis offset) -
+# then the fountain check does not apply; skip it when the match's first hero
+# sample is late.
+(t0,) = cur.execute(
+    "SELECT MIN(game_time_sec) FROM entity_snapshots "
+    "WHERE match_id=? AND entity_type='hero'", (MATCH,)).fetchone()
+if t0 is not None and t0 >= 300:
+    print(f"\nfountain-side check SKIPPED: first hero sample at t={t0}s "
+          ">= 300s (mid-start recording, see ARCHITECTURE 4.2 note)")
+else:
+    print("\nfountain-side sanity (earliest sample per entity):")
+    rows = list(cur.execute(
+        """SELECT entity_id, team, game_time_sec, x, y
+           FROM entity_snapshots WHERE match_id=? ORDER BY entity_id, game_time_sec""",
+        (MATCH,),
+    ))
+    side_bad = 0
+    first_of = {}
+    for entity_id, team, t, x, y in rows:
+        if entity_id not in first_of:
+            first_of[entity_id] = (team, t, x, y)
+    for entity_id, (team, t, x, y) in sorted(first_of.items()):
+        if team == "radiant":
+            ok = x < 0 and y < 0
+        elif team == "dire":
+            ok = x > 0 and y > 0
+        else:
+            ok = True  # unknown team (e.g. summons without player slot): no assert
+        if not ok:
+            side_bad += 1
+        print(f"  {entity_id:<46} {team:<8} t={t:<5} x={x:9.0f} y={y:9.0f} ok={ok}")
+    assert side_bad == 0, f"{side_bad} heroes start on the wrong map half"
 
 # --- actor / identity agreement ------------------------------------------
 heroes = set(r[0] for r in cur.execute(
@@ -98,7 +108,9 @@ heroes = set(r[0] for r in cur.execute(
 actors = set(r[0] for r in cur.execute(
     "SELECT DISTINCT actor_id FROM game_events WHERE match_id=? AND event_type='purchase'", (MATCH,)))
 entities = set(r[0] for r in cur.execute(
-    "SELECT DISTINCT entity_id FROM entity_snapshots WHERE match_id=? AND entity_type='hero'", (MATCH,)))
+    """SELECT DISTINCT entity_id FROM entity_snapshots
+       WHERE match_id=? AND entity_type='hero'
+         AND json_extract(extra, '$.player_slot') IS NOT NULL""", (MATCH,)))
 print("\nidentity heroes:", len(heroes), "| purchase actors:", len(actors),
       "| snapshot entities:", len(entities))
 print("identity == snapshot entities:", heroes == entities)

@@ -1,11 +1,11 @@
-# ============================================================================
-# 本机构建模式：联网模式（标准 rustup + crates.io 直连）。
-# 此前离线 vendor 方案（受限网络机器用）如需恢复，取消下面注释并确保
-# vendor/ 目录存在（setup.ps1 会自动校正其中的绝对路径）：
-#
-# [source.crates-io]
-# replace-with = "vendored-sources"
-#
-# [source.vendored-sources]
-# directory = "C:/D2Rep_project/dota_replay_analyzer/vendor"
-# ============================================================================
+# Offline build mode for network-restricted machines: all crates resolve from
+# the local vendored mirror at <project-root>/vendor (one level up from this
+# dota_parse/, i.e. "../vendor" relative to this config file's base dir).
+# Machine-independent on purpose; networked machines can comment this out to
+# use crates.io directly.
+
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "../vendor"

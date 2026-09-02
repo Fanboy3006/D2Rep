@@ -28,3 +28,10 @@ sqlite3.dll
 Thumbs.db
 
 downloads/
+
+# 第4层分析产物（可随时重算，不入库）
+analysis/output/
+
+# Python 编译缓存
+__pycache__/
+*.pyc

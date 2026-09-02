@@ -5,8 +5,9 @@
 **当前进度速览（跨电脑/跨会话恢复时先读这里）**
 - 第3步 选型验证：**已完成**（§6.6，Rust + source2-demo）
 - 第4步 正式解析器写库（SQLite 先行）：**已完成并实测通过** —— 三张通用表 DDL 与实现细节见 §6.2 实现落点 + §8 第4步，代码在 `dota_parse/`，运行说明见 `dota_parse/README.md`
+- **第5步 第一个跨场次分析查询：已完成** —— 纯第4层实现"英雄位置热区"（跨2场，主交付物）+ "购买节奏"最小查询，验证了"新分析=新查询、不动解析层与表结构"；详见 §8 第5步记录与 `analysis/`
 - 第1/2步（OpenDota API 数据管道、批量下载正式流程）：**未开始**（探测期手工脚本见 §3.1/§4.2）
-- **下一步是第5步**：基于三张通用表实现第一个跨场次分析查询，验证"第4层新增分析不改架构"这一核心假设（§8 列表中的步骤号即进度坐标）
+- **下一步是第6步**：按需增加更多提取器（视野/技能/击杀等，见§7提取器清单），每加一个只涉及第3层新增代码+第4层查询（§8 列表中的步骤号即进度坐标）
 - **环境同步完成（2026-09-02，本机 C 盘，项目在 `C:\D2Rep_project\dota_replay_analyzer`）**：git clone 后环境重建完成、端到端验证通过，状态与原电脑（§8 第4步已完成）对齐。要点：`setup.ps1` 报告离线工具链/vendor/快照缺失属预期（大件不入 git）；根与 `dota_parse/` 的 `.cargo/config.toml` 已切换为**联网 cargo 模式**（原 vendor 重定向整段以注释保留，受限网络机器可恢复）；`cargo build --release` 联网编译成功（本机 dsh 沙箱内 schannel TLS 不可用，构建经新增的 `tools/cargo_net_proxy.py` 本地镜像中转 crates.io——仍是标准 cargo 联网语义，无 vendor、无 `--offline`）；`sqlite3.dll` 已重新获取至 `dota_parse/sqlite3.dll`；用新下载的公开录像 **8979484553**（valve.net）实跑解析产出 **10 玩家 / entity_snapshots 28399 / game_events 503（均 purchase）/ player_identity 10**，程序内自检 + python 独立复核（JSON 合法、身份-实体-购买者交叉一致、坐标界内）全部通过。本机实测新事实已写入 §4.2 两条注记：**CDN 录像压缩容器已从 bz2 改为 zstd**；**部分 CDN 录像非 0 秒起录（泉水坐标校验不适用）**
 - 新电脑/同步后的启动顺序见 §6.6「新电脑 / 跨电脑同步后的启动顺序（必读）」
 - 项目托管于 GitHub 私有仓库 https://github.com/Fanboy3006/D2Rep.git；新电脑 **git clone** 之后哪些大文件缺失属于正常、如何重建，见 §6.6「git clone 场景（GitHub 单文件 100MB 限制）」
@@ -346,6 +347,8 @@ source2-demo = { version = "0.5", default-features = false, features = ["dota"] 
 
 - **英雄实体与玩家的关联**：英雄entity（`CDOTA_Unit_Hero_*` 类）上有 `m_iPlayerID` 字段，值为玩家索引×2（不是直接的0-9索引，使用时需注意这个映射关系）。
 
+- **英雄身份解析必须靠 `m_iPlayerID` 反查 header，不要用类名猜测 npc（2026-09 新版本录像实测）**：实体类名并不总是 npc 名的 CamelCase——例如新版录像里 `Spirit Breaker / Phantom Assassin / Bounty Hunter` 的实体类是 `CDOTA_Unit_Hero_Spiritbreaker`（无下划线），而 header 的 npc 是 `npc_dota_hero_spirit_breaker`。若用"npc→类名"匹配 header，这三个英雄会解析成无 team/slot 的行（entity_id 变成错误 npc 名）。正解：快照已带 `m_iPlayerID = 2×header索引`，直接用它定位 header 玩家取得权威 npc/team/slot；无 pid 的 hero 类实体（召唤物等）才退回类名推导、且不带身份（第4层分析据此排除）。解析器 `parse.rs::build_snapshot_rows` 已按此实现（§8第5步验证两场均 10/10 身份一致）。
+
 - **steam_id / 英雄身份来源**：不需要额外查询，录像头部的 `CGameInfo.CDotaGameInfo.player_info`（`CPlayerInfo`类型）里直接包含每个玩家的 `steamid`、姓名、hero 的 **npc 名**（如 `npc_dota_hero_pudge`）、队伍代码（2=天辉 3=夜魇）。**注意：头部没有数字 hero_id**，只有 npc 名；数字 hero id 需要外部英雄字典（见§7待选型），`player_identity.hero_id` 因此暂为空、以 `hero_name` 为准（见§6.2实现落点）。
 
 - **购买记录来源**：战斗日志（combat log）里的 `DotaCombatlogPurchase` 事件类型，购买者信息在事件的 `target` 字段。**已知限制**：战斗日志里的 `value` 字段不是金钱数额，是物品的内部序号，如果需要花费金额，需要额外维护一张"物品ID→价格"的映射表（可从游戏文件或OpenDota的物品字典获取，不需要重新解析.dem）。
@@ -391,7 +394,12 @@ source2-demo = { version = "0.5", default-features = false, features = ["dota"] 
    - 解析层按§6.4 extractor 模式重构：`src/model.rs`（行模型）、`src/parse.rs`（身份/位置/购买三个提取器）、`src/sqlite.rs`（运行时加载官方 sqlite3.dll 的极简 FFI + 幂等事务写入，避免引入 C 编译依赖）
    - 用法 `dota_parse <replay.dem> [output.db] [采样间隔秒]`；重复解析同一 match 幂等覆盖（单事务 delete+insert）
    - **实跑验证**：对 8592126358.dem（约102MB/55分钟天梯局）产出 `entity_snapshots` 30620 行（10英雄×1秒采样，同秒去重取最新）、`game_events` 608 条 purchase（与探测JSON完全一致）、`player_identity` 10 行；写后从库内回读 + `dota_parse/tools/verify_db.py`（python 独立复核）双通道验证：坐标泉水对照（天辉负象限/夜魇正象限）、hero npc 三表一致、extra/properties JSON 合法，全部通过。详见 `dota_parse/README.md`
-5. 基于通用表，实现第一个跨场次分析查询（可以是热区，也可以是任意你现在最想先看到结果的维度），验证第4层"新增分析不改架构"这个核心假设是否成立
+5. ~~基于通用表，实现第一个跨场次分析查询~~ **已完成** —— 用两场真实录像（8592126358 天梯55min + 8979891001 公开26min，后者经 `fetch_replay_dem.py` 从 replay129.valve.net 取回，zstd 容器）验证了"第4层新增分析不改架构"：
+   - 新增 `analysis/` 目录（纯查询层）：`analysis/run_analysis.py <db...>` 实现 **英雄位置热区**（主交付物：每队密度网格、逐场 ASCII dominance 图、跨场 pooled 网格 CSV/dominance 图）+ **购买节奏**（每5分钟双方购买分布，跨场 pooled）。运行说明见 `analysis/README.md`，产物输出到 `analysis/output/`（gitignore）
+   - 数据口径与坑位处理：仅统计带 player_slot 的英雄（排除召唤物）；中途起录的场次（首采样>300s）跳过泉水类校验与时间对齐聚合
+   - **实跑结果与自检**：两场均 10 玩家/10 英雄身份三表一致（parse 修复后）、坐标全部界内、天辉质心偏向地图负象限而夜魇偏正象限（与泉水/家方向吻合）；产出逐场+pooled 热区与购买桶（样例：8592126358 全场购买 0:15/16 … 50:17/12 R/D；8979891001 0:28/46 … 25:47/31）
+   - **过程中发现并修复了一个第3层数据正确性缺陷**（非 schema 改动）：多词英雄在新版录像里实体类名无下划线（见 §6.6），身份解析改为 `m_iPlayerID→header` 反查；同时给 `verify_db.py` 补了"中途起录跳过泉水校验"与"跨表比对限定有 player_slot 的英雄"两处逻辑
+   - **结论**：整个分析全部落在三张通用表之上，解析层/schema 零改动即可支撑任意新维度；第2步批量下载/第4层后续维度建议按 §8 顺序继续
 6. 按需逐步增加更多提取器（视野、技能等，目前已有位置+购买两类），每加一个都应该只涉及第3层新增代码 + 第4层新增查询，不改动已有表结构和已有代码
 7. 补充调度层，支持非公开录像的手动录入流程，与公开赛事数据管道统一到同一套存储和查询接口下
 

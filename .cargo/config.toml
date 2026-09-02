@@ -1,11 +1,11 @@
-# ============================================================================
-# 本机构建模式：联网模式（标准 rustup + crates.io 直连）。
-# 此前离线 vendor 方案（受限网络机器用）如需恢复，取消下面注释并确保
-# vendor/ 目录存在（相对路径基于本 .cargo 所在的项目根目录）：
-#
-# [source.crates-io]
-# replace-with = "vendored-sources"
-#
-# [source.vendored-sources]
-# directory = "vendor"
-# ============================================================================
+# Offline build mode for network-restricted machines: all crates resolve from
+# the local vendored mirror (vendor/ at the project root, relative to this
+# config file). Kept machine-independent on purpose. Networked machines that
+# need crates.io directly can comment this out (see repo history / other
+# machine's toggling workflow); run setup.ps1 after restoring to re-verify.
+
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"

@@ -25,8 +25,7 @@ use source2_demo::proto::DotaCombatlogTypes;
 use std::collections::{BTreeMap, HashMap};
 
 use crate::model::{
-    self, hero_class_to_npc, hero_npc_to_class, team_text, EventRow, PlayerIdentityRow,
-    SnapshotRow, DIRE_SLOT_BASE,
+    self, hero_class_to_npc, team_text, EventRow, PlayerIdentityRow, SnapshotRow, DIRE_SLOT_BASE,
 };
 
 pub const TICK_RATE: u32 = 30; // Dota 2 simulation ticks per second
@@ -59,12 +58,6 @@ pub struct HeaderPlayer {
     /// Game team code: 2 = radiant, 3 = dire.
     pub team_code: Option<i32>,
     pub is_fake_client: bool,
-}
-
-impl HeaderPlayer {
-    pub fn hero_class(&self) -> Option<String> {
-        self.hero_npc.as_deref().map(hero_npc_to_class)
-    }
 }
 
 /// Parse the replay header into one identity entry per player.
@@ -253,24 +246,35 @@ fn build_identity_rows(players: &[HeaderPlayer]) -> Vec<PlayerIdentityRow> {
 }
 
 /// Assemble `entity_snapshots` rows from collected hero samples. Hero identity
-/// (npc / team / slot) is resolved via the header using pid = 2 × header index.
+/// (npc / team / slot) is resolved **from the entity's own `m_iPlayerID`**
+/// (= 2 × header index, verified in §6.6), NOT by guessing the class name from
+/// the npc name: entity class strings are not guaranteed to be the npc name in
+/// CamelCase (newer builds e.g. use `CDOTA_Unit_Hero_Spiritbreaker` while the
+/// header npc is `npc_dota_hero_spirit_breaker`). The pid->header mapping also
+/// makes summons (no player slot) fall back to a class-derived id with no team.
 fn build_snapshot_rows(
     players: &[HeaderPlayer],
     samples_by_class: &HashMap<String, BTreeMap<i64, HeroSample>>,
 ) -> Vec<SnapshotRow> {
-    // header hero class -> HeaderPlayer index
-    let class_to_header: HashMap<String, usize> = players
-        .iter()
-        .enumerate()
-        .filter_map(|(i, p)| p.hero_class().map(|c| (c, i)))
-        .collect();
-
     let mut rows = Vec::new();
     let mut npc_occurrences: HashMap<String, u32> = HashMap::new();
 
     for (class, samples) in samples_by_class {
         let class = class.clone();
-        let header_idx = class_to_header.get(&class).copied();
+        // Resolve the header player from the first sample's pid (all samples of
+        // one class belong to the same entity). pid = 2 * header index.
+        let header_idx = samples
+            .values()
+            .next()
+            .and_then(|s| {
+                let pid = s.pid;
+                if pid != INVALID_PLAYER_ID && pid % 2 == 0 {
+                    let idx = (pid / 2) as usize;
+                    (idx < players.len()).then_some(idx)
+                } else {
+                    None
+                }
+            });
         let (npc, team, player_slot, team_code) = match header_idx {
             Some(i) => {
                 let p = &players[i];
