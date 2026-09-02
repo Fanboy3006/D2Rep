@@ -28,7 +28,9 @@ dota_parse <replay.dem> [output.db] [sample_interval_sec]
 解析器通过运行时 `LoadLibrary` 调用官方预编译 `sqlite3.dll`（sqlite.org，x64），
 因此**无需任何 C 编译器 / rusqlite 捆绑编译**，也不引入新 crate 依赖。
 DLL 解析顺序：`$env:DOTA_PARSE_SQLITE_DLL` → exe 同目录 → 当前目录 → 系统搜索路径。
-本仓库已在 `dota_parse/sqlite3.dll` 放置一份（3.53.4，SHA3 校验通过）。
+开发机本地已放置 `dota_parse/sqlite3.dll`（3.53.4，SHA3 校验通过）；该文件被 `.gitignore`
+排除（体积小但不在 git 仓库内），**git clone 到新电脑后不存在**——执行
+`python tools/fetch_sqlite_dll.py` 重新获取（联网），或从旧机器拷贝一份即可。
 
 ## 模块结构（解析层按 §6.4 extractor 模式组织）
 

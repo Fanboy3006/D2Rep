@@ -8,6 +8,7 @@
 - 第1/2步（OpenDota API 数据管道、批量下载正式流程）：**未开始**（探测期手工脚本见 §3.1/§4.2）
 - **下一步是第5步**：基于三张通用表实现第一个跨场次分析查询，验证"第4层新增分析不改架构"这一核心假设（§8 列表中的步骤号即进度坐标）
 - 新电脑/同步后的启动顺序见 §6.6「新电脑 / 跨电脑同步后的启动顺序（必读）」
+- 项目托管于 GitHub 私有仓库 https://github.com/Fanboy3006/D2Rep.git；新电脑 **git clone** 之后哪些大文件缺失属于正常、如何重建，见 §6.6「git clone 场景（GitHub 单文件 100MB 限制）」
 
 ---
 
@@ -320,7 +321,13 @@ source2-demo = { version = "0.5", default-features = false, features = ["dota"] 
 
 - **环境搭建方式（针对本机沙箱网络限制的解决方案，未来在新环境搭建时可参考）**：本机环境下`curl.exe`被进程级网络白名单拦截，但`python.exe`可以正常联网，因此工具链下载、依赖crate下载全部通过Python脚本完成，Rust工具链和依赖以**完全离线vendor模式**编译（`cargo build --offline`），彻底不依赖`cargo`/`rustup`等新进程是否被放行。使用的是**gnu工具链**（而非msvc），因为本机没有装Windows SDK，gnu工具链自带`rust-lld`链接器，无需外部SDK即可完成链接。整套离线环境（工具链+vendor依赖，约478MB压缩后）已打包为快照，可在新环境中直接解压复用，避免重复下载。
 
-- **新电脑 / 跨电脑同步后的启动顺序（必读）**：先把项目目录完整同步过来，然后**运行根目录 `setup.ps1`**——它会把各 `.cargo/config.toml` 里写死的 vendor 绝对路径自动校正到本机项目根目录、检查离线工具链/vendor 是否齐全（缺失时从 `offline_env_snapshot.tar.gz` 解压）、验证 cargo/rustc 可用。全部通过后再构建：`cargo build --release --offline`（需把 `rust_toolchain_x86_64-pc-windows-gnu\bin` 加进 PATH）。解析器**运行期还依赖官方预编译 `sqlite3.dll`**（无需C编译器，运行时 LoadLibrary）：仓库已随 `dota_parse/sqlite3.dll` 同步（3.53.4，SHA3校验通过），若缺失可执行 `python dota_parse/tools/fetch_sqlite_dll.py` 重新获取；解析器按 `DOTA_PARSE_SQLITE_DLL` → exe同目录 → 当前目录 顺序加载。
+- **新电脑 / 跨电脑同步后的启动顺序（必读）**：先把项目目录完整同步过来，然后**运行根目录 `setup.ps1`**——它会把各 `.cargo/config.toml` 里写死的 vendor 绝对路径自动校正到本机项目根目录、检查离线工具链/vendor 是否齐全（缺失时从 `offline_env_snapshot.tar.gz` 解压）、验证 cargo/rustc 可用。全部通过后再构建：`cargo build --release --offline`（需把 `rust_toolchain_x86_64-pc-windows-gnu\bin` 加进 PATH）。解析器**运行期还依赖官方预编译 `sqlite3.dll`**（无需C编译器，运行时 LoadLibrary）：整目录同步时随项目携带（`dota_parse/sqlite3.dll`，3.53.4，SHA3校验通过）；**git clone 场景下它不在仓库内**（见下方"git clone 场景"），缺失时执行 `python dota_parse/tools/fetch_sqlite_dll.py` 重新获取或从旧机器拷贝；解析器按 `DOTA_PARSE_SQLITE_DLL` → exe同目录 → 当前目录 顺序加载。
+
+- **git clone 场景（GitHub 单文件 100MB 限制）**：项目托管于 https://github.com/Fanboy3006/D2Rep.git（私有）。受 GitHub 单文件 100MB 限制，`.gitignore` 排除了下列大文件/运行数据，**它们不会出现在 git clone 的结果里**。在新电脑 clone 后看到以下目录/文件缺失是**正常情况**——此时直接跑 `setup.ps1` 会报告"未找到工具链/vendor/快照"，同样是**预期提示**，不要误判环境损坏、也不要去找不存在的文件：
+  - `downloads/`（Rust 工具链原始压缩包）、`rust_toolchain_x86_64-pc-windows-gnu/`（解压后的离线工具链）、`vendor/`（离线依赖）、`offline_env_snapshot.tar.gz`（约500MB离线环境快照，同样不入库）——**都需要按 §6.6「环境搭建方式」重建**；
+  - 所有 `*.dem` / `*.db`（录像与解析产物，属运行数据）：公开比赛按 §4.2 流程重新下载，非公开录像手动放入指定目录；`.db` 由 `dota_parse` 在解析时（幂等）重建；
+  - `dota_parse/sqlite3.dll`（运行期依赖，体积小但也在忽略名单内）：clone 后同样缺失，执行 `python dota_parse/tools/fetch_sqlite_dll.py` 重新获取，或从旧机器拷贝。
+  重建步骤速记：① 最省事——从旧机器拷贝 `rust_toolchain_*/` + `vendor/`（或整体快照）到项目根目录，再跑 `setup.ps1`（自动校正 vendor 路径并验证）；② 无旧机器可用——按 §6.6「环境搭建方式」的 python 联网流程重建（python 下载工具链 + `python tools/vendor_crates.py` 生成 vendor/，全程 `cargo build --offline`）；③ 跑通后构建/运行见上文「启动顺序」。`.cargo/config.toml`、`setup.ps1`、`dota_parse/tools/*.py`、源码与本文档均正常入库，clone 后可直接获得。
 
 **验证结果**（探测/选型阶段，输出为当时单文件JSON）：成功解析一场约55分钟的天梯对局，产出JSON包含10名玩家的steam_id/英雄/队伍信息、每人约3000+个位置采样点（1秒粒度）、608条购买记录。数据经过坐标合理性交叉验证（比对泉水实际位置），确认解析正确。（正式解析器已改为写库，见§8第4步。）
 
