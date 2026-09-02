@@ -7,6 +7,7 @@
 - 第4步 正式解析器写库（SQLite 先行）：**已完成并实测通过** —— 三张通用表 DDL 与实现细节见 §6.2 实现落点 + §8 第4步，代码在 `dota_parse/`，运行说明见 `dota_parse/README.md`
 - 第1/2步（OpenDota API 数据管道、批量下载正式流程）：**未开始**（探测期手工脚本见 §3.1/§4.2）
 - **下一步是第5步**：基于三张通用表实现第一个跨场次分析查询，验证"第4层新增分析不改架构"这一核心假设（§8 列表中的步骤号即进度坐标）
+- **环境同步完成（2026-09-02，本机 C 盘，项目在 `C:\D2Rep_project\dota_replay_analyzer`）**：git clone 后环境重建完成、端到端验证通过，状态与原电脑（§8 第4步已完成）对齐。要点：`setup.ps1` 报告离线工具链/vendor/快照缺失属预期（大件不入 git）；根与 `dota_parse/` 的 `.cargo/config.toml` 已切换为**联网 cargo 模式**（原 vendor 重定向整段以注释保留，受限网络机器可恢复）；`cargo build --release` 联网编译成功（本机 dsh 沙箱内 schannel TLS 不可用，构建经新增的 `tools/cargo_net_proxy.py` 本地镜像中转 crates.io——仍是标准 cargo 联网语义，无 vendor、无 `--offline`）；`sqlite3.dll` 已重新获取至 `dota_parse/sqlite3.dll`；用新下载的公开录像 **8979484553**（valve.net）实跑解析产出 **10 玩家 / entity_snapshots 28399 / game_events 503（均 purchase）/ player_identity 10**，程序内自检 + python 独立复核（JSON 合法、身份-实体-购买者交叉一致、坐标界内）全部通过。本机实测新事实已写入 §4.2 两条注记：**CDN 录像压缩容器已从 bz2 改为 zstd**；**部分 CDN 录像非 0 秒起录（泉水坐标校验不适用）**
 - 新电脑/同步后的启动顺序见 §6.6「新电脑 / 跨电脑同步后的启动顺序（必读）」
 - 项目托管于 GitHub 私有仓库 https://github.com/Fanboy3006/D2Rep.git；新电脑 **git clone** 之后哪些大文件缺失属于正常、如何重建，见 §6.6「git clone 场景（GitHub 单文件 100MB 限制）」
 
@@ -107,7 +108,7 @@ replay_url = resp.json().get("replay_url")
 # 直接对 replay_url 发 GET 请求，bz2解压即可
 ```
 
-**重要发现 — 域名不固定**：实测返回的链接域名是 `http://replay413.dota2.com.cn/570/...`，即**国服（完美世界代理）录像服务器**，不是国际服常见的 `*.valve.net`。下载逻辑本身不受影响（都是标准 HTTP GET + bz2 解压），但如果后续遇到国际服比赛，域名可能变为 `*.valve.net`，代码里不要硬编码域名判断逻辑，统一按 `replay_url` 返回值直接请求即可。
+**重要发现 — 域名不固定**：实测返回的链接域名是 `http://replay413.dota2.com.cn/570/...`，即**国服（完美世界代理）录像服务器**，不是国际服常见的 `*.valve.net`。下载逻辑本身不受影响（都是标准 HTTP GET + bz2 解压；**注：2026-09 本机实测 CDN 容器已改为 zstd，见 §4.2 注记**），但如果后续遇到国际服比赛，域名可能变为 `*.valve.net`，代码里不要硬编码域名判断逻辑，统一按 `replay_url` 返回值直接请求即可。
 
 **关键限制 — 录像时效性依然存在**：即使跳过Steam API，`replay_url` 字段本身也是有时效的——Valve/完美世界服务器只保留近期比赛录像（无官方承诺具体时长，实践中大约数周），过期后该字段会为空或返回 `null`。此时只能退回使用 OpenDota 已解析的结构化数据（如 `radiant_gold_adv`），无法拿到原始 .dem。
 
@@ -183,6 +184,40 @@ json.dump(log, open(log_path, "w"))
 ```
 
 **注**：曾尝试 Steam Web API（`GetMatchDetails`）直连方案，实测对该联赛比赛集体返回 500 空响应，排查后放弃，改用上述 OpenDota 方案，已验证可行（成功拿到形如 `http://replay413.dota2.com.cn/570/{match_id}_{salt}.dem.bz2` 的可用链接）。
+
+**注（2026-09-02 本机实测，重要更新）— Valve 已将录像压缩容器从 bz2 换为 zstd**：
+`replay*.valve.net` 下载到的对象不再是 bz2 流（对下载内容直接 `bz2.decompress` 会报
+"Invalid data stream"），而是 **zstandard 压缩**：文件头 4 字节魔数 `28 B5 2F FD`；
+zstd 解压后得到以 Source2 demo 魔数 `PBDEMS2\0` 开头的 .dem，那才是
+`source2-demo` 能解析的内容。python 标准库不含 zstd，需 `pip install zstandard`
+（dsh 沙箱内 pip 的临时目录/安装目标都要指到工作区内，否则报权限错误）。该解码与下载逻辑已转正为工具
+`dota_parse/tools/decode_replay.py`（按魔数解码 bz2/zstd/直存 → 校验 `PBDEMS2\0`）与
+`dota_parse/tools/fetch_replay_dem.py`（`fetch_replay_dem.py <match_id> [out.dem]`：
+OpenDota 取 replay_url → 下载 → 解码），可直接复用。原理示意（解码前按魔数识别容器、不要假设后缀）：
+```python
+import zstandard, bz2
+raw = ...  # replay_url 下载到的原始字节
+if raw[:4] == b'\x28\xb5\x2f\xfd':      # zstd —— valve.net 现行格式
+    dem = zstandard.ZstdDecompressor().decompress(raw)
+elif raw[:3] == b'BZh':                 # 旧式 bz2 —— 部分国服域名仍可能
+    dem = bz2.decompress(raw)
+# 校验：dem[:8] == b'PBDEMS2\x00' 才算拿到了可解析的 .dem
+```
+另：国服域名（`*.dota2.com.cn`，Tengine）对本机网络出口实测存在明显限速
+（约 100–650 KB/s，且速率与请求头相关：普通 UA ≈100KB/s，浏览器 UA+Referer 420–640KB/s），
+单场 200MB+ 录像可能耗时数十分钟；国际服 `*.valve.net`（Google Edge Cache）速度正常
+（>1MB/s，无需特殊请求头）。批量下载脚本建议按上述魔数分支解码、对国服域名做超时/重试。
+
+**注（2026-09-02 本机实测）— 部分 CDN 录像并非从比赛第 0 秒开始录制**：
+实测公开比赛录像 8979484553 的录制从中途开始：10 名英雄的首个采样点全在
+t=1362s（≈22:42，坐标已散落全场），录像内没有泉水开局阶段（与 OpenDota 记录的
+duration=2097s 也对不上，说明录像时间轴含录制起始偏移）。这类录像解析流程与结构校验
+全部正常，但"最早采样点=泉水→按象限校验坐标"（§8 第4步的泉水校验 / `verify_db.py`
+fountain-side 检查）**不适用**，应改用"坐标界内（|x|,|y|≤200000）+ 双方全场分布 +
+身份/购买交叉一致性"做合理性校验；天梯/普通匹配局（lobby 0/7）录像通常从 0 秒起录，
+泉水校验仍适用。另：解析器会把召唤物（如兽王猪/鹰，类名以 `CDOTA_Unit_Hero_` 开头但
+无 player_slot/pid）也写入 `entity_snapshots`，跨表身份一致性比对需限定在有 player_slot
+的英雄实体上；`verify_db.py` 现有版本对这类 team 为 NULL 的行存在格式化崩溃，跑新录像前需先修复。
 
 ---
 

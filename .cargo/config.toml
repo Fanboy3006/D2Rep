@@ -1,5 +1,11 @@
-[source.crates-io]
-replace-with = "vendored-sources"
-
-[source.vendored-sources]
-directory = "vendor"
+# ============================================================================
+# 本机构建模式：联网模式（标准 rustup + crates.io 直连）。
+# 此前离线 vendor 方案（受限网络机器用）如需恢复，取消下面注释并确保
+# vendor/ 目录存在（相对路径基于本 .cargo 所在的项目根目录）：
+#
+# [source.crates-io]
+# replace-with = "vendored-sources"
+#
+# [source.vendored-sources]
+# directory = "vendor"
+# ============================================================================

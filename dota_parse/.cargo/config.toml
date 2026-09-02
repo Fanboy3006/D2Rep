@@ -1,5 +1,11 @@
-[source.crates-io]
-replace-with = "vendored-sources"
-
-[source.vendored-sources]
-directory = "F:/D2Rep_project/dota_replay_analyzer/vendor"
+# ============================================================================
+# 本机构建模式：联网模式（标准 rustup + crates.io 直连）。
+# 此前离线 vendor 方案（受限网络机器用）如需恢复，取消下面注释并确保
+# vendor/ 目录存在（setup.ps1 会自动校正其中的绝对路径）：
+#
+# [source.crates-io]
+# replace-with = "vendored-sources"
+#
+# [source.vendored-sources]
+# directory = "C:/D2Rep_project/dota_replay_analyzer/vendor"
+# ============================================================================
