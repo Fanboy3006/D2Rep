@@ -10,7 +10,9 @@
 - 第1/2步（OpenDota API 数据管道、批量下载正式流程）：**未开始**（探测期手工脚本见 §3.1/§4.2）
 - **第7步 调度/元数据层：已完成（2026-09-03，C 盘机实跑验证）** —— 独立 catalog（`matches.db`，`scheduler/catalog.py`）+ 非公开录像录入（`scheduler/intake_private.py`，`dems/private/`，头部自动读元信息、幂等、`--no-parse`/`--note`/`--move`）+ `dota_parse --info` 只读头部模式 + analysis 支持 `--catalog` 枚举场次；catalog 的 `source` 支持 private/public（public 仅预留条目接口与 metadata 占位，实际拉取留给第1/2步）。详见 §8 第7步记录
 - **第1步 OpenDota API 数据管道：已完成（2026-09-03，C 盘机实跑）** —— 新增 `opendota/` 与独立 **`stats.db`**（leagues/teams/matches/gold_adv 四表，`metadata_json` 升级预留，与 catalog 各司其职）；`fetch_league.py` 限流幂等管道（队名补全/逐场 `radiant_gold_adv`/空则 `POST /request` 触发解析）；胜负按 **match** 粒度存 `radiant_win`（series 聚合留查询层）。首次实跑联赛 19719：**147 场 matches、147/147 含经济差、6953 行 gold_adv、16 队伍**；视角转换（§3.1 team_adv：dire 视图 = -radiant）与 stats↔catalog 按 match_id 松耦合关联均已实跑验证。详见 §8 第1步记录
-- **下一步是第2步**：批量 .dem 下载正式流程（§4.2 有可用原型 + `fetch_replay_dem.py` 已转正）——下载后到 catalog 登记 `source='public'` 行并本地解析（§8 列表中的步骤号即进度坐标）
+- **下一步是第2步**：批量 .dem 下载正式流程（§4.2 有可用原型 + `fetch_replay_dem.py`/`decode_replay.py` 已转正）——下载后到 catalog 登记 `source='public'` 行并本地解析（§8 列表中的步骤号即进度坐标）
+- **下载速度基线（2026-09-03 实测，供第2步排期；正式批量下载确定在 F 盘主力机执行，本 C 盘机不需要为批量做额外准备）**：联赛 19543（PGL Wallachia 2026 S8）3 场全部落在 `replay191.valve.net`，速度 **2.3–7.1 MB/s**（前两场 7.01/7.14，一场 2.29 波动），原始 128–185MB/场、**均为 bz2 容器**（解压后 .dem 188–265MB）；联赛 19719（TI2026，时间跨 08-13~08-23 抽 5 候选测 ≤3 场）首场 8942993144 落在 `replay413.dota2.com.cn`（国服 Tengine），**仅 ≈0.10 MB/s**（比国际服慢约 70 倍，即 §4.2 记录的国服限速），zstd 容器（91MB → 146.8MB）。**结论**：① valve.net 体系内 bz2/zstd 并存（replay274 等=zstd、replay191=bz2），必须按魔数嗅探；② 国服域名只作兜底；③ 批量在 F 盘主力机跑国际服时按 ~5MB/s 保守估时即可
+- **会话交接快照（2026-09-03，C 盘机 → F 盘机）**：git 已推至 `fe5c161`（step7=f6d0626、step1=fe5c161，均已 push）；两台 `.cargo/config.toml` 的联网切换为 C 盘本机状态（未提交，F 盘默认离线 vendor）；19719 测速探测当时仍在后台（C 盘机 `.tmp/speedtest_19719/`，完整日志 `speedtest_19719.log`，已完成 1 场国服样本）；19543 原始文件在 `.tmp/speedtest_19543/`；stats.db 147 场 + catalog(matches.db) 2 行真实记录均在 C 盘本地（gitignore）。下一会话从 F 盘继续 §8 第2步
 - **环境同步完成（2026-09-02，本机 C 盘，项目在 `C:\D2Rep_project\dota_replay_analyzer`）**：git clone 后环境重建完成、端到端验证通过，状态与原电脑（§8 第4步已完成）对齐。要点：`setup.ps1` 报告离线工具链/vendor/快照缺失属预期（大件不入 git）；根与 `dota_parse/` 的 `.cargo/config.toml` 已切换为**联网 cargo 模式**（原 vendor 重定向整段以注释保留，受限网络机器可恢复）；`cargo build --release` 联网编译成功（本机 dsh 沙箱内 schannel TLS 不可用，构建经新增的 `tools/cargo_net_proxy.py` 本地镜像中转 crates.io——仍是标准 cargo 联网语义，无 vendor、无 `--offline`）；`sqlite3.dll` 已重新获取至 `dota_parse/sqlite3.dll`；用新下载的公开录像 **8979484553**（valve.net）实跑解析产出 **10 玩家 / entity_snapshots 28399 / game_events 503（均 purchase）/ player_identity 10**，程序内自检 + python 独立复核（JSON 合法、身份-实体-购买者交叉一致、坐标界内）全部通过。本机实测新事实已写入 §4.2 两条注记：**CDN 录像压缩容器已从 bz2 改为 zstd**；**部分 CDN 录像非 0 秒起录（泉水坐标校验不适用）**
 - 新电脑/同步后的启动顺序见 §6.6「新电脑 / 跨电脑同步后的启动顺序（必读）」
 - 项目托管于 GitHub 私有仓库 https://github.com/Fanboy3006/D2Rep.git；新电脑 **git clone** 之后哪些大文件缺失属于正常、如何重建，见 §6.6「git clone 场景（GitHub 单文件 100MB 限制）」
@@ -193,7 +195,9 @@ json.dump(log, open(log_path, "w"))
 `replay*.valve.net` 下载到的对象不再是 bz2 流（对下载内容直接 `bz2.decompress` 会报
 "Invalid data stream"），而是 **zstandard 压缩**：文件头 4 字节魔数 `28 B5 2F FD`；
 zstd 解压后得到以 Source2 demo 魔数 `PBDEMS2\0` 开头的 .dem，那才是
-`source2-demo` 能解析的内容。python 标准库不含 zstd，需 `pip install zstandard`
+`source2-demo` 能解析的内容。**注意：同一 valve.net 体系内 bz2/zstd 并存**
+（实测 replay274/271-273 等=zstd、replay191=bz2），必须按魔数逐文件识别，
+不要按域名或后缀假设容器格式。python 标准库不含 zstd，需 `pip install zstandard`
 （dsh 沙箱内 pip 的临时目录/安装目标都要指到工作区内，否则报权限错误）。该解码与下载逻辑已转正为工具
 `dota_parse/tools/decode_replay.py`（按魔数解码 bz2/zstd/直存 → 校验 `PBDEMS2\0`）与
 `dota_parse/tools/fetch_replay_dem.py`（`fetch_replay_dem.py <match_id> [out.dem]`：
@@ -402,7 +406,7 @@ source2-demo = { version = "0.5", default-features = false, features = ["dota"] 
    - **拉取**：`opendota/fetch_league.py --league <id>`（默认 19719）：联赛列表 → 逐场 `/matches/{id}` → 队名补全 `/teams/{id}`（去重缓存进 teams 表）→ 逐分钟写 `gold_adv`。限流默认 sleep 1.2s + 429/5xx 退避；**幂等**（已有经济差的场次自动跳过，`--refresh` 强制）；某场 `radiant_gold_adv` 为空 → 自动 `POST /request/{match_id}` 触发解析并标记 `parse_requested_at`，本轮重试一次、留待下次运行
    - **实跑结果（联赛 19719）**：`matches` 147 行、**147/147 含经济差**（no_gold=0，无需触发解析）、`gold_adv` **6953** 行、`teams` 16 队
    - **验证**：视角核对 3 场样本（8960991322/8960882635/8960762254）——每场全部分钟 `dire == -radiant`，且末分钟经济差方向与 `radiant_win` 实际胜负一致（如 8960991322 TEAM VISION vs Team Spirit，dire 胜 → 末分钟 dire 领先 17557）；关联演示：catalog 登记真实公开场次 `source='public' match_id=8960991322`（pending，暂无本地 .dem），经 join 从 stats.db 取回该场 65 分钟双向经济差——证明"match_id 松耦合关联"可用（该 catalog 公开行保留，作为第 2 步下载的登记入口）
-2. 跑通批量 .dem 下载脚本（已有可用版本，见第4.2节）
+2. ~~跑通批量 .dem 下载脚本~~ **未开始（2026-09-03 基线已测，执行机器定为 F 盘主力机）**：已有 `dota_parse/tools/fetch_replay_dem.py`（单场：OpenDota 取 replay_url → 下载 → 按魔数嗅探 bz2/zstd 解码 → 校验 PBDEMS2）。速度基线见进度速览（19543 valve.net ≈2.3–7.1MB/s；19719 国服域名 ≈0.1MB/s 只作兜底）。批量实现要点：逐场 replay_url → 下载 → 魔数解码 → `dota_parse` 本地解析 → catalog 登记 `source='public'`（幂等，思路复用 `scheduler/intake_private.py`；分布/时段抽样建议覆盖不同阶段以反映真实波动）
 3. ~~选型验证~~ **已完成**：`source2-demo` + Rust 方案已验证可行（见6.6节），核心字段（坐标、steam_id、购买记录）均已跑通
 4. ~~基于已验证的 `dota_parse` 最小脚本，扩展为正式的解析器~~ **已完成（SQLite 先行，Postgres 迁移后续做）**：
    - `dota_parse` 输出从单个 JSON 改为直接写入数据库：三张通用表（schema 见 `dota_parse/src/schema.rs`，与§6.2的适配差异已在文件头与§6.2实现落点说明中记录）
