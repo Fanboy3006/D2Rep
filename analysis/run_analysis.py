@@ -190,14 +190,35 @@ def purchase_buckets(con, match_id, bucket_s=300):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("dbs", nargs="+", help="sqlite db files (one per run dir or several)")
+    ap.add_argument("dbs", nargs="*", help="sqlite db files (or use --catalog)")
+    ap.add_argument("--catalog", default=None,
+                    help="matches catalog db (scheduler/) - enumerate parsed "
+                         "matches instead of passing db files by hand")
+    ap.add_argument("--source", choices=["private", "public"], default=None,
+                    help="only with --catalog: restrict by source")
+    ap.add_argument("--state", default="parsed",
+                    help="only with --catalog: restrict by parse_state")
     ap.add_argument("--cell", type=int, default=250, help="heatmap cell size in world units")
     ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "output"))
     args = ap.parse_args()
 
+    if args.catalog:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from scheduler import catalog as cat
+        dbs = cat.dbs_for_analysis(args.catalog, source=args.source,
+                                   parse_state=args.state)
+        if not dbs:
+            ap.error("catalog %s has no matches (source=%s, state=%s) with a db"
+                     % (args.catalog, args.source, args.state))
+        print("catalog %s -> %d db(s)" % (args.catalog, len(dbs)))
+    else:
+        if not args.dbs:
+            ap.error("provide db files or --catalog")
+        dbs = args.dbs
+
     os.makedirs(args.out, exist_ok=True)
     cell = args.cell
-    print("dbs:", args.dbs)
+    print("dbs:", dbs)
 
     pooled = {"radiant": None, "dire": None}   # summed raw counts across matches
     pooled_time_s = {"radiant": 0.0, "dire": 0.0}
@@ -206,7 +227,7 @@ def main():
     purchase_pool = {}  # (team, minute) -> count across aligned matches
     aligned_matches = 0
 
-    for db in args.dbs:
+    for db in dbs:
         con = connect(db)
         for match_id in list_matches(con):
             label = "%s:%d" % (os.path.basename(db), match_id)

@@ -8,7 +8,8 @@
 - **第5步 第一个跨场次分析查询：已完成** —— 纯第4层实现"英雄位置热区"（跨2场，主交付物）+ "购买节奏"最小查询，验证了"新分析=新查询、不动解析层与表结构"；详见 §8 第5步记录与 `analysis/`
 - **第6步 视野（守卫）提取器：已完成** —— `game_events` 新增 `ward_placed` / `ward_destroyed` 两种事件（复用通用表，无 schema 改动），两场重解析 + 独立校验 + 第4层守卫分布查询全部通过；详见 §8 第6步记录与 §6.6「守卫事件提取」
 - 第1/2步（OpenDota API 数据管道、批量下载正式流程）：**未开始**（探测期手工脚本见 §3.1/§4.2）
-- **下一步是第7步**：补充调度层，支持非公开录像的手动录入流程，与公开赛事数据管道统一到同一套存储与查询接口下（§8 列表中的步骤号即进度坐标）
+- **第7步 调度/元数据层：已完成（2026-09-03，C 盘机实跑验证）** —— 独立 catalog（`matches.db`，`scheduler/catalog.py`）+ 非公开录像录入（`scheduler/intake_private.py`，`dems/private/`，头部自动读元信息、幂等、`--no-parse`/`--note`/`--move`）+ `dota_parse --info` 只读头部模式 + analysis 支持 `--catalog` 枚举场次；catalog 的 `source` 支持 private/public（public 仅预留条目接口与 metadata 占位，实际拉取留给第1/2步）。详见 §8 第7步记录
+- **下一步是第1/2步**：打通 OpenDota API 数据管道与批量下载正式流程——落地到第7步已预留的 `source='public'` 条目接口（§8 列表中的步骤号即进度坐标）
 - **环境同步完成（2026-09-02，本机 C 盘，项目在 `C:\D2Rep_project\dota_replay_analyzer`）**：git clone 后环境重建完成、端到端验证通过，状态与原电脑（§8 第4步已完成）对齐。要点：`setup.ps1` 报告离线工具链/vendor/快照缺失属预期（大件不入 git）；根与 `dota_parse/` 的 `.cargo/config.toml` 已切换为**联网 cargo 模式**（原 vendor 重定向整段以注释保留，受限网络机器可恢复）；`cargo build --release` 联网编译成功（本机 dsh 沙箱内 schannel TLS 不可用，构建经新增的 `tools/cargo_net_proxy.py` 本地镜像中转 crates.io——仍是标准 cargo 联网语义，无 vendor、无 `--offline`）；`sqlite3.dll` 已重新获取至 `dota_parse/sqlite3.dll`；用新下载的公开录像 **8979484553**（valve.net）实跑解析产出 **10 玩家 / entity_snapshots 28399 / game_events 503（均 purchase）/ player_identity 10**，程序内自检 + python 独立复核（JSON 合法、身份-实体-购买者交叉一致、坐标界内）全部通过。本机实测新事实已写入 §4.2 两条注记：**CDN 录像压缩容器已从 bz2 改为 zstd**；**部分 CDN 录像非 0 秒起录（泉水坐标校验不适用）**
 - 新电脑/同步后的启动顺序见 §6.6「新电脑 / 跨电脑同步后的启动顺序（必读）」
 - 项目托管于 GitHub 私有仓库 https://github.com/Fanboy3006/D2Rep.git；新电脑 **git clone** 之后哪些大文件缺失属于正常、如何重建，见 §6.6「git clone 场景（GitHub 单文件 100MB 限制）」
@@ -413,7 +414,14 @@ source2-demo = { version = "0.5", default-features = false, features = ["dota"] 
    - 事件字段设计：`ward_placed` 的 `target_id`=实体类名、actor 暂空（放置者 owner 需实体句柄→玩家映射，v1 未做，第4层可先按队伍聚合）；`ward_destroyed` 的 `target_id`=`npc_dota_observer_wards`/`npc_dota_sentry_wards`（权威单位名）
    - **两场重解析验证**（位置快照/购买完全不变）：8592126358 → placed 123 / destroyed 117；8979891001 → placed 50 / destroyed 43；`verify_db.py` 新增守卫校验（坐标界内、量级几十、双方类型分布、destroyed 目标合法）两场均通过
    - **第4层验证查询**：`analysis/ward_analysis.py <db...>`（"某支队伍整场插眼位置分布"：按 队伍×observer/sentry 计数 + 每队 ASCII 放置图 + deward 归属），全部只读 `game_events`——与第5步热区共同证明"新增维度=纯第4层新查询"。守卫提取涉及的实现坑点（类名映射、战斗日志噪声等）见 §6.6「守卫事件提取」
-7. 补充调度层，支持非公开录像的手动录入流程，与公开赛事数据管道统一到同一套存储和查询接口下
+7. ~~补充调度层，支持非公开录像的手动录入流程，与公开赛事数据管道统一到同一套存储和查询接口下~~ **已完成（2026-09-03，C 盘机实跑验证）**——第1层落地为 `scheduler/`，只建索引/接口、不复制三表数据：
+   - **独立 catalog**：根目录 `matches.db`（`*.db` 已在 gitignore），`scheduler/catalog.py` 提供 DDL 与 CLI（`init|list|dbs [--source][--state][--catalog]`）。`matches` 表只存每场索引行：`match_id/source/dem_path/db_path/parse_state/dem_sha256/duration_sec/registered_at/parsed_at/metadata_json`；`metadata_json`(TEXT JSON) 承载 `--note` 与公开赛事占位（team/series/赛事名等）——后续加字段只进 JSON，不需要重建 catalog
+   - **match_id 命名规则（防命名空间冲突）**：`source='public'` → OpenDota 十进制 match_id；`source='private'` → 优先用录像头自带的官方 match_id，头部缺失/为 0 时用内容哈希 `manual_<sha256[:12]>`（同文件重跑幂等，且不与未来公开 id 撞车）
+   - **`dota_parse --info <replay.dem>`**：新增只读头部模式（`parse.rs::parse_header`，复用 §6.6 已验证的 player_info 解码，不跑 tick 流），输出 JSON：match_id / duration_seconds / 10 玩家（steam_id、slot、team_code、hero npc）——注册前即可拿到全部登记元信息
+   - **`scheduler/intake_private.py`**（非公开录入）：扫 `dems/private/*.dem` → sha256 → `--info` 读头 → 幂等登记（默认立即全量解析到 `dems/db/<id>.db` 并置 parsed/failed；`--no-parse` 只登记留 pending；`--note` 进 metadata_json；`--move` 成功后把 .dem 移入 `dems/private/registered/` 做视觉区分并同步 dem_path）
+   - **第4层查询入口统一**：`analysis/run_analysis.py` 与 `ward_analysis.py` 新增 `--catalog matches.db [--source][--state]` 枚举（由 catalog 展开为逐场 db 列表），仍兼容手传 db 列表
+   - **实跑验证（8979484553.dem，private 全流程）**：intake 登记→解析→state=parsed（28399 快照/695 事件/10 身份，与直跑完全一致）；二次运行幂等跳过；`--move` 后 .dem 入 `registered/` 且 catalog.dem_path 同步；`run_analysis.py --catalog` 与 `ward_analysis.py --catalog` 均从 catalog 枚举出该场并正常产出；`source='public'` 条目与 `manual_` 命名空间先经占位行验证、验证后已清理（真实 catalog 现只有已解析的 private 场次）
+   - **下一步衔接**：第1/2步公开管道作为 `source='public'` 的生产者写入同一 catalog；第4层后续维度继续只加查询
 
 ## 9. 开发工具选型：dsh vs CLINE 对照测试结论
 

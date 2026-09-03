@@ -106,6 +106,38 @@ fn header_players(parser: &Parser) -> Vec<HeaderPlayer> {
     out
 }
 
+/// Header-only read: header match id, playback duration and player identities,
+/// WITHOUT running the tick stream. Used by `dota_parse --info` so the
+/// scheduler layer (ARCHITECTURE.md §8 step 7) can register a replay before
+/// (or instead of) a full parse. Shares the §6.6-verified player_info decode.
+#[derive(Debug, Clone)]
+pub struct HeaderInfo {
+    /// Match id carried by the replay header (`CGameInfo.match_id`), if any.
+    /// Absent or 0 means the file has no usable official id (private/custom
+    /// recordings) — callers fall back to a content hash id.
+    pub match_id: Option<i64>,
+    /// `playback_time` from the header, in seconds.
+    pub duration_seconds: Option<f64>,
+    pub players: Vec<HeaderPlayer>,
+}
+
+/// Parse only the replay header (fast, no extractors run).
+pub fn parse_header(bytes: &[u8]) -> anyhow::Result<HeaderInfo> {
+    let parser = Parser::new(bytes)?;
+    let info = parser.replay_info().clone();
+    let header_match_id = info
+        .game_info
+        .as_ref()
+        .and_then(|g| g.dota.as_ref())
+        .and_then(|d| d.match_id)
+        .map(|v| v as i64);
+    Ok(HeaderInfo {
+        match_id: header_match_id.filter(|&v| v > 0),
+        duration_seconds: info.playback_time.map(f64::from),
+        players: header_players(&parser),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // extractors
 // ---------------------------------------------------------------------------

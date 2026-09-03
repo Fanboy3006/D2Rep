@@ -1,6 +1,7 @@
 //! dota_parse — formal .dem parser (ARCHITECTURE.md §8 step 4).
 //!
 //! Usage: dota_parse <replay.dem> [output.db] [sample_interval_sec]
+//!        dota_parse --info <replay.dem>   (header-only, prints JSON, no DB)
 //!
 //! Parses a Dota 2 replay with source2-demo (verified stack, §6.6) and writes
 //! the generic three-table model of §6.2 — `entity_snapshots` /
@@ -30,10 +31,12 @@ const DEFAULT_DEM: &str = "8592126358.dem";
 fn usage() -> ! {
     eprintln!(
         "usage: dota_parse <replay.dem> [output.db] [sample_interval_sec]\n\
+         \x20      dota_parse --info <replay.dem>\n\
          \n\
          examples:\n\
          \x20 dota_parse 8592126358.dem                     -> 8592126358.db next to the demo\n\
          \x20 dota_parse in.dem out.db 1                    -> explicit db, 1s resampling\n\
+         \x20 dota_parse --info in.dem                      -> header-only JSON (catalog registration)\n\
          \n\
          sqlite3.dll is resolved via DOTA_PARSE_SQLITE_DLL, the exe dir, the\n\
          working dir, or the OS search path."
@@ -67,6 +70,46 @@ fn sanity_checks(parsed: &parse::ParsedReplay) {
 
 fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
+
+    // ------------------------------------------------------------------
+    // --info: header-only read (fast) -> JSON on stdout. Used by the
+    // scheduler layer (scheduler/intake_private.py) to register a replay
+    // from its header without a full parse.
+    // ------------------------------------------------------------------
+    if args.get(1).map(String::as_str) == Some("--info") {
+        if args.len() != 3 {
+            usage();
+        }
+        let dem_path = PathBuf::from(&args[2]);
+        let bytes = std::fs::read(&dem_path)
+            .with_context(|| format!("reading {}", dem_path.display()))?;
+        let info = parse::parse_header(&bytes)
+            .map_err(|e| anyhow::anyhow!("header parse failed: {e:#}"))?;
+        let players: Vec<serde_json::Value> = info
+            .players
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "index": p.header_index,
+                    "slot": p.player_slot,
+                    "steam_id": p.steam_id,
+                    "player_name": p.player_name,
+                    "hero_npc": p.hero_npc,
+                    "team_code": p.team_code,
+                    "fake_client": p.is_fake_client,
+                })
+            })
+            .collect();
+        let out = serde_json::json!({
+            "file": dem_path.display().to_string(),
+            "match_id": info.match_id,
+            "duration_seconds": info.duration_seconds,
+            "players": players,
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
     if args.len() > 4 {
         usage();
     }

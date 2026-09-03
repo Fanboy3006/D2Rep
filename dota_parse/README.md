@@ -18,6 +18,7 @@ cargo build --release --offline
 
 ```
 dota_parse <replay.dem> [output.db] [sample_interval_sec]
+dota_parse --info <replay.dem>    # header-only JSON（调度层 catalog 登记用）
 ```
 
 - 默认输出数据库为 demo 同目录同名 `.db`；采样间隔默认 1 秒（可配置，见 §6.3）。
