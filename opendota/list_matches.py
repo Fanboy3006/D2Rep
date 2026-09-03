@@ -87,6 +87,13 @@ def main():
         hits = league_name_search(name, leagues)
         if not hits:
             print("no league matches %r" % name, file=sys.stderr)
+            continue
+        # prefer exact matches (case-insensitive); substring hits only as
+        # fallback (avoids dragging in e.g. qualifier leagues when the user
+        # means the main event "The International 2026")
+        exact = [h for h in hits if h[1] and h[1].lower() == name.lower()]
+        if exact:
+            hits = exact
         for lid, nm in hits:
             resolved.append((lid, nm))
     if not resolved:
