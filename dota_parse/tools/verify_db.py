@@ -129,6 +129,55 @@ print("\nevents by type:")
 for r in cur.execute("SELECT event_type, COUNT(*) FROM game_events WHERE match_id=? GROUP BY event_type", (MATCH,)):
     print("  ", r)
 
+# --- ward events sanity (§8 step 6 extractor) ----------------------------
+# placed: every row has a position inside the map window, a team (2/3) and a
+# ward_type; destroyed: authoritative target unit + reason expired/dewarded.
+# Counts should sit in the "dozens" range for a normal full match (e.g. ~50-150
+# placed + ~same destroyed), never 0 or thousands.
+def ward_bounds():
+    n = 0
+    bad = 0
+    for _t, x, y, props in cur.execute(
+            """SELECT game_time_sec, x, y, properties
+               FROM game_events WHERE match_id=? AND event_type='ward_placed'""", (MATCH,)):
+        n += 1
+        p = json.loads(props)
+        ok = (x is not None and y is not None and abs(x) <= 20000 and abs(y) <= 20000
+              and p.get("ward_type") in ("observer", "sentry")
+              and p.get("team") in (2, 3))
+        if not ok:
+            bad += 1
+            if bad <= 5:
+                print("  bad placed:", _t, x, y, props)
+    return n, bad
+
+n_pl, bad_pl = ward_bounds()
+n_des = cur.execute("SELECT COUNT(*) FROM game_events WHERE match_id=? AND event_type='ward_destroyed'",
+                    (MATCH,)).fetchone()[0]
+print(f"\nward_placed={n_pl} (invalid rows: {bad_pl}) | ward_destroyed={n_des}")
+assert bad_pl == 0, "ward_placed rows with missing/out-of-range coords or bad props"
+assert 10 <= n_pl <= 400, "ward_placed count out of plausible range"
+assert 10 <= n_des <= 400, "ward_destroyed count out of plausible range"
+print("ward_placed by type/team:")
+for r in cur.execute(
+        """SELECT json_extract(properties,'$.ward_type'), json_extract(properties,'$.team'), COUNT(*)
+           FROM game_events WHERE match_id=? AND event_type='ward_placed'
+           GROUP BY 1,2 ORDER BY 2,1""", (MATCH,)):
+    print("  ", r)
+print("ward_destroyed by reason/type:")
+for r in cur.execute(
+        """SELECT json_extract(properties,'$.ward_type'), json_extract(properties,'$.reason'), COUNT(*)
+           FROM game_events WHERE match_id=? AND event_type='ward_destroyed'
+           GROUP BY 1,2 ORDER BY 1,2""", (MATCH,)):
+    print("  ", r)
+# destroyed targets must be real ward units; self-expiry rows have no actor
+bad_tgt = cur.execute(
+    """SELECT COUNT(*) FROM game_events WHERE match_id=?
+       AND event_type='ward_destroyed'
+       AND target_id NOT IN ('npc_dota_observer_wards','npc_dota_sentry_wards')""",
+    (MATCH,)).fetchone()[0]
+assert bad_tgt == 0, "ward_destroyed rows with non-ward targets"
+
 # hp coverage (informational)
 withhp = cur.execute(
     "SELECT COUNT(*) FROM entity_snapshots WHERE match_id=? AND hp IS NOT NULL", (MATCH,)).fetchone()[0]

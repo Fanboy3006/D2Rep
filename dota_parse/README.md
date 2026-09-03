@@ -39,7 +39,7 @@ DLL 解析顺序：`$env:DOTA_PARSE_SQLITE_DLL` → exe 同目录 → 当前目�
 | `src/main.rs` | CLI、64MB 栈解析线程、写库编排、写后自检 |
 | `src/schema.rs` | 三张通用表的 SQLite DDL（唯一事实来源，含相对 §6.2 的适配说明） |
 | `src/model.rs` | 通用行模型（SnapshotRow/EventRow/PlayerIdentityRow）与命名/队伍约定 |
-| `src/parse.rs` | header→player_identity 提取器；位置提取器→entity_snapshots；购买提取器→game_events |
+| `src/parse.rs` | header→player_identity 提取器；位置提取器→entity_snapshots；购买/守卫提取器→game_events |
 | `src/sqlite.rs` | 极简 sqlite3.dll FFI + PreparedWriter（事务化幂等写入） |
 
 新增分析维度 = 在 `parse.rs` 新增一个提取器（或新 `event_type` / `entity_type`），
@@ -50,9 +50,12 @@ DLL 解析顺序：`$env:DOTA_PARSE_SQLITE_DLL` → exe 同目录 → 当前目�
 - `entity_snapshots`：hero 实体 1 秒重采样位置快照；`entity_id` 用 hero npc 名
   （如 `npc_dota_hero_pudge`），`extra` JSON 携带 `z` / `pid` / `player_slot` / `class`；
   `hp` 尽力而为（属性缺失时为 NULL）。
-- `game_events`：目前只有 `purchase`（购买者记录在 combat log 的 target 字段，
+- `game_events`：`purchase`（购买者记录在 combat log 的 target 字段，
   `properties.item` 为物品 npc 名、`properties.item_index` 为战斗日志内部序号而非金币价格，
-  见 §6.6 已知限制；价格映射属后续静态字典工作）。`event_seq` 处理同一秒内同人多次购买。
+  见 §6.6 已知限制；价格映射属后续静态字典工作）；`ward_placed` / `ward_destroyed`
+  （守卫视野事件，§8 第6步：placed 带坐标/队伍/类型，destroyed 带排眼者与
+  dewarded/expired 标记，详见 §6.6「守卫事件提取」）。`event_seq` 处理同一秒同
+  actor 的多发事件。
 - `player_identity`：每场每玩家一行；`player_slot` 采用 Dota 惯例（天辉 0-4、夜魇 128-132）；
   `team_id` 为头部队伍代码（2=天辉 3=夜魇）；`hero_id`（数字英雄 ID）需要外部英雄字典，暂为 NULL，
   `hero_name` 存 npc 名作为解析层自给自足的权威标识。

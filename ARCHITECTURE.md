@@ -6,8 +6,9 @@
 - 第3步 选型验证：**已完成**（§6.6，Rust + source2-demo）
 - 第4步 正式解析器写库（SQLite 先行）：**已完成并实测通过** —— 三张通用表 DDL 与实现细节见 §6.2 实现落点 + §8 第4步，代码在 `dota_parse/`，运行说明见 `dota_parse/README.md`
 - **第5步 第一个跨场次分析查询：已完成** —— 纯第4层实现"英雄位置热区"（跨2场，主交付物）+ "购买节奏"最小查询，验证了"新分析=新查询、不动解析层与表结构"；详见 §8 第5步记录与 `analysis/`
+- **第6步 视野（守卫）提取器：已完成** —— `game_events` 新增 `ward_placed` / `ward_destroyed` 两种事件（复用通用表，无 schema 改动），两场重解析 + 独立校验 + 第4层守卫分布查询全部通过；详见 §8 第6步记录与 §6.6「守卫事件提取」
 - 第1/2步（OpenDota API 数据管道、批量下载正式流程）：**未开始**（探测期手工脚本见 §3.1/§4.2）
-- **下一步是第6步**：按需增加更多提取器（视野/技能/击杀等，见§7提取器清单），每加一个只涉及第3层新增代码+第4层查询（§8 列表中的步骤号即进度坐标）
+- **下一步是第7步**：补充调度层，支持非公开录像的手动录入流程，与公开赛事数据管道统一到同一套存储与查询接口下（§8 列表中的步骤号即进度坐标）
 - **环境同步完成（2026-09-02，本机 C 盘，项目在 `C:\D2Rep_project\dota_replay_analyzer`）**：git clone 后环境重建完成、端到端验证通过，状态与原电脑（§8 第4步已完成）对齐。要点：`setup.ps1` 报告离线工具链/vendor/快照缺失属预期（大件不入 git）；根与 `dota_parse/` 的 `.cargo/config.toml` 已切换为**联网 cargo 模式**（原 vendor 重定向整段以注释保留，受限网络机器可恢复）；`cargo build --release` 联网编译成功（本机 dsh 沙箱内 schannel TLS 不可用，构建经新增的 `tools/cargo_net_proxy.py` 本地镜像中转 crates.io——仍是标准 cargo 联网语义，无 vendor、无 `--offline`）；`sqlite3.dll` 已重新获取至 `dota_parse/sqlite3.dll`；用新下载的公开录像 **8979484553**（valve.net）实跑解析产出 **10 玩家 / entity_snapshots 28399 / game_events 503（均 purchase）/ player_identity 10**，程序内自检 + python 独立复核（JSON 合法、身份-实体-购买者交叉一致、坐标界内）全部通过。本机实测新事实已写入 §4.2 两条注记：**CDN 录像压缩容器已从 bz2 改为 zstd**；**部分 CDN 录像非 0 秒起录（泉水坐标校验不适用）**
 - 新电脑/同步后的启动顺序见 §6.6「新电脑 / 跨电脑同步后的启动顺序（必读）」
 - 项目托管于 GitHub 私有仓库 https://github.com/Fanboy3006/D2Rep.git；新电脑 **git clone** 之后哪些大文件缺失属于正常、如何重建，见 §6.6「git clone 场景（GitHub 单文件 100MB 限制）」
@@ -353,6 +354,11 @@ source2-demo = { version = "0.5", default-features = false, features = ["dota"] 
 
 - **购买记录来源**：战斗日志（combat log）里的 `DotaCombatlogPurchase` 事件类型，购买者信息在事件的 `target` 字段。**已知限制**：战斗日志里的 `value` 字段不是金钱数额，是物品的内部序号，如果需要花费金额，需要额外维护一张"物品ID→价格"的映射表（可从游戏文件或OpenDota的物品字典获取，不需要重新解析.dem）。
 
+- **守卫（视野）事件提取（§8 第6步，2026-09 两场实测）**：
+  - **放置**只能从守卫单位实体的 `Created` 事件取（自带坐标与队伍），不要用战斗日志——守卫相关 combat-log 的 Gold/Xp 条目语义不明、`val=守卫物品` 也大量出现在无关的 Damage/Death 行（英雄携带守卫时任何伤害都会被记上物品名，属库存噪声，极易误判成插眼/排眼）。
+  - 守卫单位实体类名与直觉不符且**不能从名字推断类型**：实测 `CDOTA_NPC_Observer_Ward`=普通观察守卫(视野)，`CDOTA_NPC_Observer_Ward_TrueSight`=真视守卫(哨兵，sentry)。映射可靠性的判据：两类 Created 计数须分别 ≈ 战斗日志中对应单位(npc_dota_observer_wards / npc_dota_sentry_wards)的 Death 计数（标定场 44≈43、79≈74）；若未来版本两者对不上，先重标定类名映射再看别的。
+  - **摧毁**：战斗日志 `DotaCombatlogDeath` 且 `target_name` ∈ {`npc_dota_observer_wards`,`npc_dota_sentry_wards`}（权威单位名），`attacker`=排眼者（英雄/塔），`attacker==target` 表示自然到期；该类 Death 行**不带坐标**。
+  - 放置者（owner）在守卫实体上是编码句柄（如 m_hOwnerEntity），v1 未做句柄→玩家解析，`ward_placed.actor_id` 暂空、靠 `properties.team` 与按队伍的第4层聚合兜底；后续可扩展。
 - **采样时机注意**：`on_tick_start` 回调在当前tick的entity增量数据被处理**之前**触发，所以在这个回调里读取到的状态实际是上一个tick的，存在1个tick的滞后。对于1秒粒度的重采样这个滞后可忽略，但如果未来做更高精度的分析需要留意。
 
 - **稳定性细节**：`Parser::new`及后续的深度递归解析容易导致栈溢出，需要在一个**64MB栈**的独立线程里运行解析逻辑；Release模式编译对100MB+的录像文件是必须的（Debug模式解析速度太慢，不适合实际使用）。
@@ -379,7 +385,7 @@ source2-demo = { version = "0.5", default-features = false, features = ["dota"] 
 - [ ] **运行环境**：本地脚本跑批 vs 部署到服务器做定时任务；数据量增大后要评估本地磁盘/内存是否够用
 - [ ] **非公开录像的输入方式**：用户手动放.dem到指定目录 + 手动登记match元信息？还是需要一个简单的本地界面/CLI辅助录入？
 - [ ] **胜负统计口径**：按 match 还是按 series 统计战队胜负
-- [ ] **提取器（extractor）的初始集合**：第一版解析器打算实现哪几个提取器（如：位置、购买、击杀、视野），后续再逐步添加——不需要一次做全，但建议先列一个初始清单方便排期。**现状**：位置+购买两个提取器已在§8第4步实现并写库；击杀/视野/技能等为后续按需增量（§8第6步），每加一个只动第3层新增代码+第4层查询
+- [ ] **提取器（extractor）的初始集合**：第一版解析器打算实现哪几个提取器（如：位置、购买、击杀、视野），后续再逐步添加——不需要一次做全，但建议先列一个初始清单方便排期。**现状**：位置+购买（§8第4步）+ **视野/守卫**（§8第6步，ward_placed/ward_destroyed）已实现写库；击杀/技能等为后续按需增量，每加一个只动第3层新增代码+第4层查询
 - [ ] **物品价格映射**：购买记录目前只有物品ID，无金额，需决定物品价格数据从哪里获取并如何维护更新（游戏版本更新会导致物品价格/池子变化）
 
 ---
@@ -400,7 +406,11 @@ source2-demo = { version = "0.5", default-features = false, features = ["dota"] 
    - **实跑结果与自检**：两场均 10 玩家/10 英雄身份三表一致（parse 修复后）、坐标全部界内、天辉质心偏向地图负象限而夜魇偏正象限（与泉水/家方向吻合）；产出逐场+pooled 热区与购买桶（样例：8592126358 全场购买 0:15/16 … 50:17/12 R/D；8979891001 0:28/46 … 25:47/31）
    - **过程中发现并修复了一个第3层数据正确性缺陷**（非 schema 改动）：多词英雄在新版录像里实体类名无下划线（见 §6.6），身份解析改为 `m_iPlayerID→header` 反查；同时给 `verify_db.py` 补了"中途起录跳过泉水校验"与"跨表比对限定有 player_slot 的英雄"两处逻辑
    - **结论**：整个分析全部落在三张通用表之上，解析层/schema 零改动即可支撑任意新维度；第2步批量下载/第4层后续维度建议按 §8 顺序继续
-6. 按需逐步增加更多提取器（视野、技能等，目前已有位置+购买两类），每加一个都应该只涉及第3层新增代码 + 第4层新增查询，不改动已有表结构和已有代码
+6. ~~按需逐步增加更多提取器~~ **视野（守卫）提取器已完成（2026-09，两场实测）**，每加一个只涉及第3层新增代码 + 第4层新增查询，不改已有表结构/已有代码：
+   - `dota_parse/src/parse.rs` 新增 `WardExtractor`：向通用 `game_events` 写 **`ward_placed`**（守卫单位实体 Created 事件；有坐标 x/y、队伍 team、`properties.ward_type`=observer/sentry）与 **`ward_destroyed`**（战斗日志 Death、target=守卫单位 npc；`actor_id`=排眼者或守卫自身(自然到期)，`properties.reason`=dewarded/expired；Death 无坐标故 x/y 为空）
+   - 事件字段设计：`ward_placed` 的 `target_id`=实体类名、actor 暂空（放置者 owner 需实体句柄→玩家映射，v1 未做，第4层可先按队伍聚合）；`ward_destroyed` 的 `target_id`=`npc_dota_observer_wards`/`npc_dota_sentry_wards`（权威单位名）
+   - **两场重解析验证**（位置快照/购买完全不变）：8592126358 → placed 123 / destroyed 117；8979891001 → placed 50 / destroyed 43；`verify_db.py` 新增守卫校验（坐标界内、量级几十、双方类型分布、destroyed 目标合法）两场均通过
+   - **第4层验证查询**：`analysis/ward_analysis.py <db...>`（"某支队伍整场插眼位置分布"：按 队伍×observer/sentry 计数 + 每队 ASCII 放置图 + deward 归属），全部只读 `game_events`——与第5步热区共同证明"新增维度=纯第4层新查询"。守卫提取涉及的实现坑点（类名映射、战斗日志噪声等）见 §6.6「守卫事件提取」
 7. 补充调度层，支持非公开录像的手动录入流程，与公开赛事数据管道统一到同一套存储和查询接口下
 
 ## 9. 开发工具选型：dsh vs CLINE 对照测试结论

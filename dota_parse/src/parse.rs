@@ -212,6 +212,169 @@ impl PurchaseExtractor {
 }
 
 // ---------------------------------------------------------------------------
+// ward extractor (视野/守卫事件)
+// ---------------------------------------------------------------------------
+
+/// Ward (observer / sentry) sight events, written to the generic
+/// `game_events` table as `ward_placed` / `ward_destroyed`.
+///
+/// Sources, both verified empirically on 2026 demo builds:
+/// * placed: a ward appears as a unit entity -> `Created` event. The two unit
+///   classes are `CDOTA_NPC_Observer_Ward` (plain vision observer) and
+///   `CDOTA_NPC_Observer_Ward_TrueSight` (sentry, true-sight). Entity class
+///   names are *not* semantically trustworthy in general — this mapping was
+///   cross-calibrated: created counts match combat-log death counts per type
+///   (44 vs 43 observer / 79 vs 74 sentry on the calibration replay). See
+///   ARCHITECTURE §6.6 if counts ever stop matching.
+/// * destroyed: combat log `Death` whose target unit is
+///   `npc_dota_observer_wards` / `npc_dota_sentry_wards` (authoritative unit
+///   npc). attacker == target means the ward expired on its own; otherwise the
+///   attacker (hero or tower) destroyed it. Death entries carry no position.
+#[derive(Default)]
+struct WardExtractor {
+    placed: Vec<WardPlaced>,
+    destroyed: Vec<WardDestroyed>,
+}
+
+#[derive(Debug, Clone)]
+struct WardPlaced {
+    t: f64,
+    ward_type: &'static str,
+    class: String,
+    x: f64,
+    y: f64,
+    team_code: Option<i32>,
+}
+
+#[derive(Debug, Clone)]
+struct WardDestroyed {
+    t: f64,
+    ward_type: &'static str,
+    unit: String,
+    actor: Option<String>,
+    self_expired: bool,
+}
+
+fn ward_class_type(class: &str) -> Option<&'static str> {
+    match class {
+        "CDOTA_NPC_Observer_Ward" => Some("observer"),
+        "CDOTA_NPC_Observer_Ward_TrueSight" => Some("sentry"),
+        _ => None,
+    }
+}
+
+#[observer]
+#[uses_all]
+impl WardExtractor {
+    #[on_entity]
+    fn on_entity(&mut self, ctx: &Context, event: EntityEvents, entity: &Entity) -> ObserverResult {
+        if event != EntityEvents::Created {
+            return Ok(());
+        }
+        let class = entity.class().name();
+        let Some(ward_type) = ward_class_type(class) else {
+            return Ok(());
+        };
+        let x = cell_to_world(
+            try_property!(entity, u32, "CBodyComponent.m_skeletonInstance.m_vecOrigin.m_cellX"),
+            try_property!(entity, f32, "CBodyComponent.m_skeletonInstance.m_vecOrigin.m_vecX"),
+        );
+        let y = cell_to_world(
+            try_property!(entity, u32, "CBodyComponent.m_skeletonInstance.m_vecOrigin.m_cellY"),
+            try_property!(entity, f32, "CBodyComponent.m_skeletonInstance.m_vecOrigin.m_vecY"),
+        );
+        let (Some(x), Some(y)) = (x, y) else {
+            return Ok(());
+        };
+        self.placed.push(WardPlaced {
+            t: f64::from(ctx.tick()) / f64::from(TICK_RATE),
+            ward_type,
+            class: class.to_string(),
+            x,
+            y,
+            team_code: try_property!(entity, i32, "m_iTeamNum"),
+        });
+        Ok(())
+    }
+
+    #[on_combat_log]
+    fn on_combat_log(&mut self, _ctx: &Context, cle: &CombatLogEntry) -> ObserverResult {
+        if cle.r#type() != DotaCombatlogTypes::DotaCombatlogDeath {
+            return Ok(());
+        }
+        let unit = cle.target_name().unwrap_or("").to_string();
+        let Some(ward_type) = (match unit.as_str() {
+            "npc_dota_observer_wards" => Some("observer"),
+            "npc_dota_sentry_wards" => Some("sentry"),
+            _ => None,
+        }) else {
+            return Ok(());
+        };
+        let actor = cle.attacker_name().ok().map(str::to_string);
+        let self_expired = actor.as_deref() == Some(unit.as_str());
+        self.destroyed.push(WardDestroyed {
+            t: cle.timestamp().unwrap_or_default() as f64,
+            ward_type,
+            unit,
+            actor,
+            self_expired,
+        });
+        Ok(())
+    }
+}
+
+/// Assemble `game_events` rows for ward events.
+fn build_ward_event_rows(
+    placed: &[WardPlaced],
+    destroyed: &[WardDestroyed],
+) -> Vec<EventRow> {
+    let mut rows = Vec::new();
+    // (event_type, actor-group, second) -> next event_seq
+    let mut seq: HashMap<(&'static str, String, i64), i64> = HashMap::new();
+    for p in placed {
+        let sec = p.t.floor() as i64;
+        let key = ("ward_placed", String::new(), sec);
+        let n = seq.entry(key).or_insert(0);
+        let event_seq = *n;
+        *n += 1;
+        rows.push(EventRow {
+            game_time_sec: sec,
+            event_type: "ward_placed",
+            actor_id: None, // placer not resolvable from the ward entity yet
+            target_id: Some(p.class.clone()),
+            x: Some(p.x),
+            y: Some(p.y),
+            properties: serde_json::json!({
+                "ward_type": p.ward_type,
+                "team": p.team_code,
+            }),
+            event_seq,
+        });
+    }
+    for d in destroyed {
+        let sec = d.t.floor() as i64;
+        let key = ("ward_destroyed", d.actor.clone().unwrap_or_default(), sec);
+        let n = seq.entry(key).or_insert(0);
+        let event_seq = *n;
+        *n += 1;
+        rows.push(EventRow {
+            game_time_sec: sec,
+            event_type: "ward_destroyed",
+            actor_id: d.actor.clone(),
+            target_id: Some(d.unit.clone()),
+            x: None,
+            y: None,
+            properties: serde_json::json!({
+                "ward_type": d.ward_type,
+                "reason": if d.self_expired { "expired" } else { "dewarded" },
+            }),
+            event_seq,
+        });
+    }
+    rows
+}
+
+// ---------------------------------------------------------------------------
 // results
 // ---------------------------------------------------------------------------
 
@@ -376,6 +539,7 @@ pub fn parse_replay(
     // --- extractors ---
     let position = parser.register_observer::<PositionExtractor>();
     let purchase = parser.register_observer::<PurchaseExtractor>();
+    let ward = parser.register_observer::<WardExtractor>();
 
     // Inject the resample interval. The observer framework constructs the
     // extractor via Default; setting the field afterwards keeps this cheap.
@@ -384,11 +548,13 @@ pub fn parse_replay(
     parser.run_to_end()?;
     let position = position.borrow();
     let purchase = purchase.borrow();
+    let ward = ward.borrow();
 
     // --- assemble ---
     let identity_rows = build_identity_rows(&players);
     let snapshot_rows = build_snapshot_rows(&players, &position.samples);
-    let event_rows = build_event_rows(&purchase.purchases);
+    let mut event_rows = build_event_rows(&purchase.purchases);
+    event_rows.extend(build_ward_event_rows(&ward.placed, &ward.destroyed));
 
     // entity-level counts (by resolved entity_id) for the console log
     let mut entity_log: Vec<(String, usize, i64, i64)> = Vec::new();
