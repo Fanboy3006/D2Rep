@@ -9,7 +9,8 @@
 - **第6步 视野（守卫）提取器：已完成** —— `game_events` 新增 `ward_placed` / `ward_destroyed` 两种事件（复用通用表，无 schema 改动），两场重解析 + 独立校验 + 第4层守卫分布查询全部通过；详见 §8 第6步记录与 §6.6「守卫事件提取」
 - 第1/2步（OpenDota API 数据管道、批量下载正式流程）：**未开始**（探测期手工脚本见 §3.1/§4.2）
 - **第7步 调度/元数据层：已完成（2026-09-03，C 盘机实跑验证）** —— 独立 catalog（`matches.db`，`scheduler/catalog.py`）+ 非公开录像录入（`scheduler/intake_private.py`，`dems/private/`，头部自动读元信息、幂等、`--no-parse`/`--note`/`--move`）+ `dota_parse --info` 只读头部模式 + analysis 支持 `--catalog` 枚举场次；catalog 的 `source` 支持 private/public（public 仅预留条目接口与 metadata 占位，实际拉取留给第1/2步）。详见 §8 第7步记录
-- **下一步是第1/2步**：打通 OpenDota API 数据管道与批量下载正式流程——落地到第7步已预留的 `source='public'` 条目接口（§8 列表中的步骤号即进度坐标）
+- **第1步 OpenDota API 数据管道：已完成（2026-09-03，C 盘机实跑）** —— 新增 `opendota/` 与独立 **`stats.db`**（leagues/teams/matches/gold_adv 四表，`metadata_json` 升级预留，与 catalog 各司其职）；`fetch_league.py` 限流幂等管道（队名补全/逐场 `radiant_gold_adv`/空则 `POST /request` 触发解析）；胜负按 **match** 粒度存 `radiant_win`（series 聚合留查询层）。首次实跑联赛 19719：**147 场 matches、147/147 含经济差、6953 行 gold_adv、16 队伍**；视角转换（§3.1 team_adv：dire 视图 = -radiant）与 stats↔catalog 按 match_id 松耦合关联均已实跑验证。详见 §8 第1步记录
+- **下一步是第2步**：批量 .dem 下载正式流程（§4.2 有可用原型 + `fetch_replay_dem.py` 已转正）——下载后到 catalog 登记 `source='public'` 行并本地解析（§8 列表中的步骤号即进度坐标）
 - **环境同步完成（2026-09-02，本机 C 盘，项目在 `C:\D2Rep_project\dota_replay_analyzer`）**：git clone 后环境重建完成、端到端验证通过，状态与原电脑（§8 第4步已完成）对齐。要点：`setup.ps1` 报告离线工具链/vendor/快照缺失属预期（大件不入 git）；根与 `dota_parse/` 的 `.cargo/config.toml` 已切换为**联网 cargo 模式**（原 vendor 重定向整段以注释保留，受限网络机器可恢复）；`cargo build --release` 联网编译成功（本机 dsh 沙箱内 schannel TLS 不可用，构建经新增的 `tools/cargo_net_proxy.py` 本地镜像中转 crates.io——仍是标准 cargo 联网语义，无 vendor、无 `--offline`）；`sqlite3.dll` 已重新获取至 `dota_parse/sqlite3.dll`；用新下载的公开录像 **8979484553**（valve.net）实跑解析产出 **10 玩家 / entity_snapshots 28399 / game_events 503（均 purchase）/ player_identity 10**，程序内自检 + python 独立复核（JSON 合法、身份-实体-购买者交叉一致、坐标界内）全部通过。本机实测新事实已写入 §4.2 两条注记：**CDN 录像压缩容器已从 bz2 改为 zstd**；**部分 CDN 录像非 0 秒起录（泉水坐标校验不适用）**
 - 新电脑/同步后的启动顺序见 §6.6「新电脑 / 跨电脑同步后的启动顺序（必读）」
 - 项目托管于 GitHub 私有仓库 https://github.com/Fanboy3006/D2Rep.git；新电脑 **git clone** 之后哪些大文件缺失属于正常、如何重建，见 §6.6「git clone 场景（GitHub 单文件 100MB 限制）」
@@ -395,7 +396,12 @@ source2-demo = { version = "0.5", default-features = false, features = ["dota"] 
 
 ## 8. 建议开发顺序（MVP 路径）
 
-1. 打通 OpenDota API 数据管道：联赛 → 比赛列表 → 队名补全 → 经济差提取 → 存入数据库（公开赛事标准指标，最快能看到成果的部分）
+1. ~~打通 OpenDota API 数据管道~~ **已完成（2026-09-03，C 盘机实跑）**——公开赛事标准指标管道落地为 `opendota/`：
+   - **存储**：独立 `stats.db`（根目录，gitignore）——与 catalog（`scheduler/matches.db`）职责分离：catalog 管本地 .dem 调度/索引，stats.db 管公开 API 标准指标；两者**按 match_id 松耦合关联**（应用层 join 或 ATTACH，不做外键强耦合；`opendota/stats_db.py join-catalog` 演示）。表：`leagues`（联赛字典）、`teams`（队名补全）、`matches`（match_id/联赛/双方 team_id/start_time/duration/radiant_win/series_id/series_type/game_mode/fetched_at/parse_requested_at，**按 match 粒度**，series 聚合留给查询层）、`gold_adv`（(match_id, minute, value)，value 存 **radiant 视角**原始 `radiant_gold_adv`）；扩展字段一律进 `metadata_json`，加字段无需重建表
+   - **视角转换（§3.1 team_adv）**：dire 视角值 = -value；`stats_db.gold_adv_for(con, match_id, is_radiant)` 内置符号翻转，管线落库时只存 radiant 原始值
+   - **拉取**：`opendota/fetch_league.py --league <id>`（默认 19719）：联赛列表 → 逐场 `/matches/{id}` → 队名补全 `/teams/{id}`（去重缓存进 teams 表）→ 逐分钟写 `gold_adv`。限流默认 sleep 1.2s + 429/5xx 退避；**幂等**（已有经济差的场次自动跳过，`--refresh` 强制）；某场 `radiant_gold_adv` 为空 → 自动 `POST /request/{match_id}` 触发解析并标记 `parse_requested_at`，本轮重试一次、留待下次运行
+   - **实跑结果（联赛 19719）**：`matches` 147 行、**147/147 含经济差**（no_gold=0，无需触发解析）、`gold_adv` **6953** 行、`teams` 16 队
+   - **验证**：视角核对 3 场样本（8960991322/8960882635/8960762254）——每场全部分钟 `dire == -radiant`，且末分钟经济差方向与 `radiant_win` 实际胜负一致（如 8960991322 TEAM VISION vs Team Spirit，dire 胜 → 末分钟 dire 领先 17557）；关联演示：catalog 登记真实公开场次 `source='public' match_id=8960991322`（pending，暂无本地 .dem），经 join 从 stats.db 取回该场 65 分钟双向经济差——证明"match_id 松耦合关联"可用（该 catalog 公开行保留，作为第 2 步下载的登记入口）
 2. 跑通批量 .dem 下载脚本（已有可用版本，见第4.2节）
 3. ~~选型验证~~ **已完成**：`source2-demo` + Rust 方案已验证可行（见6.6节），核心字段（坐标、steam_id、购买记录）均已跑通
 4. ~~基于已验证的 `dota_parse` 最小脚本，扩展为正式的解析器~~ **已完成（SQLite 先行，Postgres 迁移后续做）**：
