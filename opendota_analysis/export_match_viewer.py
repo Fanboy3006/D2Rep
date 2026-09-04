@@ -384,15 +384,30 @@ function draw() {
       ctx.fillStyle = col; ctx.fill();
       ctx.strokeStyle = '#0b0d12'; ctx.lineWidth = 2; ctx.stroke();
     }
-    // hp bar under the marker
+    // live HP + mana bars under the marker, plus numbers when zoomed in
     const hf = st[4] ? Math.max(0, Math.min(1, st[3] / st[4])) : 0;
-    const bw = iw * 1.05;
-    ctx.fillStyle = 'rgba(0,0,0,.6)';
-    ctx.fillRect(x - bw / 2, y + ih / 2 + 3, bw, 4);
-    ctx.fillStyle = hf > .3 ? '#2ecc71' : '#e74c3c';
-    ctx.fillRect(x - bw / 2, y + ih / 2 + 3, bw * hf, 4);
-    // side row
     const mf = st[6] ? Math.max(0, Math.min(1, st[5] / st[6])) : 0;
+    const bw = iw * 1.05, bh = 3.5;
+    const by = y + ih / 2 + 3;
+    ctx.fillStyle = 'rgba(0,0,0,.62)';
+    ctx.fillRect(x - bw / 2 - 1, by - 1, bw + 2, bh * 2 + 3);
+    ctx.fillStyle = hf > .3 ? '#2ecc71' : '#e74c3c';
+    ctx.fillRect(x - bw / 2, by, Math.max(0.5, bw * hf), bh);
+    ctx.fillStyle = '#3498db';
+    ctx.fillRect(x - bw / 2, by + bh + 1, Math.max(0.5, bw * mf), bh);
+    if (iw >= 44) {
+      const fs = Math.max(10, Math.round(iw * 0.16));
+      ctx.font = '600 ' + fs + 'px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'alphabetic';
+      const ty = y - ih / 2 - 7;
+      const label = Math.round(st[3]) + '/' + st[4] + '  ♥' + Math.round(st[5]);
+      ctx.fillStyle = 'rgba(0,0,0,.6)';
+      ctx.fillRect(x - iw * 0.62, ty - fs + 2, iw * 1.24, fs + 4);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(label, x, ty + 1);
+    }
+    // side row
     const row = document.createElement('div');
     row.className = 'hrow' + (focusNpc === h.npc ? ' sel' : '');
     row.innerHTML =
