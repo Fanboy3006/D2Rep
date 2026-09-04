@@ -162,11 +162,28 @@ struct HeroSample {
 /// verified replay), so samples are stored in a per-second map: the latest
 /// occurrence of a second wins, matching the snapshot-table primary key
 /// `(match_id, entity_id, game_time_sec)` = one state per entity per second.
-#[derive(Default)]
+///
+/// Sampling gate: sample once per whole second (the first tick whose
+/// `tick / TICK_RATE` second differs from the previous call), instead of a
+/// `tick % TICK_RATE == 0` modulo. Dota replay files interleave phases that
+/// only deliver even- or odd-numbered ticks (measured on league replays), so a
+/// modulo-30 gate silently starves whole stretches of a game — hundreds of
+/// matches lost all early/mid-game positions before this fix. The
+/// second-changed gate fires exactly once per second regardless of parity.
 struct PositionExtractor {
     /// hero entity class name -> (whole second -> latest sample that second)
     samples: HashMap<String, BTreeMap<i64, HeroSample>>,
-    interval_ticks: u32,
+    /// whole second sampled on the previous `on_tick_start`, for the gate.
+    last_sec: i64,
+}
+
+impl Default for PositionExtractor {
+    fn default() -> Self {
+        PositionExtractor {
+            samples: HashMap::new(),
+            last_sec: i64::MIN,
+        }
+    }
 }
 
 #[observer]
@@ -175,10 +192,11 @@ impl PositionExtractor {
     #[on_tick_start]
     fn on_tick_start(&mut self, ctx: &Context) -> ObserverResult {
         let tick = ctx.tick();
-        if tick % self.interval_ticks != 0 {
-            return Ok(());
-        }
         let t = i64::from(tick / TICK_RATE); // whole seconds since match start
+        if t == self.last_sec {
+            return Ok(()); // already sampled this whole second
+        }
+        self.last_sec = t;
         for entity in ctx.entities().iter() {
             if !entity.class().name().starts_with("CDOTA_Unit_Hero_") {
                 continue;
@@ -599,9 +617,10 @@ pub fn parse_replay(
     let purchase = parser.register_observer::<PurchaseExtractor>();
     let ward = parser.register_observer::<WardExtractor>();
 
-    // Inject the resample interval. The observer framework constructs the
-    // extractor via Default; setting the field afterwards keeps this cheap.
-    position.borrow_mut().interval_ticks = interval_ticks;
+    // Sampling is gated on whole-second change inside the extractor, so no
+    // interval injection is needed. (`interval_sec` is kept in the signature
+    // for CLI compatibility; values >1 are effectively "at most 1 Hz".)
+    let _ = interval_ticks;
 
     parser.run_to_end()?;
     let position = position.borrow();

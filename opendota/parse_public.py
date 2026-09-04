@@ -68,8 +68,11 @@ def main():
             except OSError:
                 pass
         # cwd not needed: parser resolves sqlite3.dll from exe dir
+        # (encoding: the parser prints raw UTF-8 player names; decode with
+        # replacement so GBK-locale hosts do not crash the reader threads)
         p = subprocess.run([args.exe, dem, db, "1"],
-                           capture_output=True, text=True, timeout=600)
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=600)
         if p.returncode == 0:
             return (league, mid, "ok", "")
         tail = (p.stdout or "").splitlines()[-1:] + (p.stderr or "").splitlines()[-1:]
