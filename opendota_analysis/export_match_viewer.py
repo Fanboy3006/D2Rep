@@ -145,7 +145,27 @@ def export(target, out=None, map_path=None, step=1, no_icons=False, quiet=False)
                     int(round(e.get("mana_max") or 0))])
     max_event_sec = con.execute(
         "SELECT MAX(game_time_sec) FROM game_events").fetchone()[0]
+
+    # building events -> tower survival list for the map layer
+    towers = {}
+    for etype, sec, tid, x, y, props in con.execute(
+            """SELECT event_type, game_time_sec, target_id, x, y, properties
+               FROM game_events
+               WHERE event_type IN ('building_spawn','building_destroyed')
+               AND json_extract(properties,'$.kind')='tower'"""):
+        p = json.loads(props)
+        team = p.get("team")
+        if team not in (2, 3) or x is None:
+            continue
+        if etype == "building_spawn":
+            towers.setdefault(tid, {"id": tid, "x": int(round(x)),
+                                    "y": int(round(y)), "team": team, "d": None})
+        else:
+            t = towers.get(tid)
+            if t is not None:
+                t["d"] = int(sec)
     con.close()
+    towers = [t for t in towers.values()]
 
     # ---- fold the "dead tail": after the last real action the replay often
     # keeps ticking with every hero standing still at full HP (game over /
@@ -181,8 +201,11 @@ def export(target, out=None, map_path=None, step=1, no_icons=False, quiet=False)
                 if b:
                     icons[p["hero"]] = b
 
+    import map_annotations as mann
+    camps = [[c[0], c[1], c[2]] for c in mann.NEUTRAL_CAMPS]
     payload = {"match_id": int(match_id), "players": players, "series": series,
-               "meta": {"raw_end": raw_end, "active_end": active_end}}
+               "meta": {"raw_end": raw_end, "active_end": active_end},
+               "towers": towers, "camps": camps, "roshan": list(mann.ROSHAN)}
     data_json = json.dumps(payload, separators=(",", ":"))
 
     with open(map_path, "rb") as f:
@@ -249,8 +272,11 @@ TEMPLATE = r"""<!doctype html>
  #zoombtns button{width:34px;height:34px;border-radius:8px;border:1px solid #2c3240;
    background:#1b1f28;color:#dfe3ea;font-size:17px;cursor:pointer;line-height:1}
  #zoombtns button:hover{background:#262c38}
- #leg{position:absolute;top:10px;left:10px;font-size:11px;background:#0009;padding:5px 8px;
-      border-radius:8px;line-height:1.8;pointer-events:none}
+ #leg{position:absolute;top:10px;left:10px;font-size:11px;background:#0009;padding:5px 9px;
+      border-radius:8px;line-height:1.7;pointer-events:none;user-select:none}
+ #leg .tgl{display:flex;gap:10px;margin-top:2px}
+ #leg label{display:inline-flex;align-items:center;gap:3px;cursor:pointer}
+ #leg input{accent-color:#4da3ff;margin:0;pointer-events:auto}
  #side{width:300px;border-left:1px solid #262b36;display:flex;flex-direction:column;
        background:#14161c;flex:none}
  #side h3{margin:0;padding:9px 12px;font-size:13px;border-bottom:1px solid #22262f;flex:none}
@@ -294,9 +320,13 @@ TEMPLATE = r"""<!doctype html>
 <div id="main">
   <div id="mapwrap">
     <canvas id="cv"></canvas>
-    <div id="leg"><span style="color:#46d160">●</span> 天辉
-      &nbsp;<span style="color:#ff5f57">●</span> 夜魇
-      &nbsp;<span style="color:#9aa2b2">·</span> 拖动滑块播放</div>
+    <div id="leg">
+      <div><span style="color:#46d160">●</span> 天辉 &nbsp;<span style="color:#ff5f57">●</span> 夜魇</div>
+      <div class="tgl">
+        <label><input type="checkbox" id="tgCam" checked> ▲野点 ◆远古</label>
+        <label><input type="checkbox" id="tgTw" checked> ◉防御塔</label>
+      </div>
+    </div>
     <div id="hint">滚轮缩放 · 拖拽平移 · 点右侧英雄聚焦 · 空格 播放/暂停</div>
     <div id="zoombtns">
       <button id="zin" title="放大">+</button>
@@ -423,6 +453,10 @@ let focusNpc = null;
 const slider = document.getElementById('slider');
 const timeEl = document.getElementById('time');
 slider.min = tMin; slider.max = Math.max(tMax, tMin + 1); slider.value = tMin;
+const tgCam = document.getElementById('tgCam');
+const tgTw = document.getElementById('tgTw');
+tgCam.addEventListener('change', draw);
+tgTw.addEventListener('change', draw);
 
 function draw() {
   const t = +slider.value;
@@ -434,6 +468,61 @@ function draw() {
   ctx.imageSmoothingQuality = 'high';
   const mw = 2 * view.half;
   ctx.drawImage(mapImg, view.ox - mw / 2, view.oy - mw / 2, mw, mw);
+
+  // ---- neutral camps + Roshan pit ----
+  if (tgCam.checked) {
+    const cr = Math.max(3, mw / 260);
+    ctx.lineWidth = Math.max(1, mw / 1000);
+    for (const c of (DATA.camps || [])) {
+      const [x, y] = w2s(c[0], c[1]);
+      const nt = c[2];
+      ctx.fillStyle = nt === 3 ? '#e8b64c' : nt === 2 ? '#aab6c8'
+                   : nt === 1 ? '#8394ac' : '#66778f';
+      ctx.strokeStyle = 'rgba(8,10,14,.9)';
+      ctx.beginPath();
+      if (nt === 3) {                       // ancient tier: diamond
+        ctx.moveTo(x, y - cr * 1.6);
+        ctx.lineTo(x + cr * 1.5, y);
+        ctx.lineTo(x, y + cr * 1.6);
+        ctx.lineTo(x - cr * 1.5, y);
+      } else {                              // triangle (tier-coded)
+        ctx.moveTo(x, y - cr * 1.1);
+        ctx.lineTo(x + cr * .9, y + cr * .8);
+        ctx.lineTo(x - cr * .9, y + cr * .8);
+      }
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+    if (DATA.roshan) {
+      const [x, y] = w2s(DATA.roshan[0], DATA.roshan[1]);
+      ctx.strokeStyle = 'rgba(224,101,95,.8)';
+      ctx.lineWidth = Math.max(1.6, mw / 700);
+      ctx.beginPath(); ctx.arc(x, y, Math.max(5, mw / 105), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  // ---- tower survival ----
+  if (tgTw.checked) {
+    const tr = Math.max(4.5, mw / 150);
+    for (const tw of (DATA.towers || [])) {
+      const dead = tw.d != null && t >= tw.d;
+      const [x, y] = w2s(tw.x, tw.y);
+      ctx.beginPath(); ctx.arc(x, y, tr, 0, Math.PI * 2);
+      ctx.fillStyle = dead ? '#4c525e' : (TEAMC[tw.team] || '#ccc');
+      ctx.fill();
+      ctx.lineWidth = Math.max(1, tr * .3);
+      ctx.strokeStyle = '#0b0d12';
+      ctx.stroke();
+      if (dead) {
+        ctx.strokeStyle = '#22262e';
+        ctx.lineWidth = Math.max(1.5, tr * .32);
+        ctx.beginPath();
+        ctx.moveTo(x - tr * .5, y - tr * .5); ctx.lineTo(x + tr * .5, y + tr * .5);
+        ctx.moveTo(x + tr * .5, y - tr * .5); ctx.lineTo(x - tr * .5, y + tr * .5);
+        ctx.stroke();
+      }
+    }
+  }
 
   const iw = Math.max(28, mw / 36), ih = iw * 9 / 16;
   const listEl = document.getElementById('herolist');
