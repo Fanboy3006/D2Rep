@@ -150,6 +150,9 @@ struct HeroSample {
     y: f64,
     z: Option<f64>,
     hp: Option<i64>,
+    hp_max: Option<i64>,
+    mana: Option<f64>,
+    mana_max: Option<f64>,
     pid: u32,
 }
 
@@ -198,6 +201,9 @@ impl PositionExtractor {
                 continue;
             };
             let hp = try_property!(entity, i32, "m_iHealth").map(i64::from);
+            let hp_max = try_property!(entity, i32, "m_iMaxHealth").map(i64::from);
+            let mana = try_property!(entity, f32, "m_flMana").map(f64::from);
+            let mana_max = try_property!(entity, f32, "m_flMaxMana").map(f64::from);
             self.samples
                 .entry(class)
                 .or_default()
@@ -207,6 +213,9 @@ impl PositionExtractor {
                     y,
                     z,
                     hp,
+                    hp_max,
+                    mana,
+                    mana_max,
                     pid,
                 });
         }
@@ -285,6 +294,7 @@ struct WardDestroyed {
     unit: String,
     actor: Option<String>,
     self_expired: bool,
+    team_code: Option<i32>,
 }
 
 fn ward_class_type(class: &str) -> Option<&'static str> {
@@ -344,12 +354,15 @@ impl WardExtractor {
         };
         let actor = cle.attacker_name().ok().map(str::to_string);
         let self_expired = actor.as_deref() == Some(unit.as_str());
+        // target_team = the ward's own team (DOTA_TEAM code 2/3 when present)
+        let team_code = cle.target_team().ok().map(|v| v as i32);
         self.destroyed.push(WardDestroyed {
             t: cle.timestamp().unwrap_or_default() as f64,
             ward_type,
             unit,
             actor,
             self_expired,
+            team_code,
         });
         Ok(())
     }
@@ -399,6 +412,7 @@ fn build_ward_event_rows(
             properties: serde_json::json!({
                 "ward_type": d.ward_type,
                 "reason": if d.self_expired { "expired" } else { "dewarded" },
+                "team": d.team_code,
             }),
             event_seq,
         });
@@ -493,6 +507,28 @@ fn build_snapshot_rows(
         *seen += 1;
 
         for s in samples.values() {
+            let mut extra = model::snapshot_extra(
+                &class,
+                s.z,
+                if s.pid == INVALID_PLAYER_ID {
+                    None
+                } else {
+                    Some(s.pid)
+                },
+                player_slot,
+                team_code,
+            );
+            // resource bars for the replay viewer (module B): only present when
+            // the replay exposes the fields
+            if let Some(v) = s.hp_max {
+                extra["hp_max"] = serde_json::Value::from(v);
+            }
+            if let Some(v) = s.mana {
+                extra["mana"] = serde_json::Value::from(v);
+            }
+            if let Some(v) = s.mana_max {
+                extra["mana_max"] = serde_json::Value::from(v);
+            }
             rows.push(SnapshotRow {
                 game_time_sec: s.t,
                 entity_type: "hero",
@@ -501,17 +537,7 @@ fn build_snapshot_rows(
                 x: s.x,
                 y: s.y,
                 hp: s.hp,
-                extra: model::snapshot_extra(
-                    &class,
-                    s.z,
-                    if s.pid == INVALID_PLAYER_ID {
-                        None
-                    } else {
-                        Some(s.pid)
-                    },
-                    player_slot,
-                    team_code,
-                ),
+                extra,
             });
         }
     }

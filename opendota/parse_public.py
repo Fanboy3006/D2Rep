@@ -27,6 +27,8 @@ def main():
     ap.add_argument("--exe", default=os.path.join(ROOT, "dota_parse", "target",
                                                   "release", "dota_parse.exe"))
     ap.add_argument("--workers", type=int, default=3)
+    ap.add_argument("--force", action="store_true",
+                    help="re-parse matches whose db already exists (parser upgrade)")
     ap.add_argument("--log", default=None)
     args = ap.parse_args()
 
@@ -57,9 +59,14 @@ def main():
 
     def work(job):
         league, mid, dem, db = job
-        if os.path.exists(db):
+        if os.path.exists(db) and not args.force:
             return (league, mid, "skip", "")
         os.makedirs(os.path.dirname(db), exist_ok=True)
+        if os.path.exists(db):  # --force: clear stale db before re-parse
+            try:
+                os.remove(db)
+            except OSError:
+                pass
         # cwd not needed: parser resolves sqlite3.dll from exe dir
         p = subprocess.run([args.exe, dem, db, "1"],
                            capture_output=True, text=True, timeout=600)
