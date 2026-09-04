@@ -331,9 +331,12 @@ def main():
                 return
         log("league %d finished: done=%d unavailable=%d failed=%d skipped=%d"
             % (league, n_done, n_unavail, n_fail, n_skip))
-    if logf:
+    # final summary (write after closing the log file to avoid double-close)
+    if logf and not logf.closed:
+        logf.write("ALL LEAGUES FINISHED, completed downloads=%d\n" % done_total)
+        logf.flush()
         logf.close()
-    log("ALL LEAGUES FINISHED, completed downloads=%d" % done_total)
+    print("ALL LEAGUES FINISHED, completed downloads=%d" % done_total)
 
 
 if __name__ == "__main__":
