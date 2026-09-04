@@ -33,6 +33,9 @@ downloads/
 # 第4层分析产物（可随时重算，不入库）
 analysis/output*/
 
+# 生成的 HTML/图片产物（模块 B viewer 等）
+dist/
+
 # Python 编译缓存
 __pycache__/
 *.pyc

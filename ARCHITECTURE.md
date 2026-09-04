@@ -455,3 +455,12 @@ source2-demo = { version = "0.5", default-features = false, features = ["dota"] 
 **采用 dsh 作为本项目的主力开发工具**，基于上述对比中"主动验证意识"这一差异——这类工具会被大量用于批量处理、无人值守跑批的场景（比如批量解析上百场录像），"结果自己有没有把关"这个特质的重要性高于两者相近的原始技术执行力。
 
 **使用CLINE的注意事项（如后续场景需要用到）**：由于其验证行为依赖用户主动触发，日常任务的prompt里应明确加入"完成后请对输出结果做合理性校验"一类的要求，不能默认它会自发做这一步。
+## 10. 可视化工具模块（2026-09-04 新增）
+
+**共享地图底图（两个模块共用）** — `opendota_analysis/map_background.py` + 资产 `assets/dota_map_1024.png`（官方 overview 同款、社区已解码 7.33+ 布局，1024×1024，可跨机复用；来源镜像 redota，本机 Dota2 VPK 的官方纹理为 RED2/VTF 容器、纯 python 解码成本高，故采用公开同款图）。坐标映射口径：世界原点=图中心，跨图世界跨度 `WORLD_SPAN=19134`（与 replay 工具项目 7.33+ 一致），`map_to_px(x,y,size)`：`px=(x+S/2)/S*size`、`py=(S/2-y)/S*size`（北=图上=+y）。**数值校验**（用真实重放数据）：泉水/角落簇像素 radiant≈(144–172,846–853) ↔ dire≈(879,160–180) 基本对称；全场像素落在 [52..960] 与地图留边吻合。肉眼复核图：`.tmp/overlay_full.png`（21.6 万点叠加）、`.tmp/ward_survival_heat.png`。
+
+**模块 A：假眼存活/被反热力图** — `opendota_analysis/ward_survival_heatmap.py`。数据依赖解析器富化（见下）：ward_destroyed 带 `properties.team`（combat-log target_team）。按 (match, team) FIFO 配对 placed/destroyed observer 得存活时长，筛 ≥300s，按坐标 400 单位分 bin，在底图上以红色深浅表示"被反占比"输出 PNG+文字摘要。**首轮全量结果（970 场）**：≥5min 存活样本 19776（被反 2809=14.2%、自然过期 16967=85.8%）；过期寿命中位 368s（p95≈404s）→ **假眼上限约 6 分钟，≥300s 判定成立**；高被反点位集中在暴露的线侧/野区入口（如天辉下路外侧野区、夜魇上路外侧野区等，区域名为粗略方位描述）。跑法：`python opendota_analysis/ward_survival_heatmap.py`。
+
+**模块 B：单场 HTML 复盘（云玩家友好）** — `opendota_analysis/export_match_viewer.py <match_id|db>` → `dist/viewer_<id>.html`（单文件自包含：底图 base64 + 10 英雄逐秒 x/y/hp/hp_max/mana/mana_max JSON，时间滑块+线性插值，Canvas 绘制血蓝条）。**原型已生成**：TI2026 场次 8942993144 → `dist/viewer_8942993144.html`（1.82MB，双击浏览器打开即可）。批量导出/降采样压缩留待原型观感确认后。
+
+**配套解析层富化（2026-09-04）**：快照 extra 增加 `hp_max`/`mana`/`mana_max`（100% 可取，供血蓝条）；ward_destroyed 事件 properties 增加 `team`（供模块 A 配对）。已用 `opendota/parse_public.py --force` 全量重解析 970 场并复验（full 925 / event_only 45 / bad 0 保持不变）。
