@@ -143,7 +143,34 @@ def export(target, out=None, map_path=None, step=1, no_icons=False, quiet=False)
         arr.append([t, int(round(x)), int(round(y)), hp if hp is not None else 0,
                     e.get("hp_max") or 0, int(round(e.get("mana") or 0)),
                     int(round(e.get("mana_max") or 0))])
+    max_event_sec = con.execute(
+        "SELECT MAX(game_time_sec) FROM game_events").fetchone()[0]
     con.close()
+
+    # ---- fold the "dead tail": after the last real action the replay often
+    # keeps ticking with every hero standing still at full HP (game over /
+    # pause). Keep only up to the last meaningful second so the timeline does
+    # not end with a long frozen stretch; the JS shows a note when folded.
+    raw_end = max((arr[-1][0] for arr in series.values() if arr), default=0)
+    move_end = 0
+    for arr in series.values():
+        for i in range(1, len(arr)):
+            dt = arr[i][0] - arr[i - 1][0]
+            if dt <= 0:
+                continue
+            dx = arr[i][1] - arr[i - 1][1]
+            dy = arr[i][2] - arr[i - 1][2]
+            if (dx * dx + dy * dy) ** 0.5 / dt >= 100:  # > ~1/3 walk speed
+                move_end = arr[i][0]
+    active_end = raw_end
+    last_action = max(move_end, int(max_event_sec) if max_event_sec else 0)
+    # only fold when a long, genuinely dead stretch follows the last action
+    if raw_end - last_action > 120:
+        active_end = min(raw_end, last_action + 90)
+    if active_end < raw_end:
+        for eid in list(series.keys()):
+            series[eid] = [r for r in series[eid] if r[0] <= active_end]
+        series = {eid: a for eid, a in series.items() if a}
 
     # official hero portraits (base64) unless disabled
     icons = {}
@@ -154,7 +181,8 @@ def export(target, out=None, map_path=None, step=1, no_icons=False, quiet=False)
                 if b:
                     icons[p["hero"]] = b
 
-    payload = {"match_id": int(match_id), "players": players, "series": series}
+    payload = {"match_id": int(match_id), "players": players, "series": series,
+               "meta": {"raw_end": raw_end, "active_end": active_end}}
     data_json = json.dumps(payload, separators=(",", ":"))
 
     with open(map_path, "rb") as f:
@@ -197,29 +225,36 @@ TEMPLATE = r"""<!doctype html>
 <html lang="zh">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Dota2 Replay Viewer - __match__</title>
 <style>
  body{margin:0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
-      background:#101216;color:#dfe3ea;height:100vh;display:flex;flex-direction:column;overflow:hidden}
- #top{display:flex;align-items:center;gap:14px;padding:8px 14px;background:#171a21;
+      background:#101216;color:#dfe3ea;height:100vh;height:100dvh;display:flex;
+      flex-direction:column;overflow:hidden;overscroll-behavior:none}
+ #top{display:flex;align-items:center;gap:10px;padding:8px 12px;background:#171a21;
       border-bottom:1px solid #262b36;flex:none}
- #top h1{font-size:15px;margin:0;font-weight:600;white-space:nowrap}
+ #top h1{font-size:15px;margin:0;font-weight:600;white-space:nowrap;overflow:hidden;
+         text-overflow:ellipsis}
  #note{font-size:12px;color:#e6b450;background:#2a2414;border:1px solid #5a4a1a;
-       padding:3px 9px;border-radius:10px;white-space:nowrap;max-width:60vw;overflow:hidden;
-       text-overflow:ellipsis}
+       padding:3px 9px;border-radius:10px;white-space:nowrap;max-width:56vw;overflow:hidden;
+       text-overflow:ellipsis;flex:none}
  #note.ok{color:#7fb97f;background:#142a14;border-color:#1f5a1f}
  #main{flex:1;display:flex;min-height:0}
- #mapwrap{flex:1;position:relative;overflow:hidden;background:#0a0c10;touch-action:none}
+ #mapwrap{flex:1;position:relative;overflow:hidden;background:#0a0c10;touch-action:none;
+          min-width:0;min-height:0}
  canvas{display:block}
- #hint{position:absolute;bottom:10px;left:14px;font-size:12px;color:#7a8194;
-       background:#000a;padding:4px 10px;border-radius:8px;pointer-events:none}
+ #hint{position:absolute;bottom:10px;left:12px;font-size:11px;color:#7a8194;
+       background:#000a;padding:3px 8px;border-radius:8px;pointer-events:none;max-width:70%}
  #zoombtns{position:absolute;top:10px;right:10px;display:flex;flex-direction:column;gap:6px}
- #zoombtns button{width:30px;height:30px;border-radius:8px;border:1px solid #2c3240;
-   background:#1b1f28;color:#dfe3ea;font-size:15px;cursor:pointer}
+ #zoombtns button{width:34px;height:34px;border-radius:8px;border:1px solid #2c3240;
+   background:#1b1f28;color:#dfe3ea;font-size:17px;cursor:pointer;line-height:1}
  #zoombtns button:hover{background:#262c38}
- #side{width:300px;border-left:1px solid #262b36;display:flex;flex-direction:column;background:#14161c}
- #side h3{margin:0;padding:10px 12px;font-size:13px;border-bottom:1px solid #22262f}
- #herolist{flex:1;overflow:auto;padding:4px 0}
+ #leg{position:absolute;top:10px;left:10px;font-size:11px;background:#0009;padding:5px 8px;
+      border-radius:8px;line-height:1.8;pointer-events:none}
+ #side{width:300px;border-left:1px solid #262b36;display:flex;flex-direction:column;
+       background:#14161c;flex:none}
+ #side h3{margin:0;padding:9px 12px;font-size:13px;border-bottom:1px solid #22262f;flex:none}
+ #herolist{flex:1;overflow:auto;padding:4px 0;-webkit-overflow-scrolling:touch}
  .hrow{display:flex;align-items:center;gap:8px;padding:5px 10px;cursor:pointer;font-size:13px}
  .hrow:hover{background:#1d212b}
  .hrow.sel{background:#22304a}
@@ -232,15 +267,23 @@ TEMPLATE = r"""<!doctype html>
  .icowrap{width:26px;height:26px;border-radius:50%;flex:none;display:flex;align-items:center;
           justify-content:center;background:#0b0d12;overflow:hidden}
  .icowrap img{width:24px;height:13.5px}
- #controls{display:flex;align-items:center;gap:12px;padding:7px 14px;flex:none;
+ #controls{display:flex;align-items:center;gap:10px;padding:6px 12px;flex:none;
            background:#171a21;border-top:1px solid #262b36}
- #time{font-variant-numeric:tabular-nums;min-width:104px;font-size:13px;text-align:center}
- input[type=range]{flex:1;accent-color:#4da3ff}
- #play{width:34px;height:26px;border-radius:6px;border:1px solid #2c3240;background:#1b1f28;
-       color:#dfe3ea;font-size:13px;cursor:pointer}
+ #time{font-variant-numeric:tabular-nums;min-width:96px;font-size:13px;text-align:center}
+ input[type=range]{flex:1;accent-color:#4da3ff;min-width:0}
+ #play{width:36px;height:30px;border-radius:6px;border:1px solid #2c3240;background:#1b1f28;
+       color:#dfe3ea;font-size:14px;cursor:pointer}
  #play:hover{background:#262c38}
- #leg{position:absolute;top:10px;left:10px;font-size:12px;background:#0009;padding:6px 10px;
-      border-radius:8px;line-height:1.9}
+ @media (max-width: 860px) {
+   #main{flex-direction:column}
+   #side{width:100%;height:132px;border-left:none;border-top:1px solid #262b36}
+   #side h3{display:none}
+   #herolist{display:flex;flex-direction:column;flex-wrap:wrap;overflow:auto}
+   .hrow{flex:0 0 auto;width:264px}
+   #top{padding:6px 10px;gap:8px}
+   #note{max-width:44vw}
+   #hint{display:none}
+ }
 </style>
 </head>
 <body>
@@ -300,12 +343,21 @@ function fmt(sec) {
   return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
 }
 const noteEl = document.getElementById('note');
-if (tMin > 5) {
-  noteEl.textContent = '位置数据自原始时间轴 ' + fmt(tMin) + ' 起（延迟/续录录像），时钟按数据起点归零';
+const META = DATA.meta || {};
+const rawEnd = META.raw_end || tMax;
+const activeEnd = META.active_end || tMax;
+let msg = '';
+if (rawEnd - activeEnd > 60) {
+  msg = '对局活动止于 ' + fmt(activeEnd - tMin) + '，末尾 ' + fmt(rawEnd - activeEnd) +
+        ' 为无走位静止段（对局结束/暂停），已自动折叠';
+} else if (tMin > 5) {
+  msg = '位置数据自原始时间轴 ' + fmt(tMin) + ' 起（延迟/续录录像），时钟按数据起点归零';
 } else {
-  noteEl.textContent = '完整轨迹 ' + heroes.length + ' 名英雄 · 拖动滑块回放';
+  msg = '完整轨迹 ' + heroes.length + ' 名英雄 · 拖动滑块回放';
   noteEl.classList.add('ok');
 }
+noteEl.textContent = msg;
+noteEl.title = msg;
 
 // ---- canvas + view ----
 const cv = document.getElementById('cv');
@@ -467,15 +519,55 @@ cv.addEventListener('wheel', e => {
   const r = cv.getBoundingClientRect();
   zoomAt(e.deltaY < 0 ? 1.25 : 0.8, e.clientX - r.left, e.clientY - r.top);
 }, {passive: false});
-let drag = null;
-cv.addEventListener('mousedown', e => { drag = {x: e.clientX, y: e.clientY}; });
-window.addEventListener('mousemove', e => {
-  if (!drag) return;
-  view.ox += e.clientX - drag.x; view.oy += e.clientY - drag.y;
-  drag = {x: e.clientX, y: e.clientY};
-  draw();
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  const r = cv.getBoundingClientRect();
+  zoomAt(e.deltaY < 0 ? 1.25 : 0.8, e.clientX - r.left, e.clientY - r.top);
+}, {passive: false});
+
+// pointer-based pan (mouse + touch) with two-finger pinch zoom
+const pts = new Map();
+let pinch0 = null; // {cx, cy, dist, half} in canvas-local px at pinch start
+cv.addEventListener('pointerdown', e => {
+  cv.setPointerCapture(e.pointerId);
+  pts.set(e.pointerId, {x: e.clientX, y: e.clientY});
+  if (pts.size === 2) {
+    const a = [...pts.values()];
+    const r = cv.getBoundingClientRect();
+    pinch0 = {
+      cx: (a[0].x + a[1].x) / 2 - r.left,
+      cy: (a[0].y + a[1].y) / 2 - r.top,
+      dist: Math.max(1, Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y)),
+      half: view.half,
+    };
+  }
 });
-window.addEventListener('mouseup', () => { drag = null; });
+cv.addEventListener('pointermove', e => {
+  if (!pts.has(e.pointerId)) return;
+  const prev = pts.get(e.pointerId);
+  pts.set(e.pointerId, {x: e.clientX, y: e.clientY});
+  if (pts.size === 2 && pinch0) {
+    const a = [...pts.values()];
+    const dist = Math.max(1, Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y));
+    const newHalf = Math.min(1500, Math.max(60, pinch0.half * dist / pinch0.dist));
+    const k = newHalf / view.half;
+    view.ox = pinch0.cx - (pinch0.cx - view.ox) * k;
+    view.oy = pinch0.cy - (pinch0.cy - view.oy) * k;
+    view.half = newHalf;
+    draw();
+  } else if (pts.size === 1) {
+    view.ox += e.clientX - prev.x;
+    view.oy += e.clientY - prev.y;
+    draw();
+  }
+});
+const endPtr = e => {
+  pts.delete(e.pointerId);
+  if (pts.size < 2) pinch0 = null;
+};
+cv.addEventListener('pointerup', endPtr);
+cv.addEventListener('pointercancel', endPtr);
+cv.addEventListener('lostpointercapture', endPtr);
 document.getElementById('zin').onclick = () => {
   const r = cv.getBoundingClientRect(); zoomAt(1.25, r.width / 2, r.height / 2); };
 document.getElementById('zout').onclick = () => {

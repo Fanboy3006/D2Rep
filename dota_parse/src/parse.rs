@@ -386,6 +386,199 @@ impl WardExtractor {
     }
 }
 
+// ---------------------------------------------------------------------------
+// building extractor (防御塔 / 兵营 / 瞭望塔 生存状态)
+// ---------------------------------------------------------------------------
+
+/// Kind of a tracked building, keyed by its entity class name.
+fn building_kind(class: &str) -> Option<&'static str> {
+    match class {
+        "CDOTA_BaseNPC_Tower" => Some("tower"),
+        "CDOTA_BaseNPC_Barracks" => Some("barracks"),
+        "CDOTA_BaseNPC_Watch_Tower" => Some("watch"),
+        _ => None,
+    }
+}
+
+/// One building instance: static position + alive/dead bookkeeping.
+struct BuildingState {
+    x: f64,
+    y: f64,
+    team: Option<i32>,
+    alive: bool,
+    last_seen_sec: i64,
+}
+
+struct BuildingEvent {
+    t: i64,
+    spawned: bool,
+    class: String,
+    idx: u32,
+    x: f64,
+    y: f64,
+    team: Option<i32>,
+    kind: &'static str,
+}
+
+/// Building extractor: emits `building_spawn` (first sighting, carries the
+/// static world position) and `building_destroyed` (health dropped to <=0, or
+/// the entity vanished from the list for 2+ consecutive seconds) into
+/// `game_events`. Sampled on the same whole-second gate as heroes, so it is
+/// immune to the tick-parity issue. Towers/barracks/watch towers are
+/// identified per instance by `entity.index()` because they share class names.
+struct BuildingExtractor {
+    buildings: HashMap<(String, u32), BuildingState>,
+    events: Vec<BuildingEvent>,
+    last_sec: i64,
+}
+
+impl Default for BuildingExtractor {
+    fn default() -> Self {
+        BuildingExtractor {
+            buildings: HashMap::new(),
+            events: Vec::new(),
+            last_sec: i64::MIN,
+        }
+    }
+}
+
+#[observer]
+#[uses_all]
+impl BuildingExtractor {
+    #[on_tick_start]
+    fn on_tick_start(&mut self, ctx: &Context) -> ObserverResult {
+        let tick = ctx.tick();
+        let t = i64::from(tick / TICK_RATE);
+        if t == self.last_sec {
+            return Ok(());
+        }
+        self.last_sec = t;
+        let mut present: Vec<(String, u32)> = Vec::new();
+        for entity in ctx.entities().iter() {
+            let class = entity.class().name();
+            let Some(kind) = building_kind(class) else {
+                continue;
+            };
+            let idx = entity.index();
+            let key = (class.to_string(), idx);
+            let x = cell_to_world(
+                try_property!(entity, u32, "CBodyComponent.m_skeletonInstance.m_vecOrigin.m_cellX"),
+                try_property!(entity, f32, "CBodyComponent.m_skeletonInstance.m_vecOrigin.m_vecX"),
+            );
+            let y = cell_to_world(
+                try_property!(entity, u32, "CBodyComponent.m_skeletonInstance.m_vecOrigin.m_cellY"),
+                try_property!(entity, f32, "CBodyComponent.m_skeletonInstance.m_vecOrigin.m_vecY"),
+            );
+            let (Some(x), Some(y)) = (x, y) else {
+                continue;
+            };
+            let hp = try_property!(entity, i32, "m_iHealth").map(i64::from);
+            let team = try_property!(entity, i32, "m_iTeamNum");
+            present.push(key.clone());
+            if let Some(st) = self.buildings.get_mut(&key) {
+                st.last_seen_sec = t;
+                if st.alive && hp.map_or(false, |h| h <= 0) {
+                    st.alive = false;
+                    self.events.push(BuildingEvent {
+                        t,
+                        spawned: false,
+                        class: class.to_string(),
+                        idx,
+                        x: st.x,
+                        y: st.y,
+                        team: st.team,
+                        kind,
+                    });
+                }
+            } else {
+                self.buildings.insert(
+                    key.clone(),
+                    BuildingState {
+                        x,
+                        y,
+                        team,
+                        alive: hp.map_or(true, |h| h > 0),
+                        last_seen_sec: t,
+                    },
+                );
+                self.events.push(BuildingEvent {
+                    t,
+                    spawned: true,
+                    class: class.to_string(),
+                    idx,
+                    x,
+                    y,
+                    team,
+                    kind,
+                });
+            }
+        }
+        // buildings that are gone from the entity list for 2 consecutive
+        // seconds are considered destroyed (removed right after death).
+        let dead: Vec<(String, u32)> = self
+            .buildings
+            .iter()
+            .filter(|(k, st)| st.alive && !present.contains(k))
+            .filter_map(|(k, st)| {
+                if st.last_seen_sec <= t - 2 {
+                    Some(k.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for key in dead {
+            let Some(st) = self.buildings.get_mut(&key) else {
+                continue;
+            };
+            st.alive = false;
+            let (class, idx) = key.clone();
+            self.events.push(BuildingEvent {
+                t: st.last_seen_sec + 1, // first second it was gone
+                spawned: false,
+                class: class.clone(),
+                idx,
+                x: st.x,
+                y: st.y,
+                team: st.team,
+                kind: building_kind(&class).unwrap_or("tower"),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Assemble `game_events` rows for building spawn/destroy events.
+fn build_building_event_rows(events: &[BuildingEvent]) -> Vec<EventRow> {
+    let mut rows = Vec::new();
+    let mut seq: HashMap<(&'static str, i64), i64> = HashMap::new();
+    for ev in events {
+        let etype: &'static str = if ev.spawned {
+            "building_spawn"
+        } else {
+            "building_destroyed"
+        };
+        let n = seq.entry((etype, ev.t)).or_insert(0);
+        let event_seq = *n;
+        *n += 1;
+        rows.push(EventRow {
+            game_time_sec: ev.t,
+            event_type: etype,
+            actor_id: None,
+            target_id: Some(format!("{}#{}", ev.class, ev.idx)),
+            x: Some(ev.x),
+            y: Some(ev.y),
+            properties: serde_json::json!({
+                "kind": ev.kind,
+                "class": ev.class,
+                "team": ev.team,
+            }),
+            event_seq,
+        });
+    }
+    rows
+}
+
 /// Assemble `game_events` rows for ward events.
 fn build_ward_event_rows(
     placed: &[WardPlaced],
@@ -616,6 +809,7 @@ pub fn parse_replay(
     let position = parser.register_observer::<PositionExtractor>();
     let purchase = parser.register_observer::<PurchaseExtractor>();
     let ward = parser.register_observer::<WardExtractor>();
+    let building = parser.register_observer::<BuildingExtractor>();
 
     // Sampling is gated on whole-second change inside the extractor, so no
     // interval injection is needed. (`interval_sec` is kept in the signature
@@ -626,12 +820,14 @@ pub fn parse_replay(
     let position = position.borrow();
     let purchase = purchase.borrow();
     let ward = ward.borrow();
+    let building = building.borrow();
 
     // --- assemble ---
     let identity_rows = build_identity_rows(&players);
     let snapshot_rows = build_snapshot_rows(&players, &position.samples);
     let mut event_rows = build_event_rows(&purchase.purchases);
     event_rows.extend(build_ward_event_rows(&ward.placed, &ward.destroyed));
+    event_rows.extend(build_building_event_rows(&building.events));
 
     // entity-level counts (by resolved entity_id) for the console log
     let mut entity_log: Vec<(String, usize, i64, i64)> = Vec::new();
