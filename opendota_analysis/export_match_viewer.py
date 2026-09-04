@@ -27,7 +27,7 @@ import sys
 import urllib.request
 import ssl
 
-VER = "3.2 · 2026-09-04"  # bump on regeneration so stale phone copies are detectable
+VER = "3.3 · 2026-09-04"  # bump on regeneration so stale phone copies are detectable
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -278,9 +278,9 @@ TEMPLATE = r"""<!doctype html>
        padding:3px 9px;border-radius:10px;white-space:nowrap;max-width:56vw;overflow:hidden;
        text-overflow:ellipsis;flex:none}
  #note.ok{color:#7fb97f;background:#142a14;border-color:#1f5a1f}
- #main{flex:1;display:flex;min-height:0}
- #mapwrap{flex:1;position:relative;overflow:hidden;background:#0a0c10;touch-action:none;
-          min-width:0;min-height:0}
+ #main{flex:1 1 0;display:flex;min-height:0;overflow:hidden}
+ #mapwrap{flex:1 1 auto;position:relative;overflow:hidden;background:#0a0c10;touch-action:none;
+          min-width:0;min-height:300px}
  #errbox{display:none;position:fixed;left:50%;transform:translateX(-50%);top:6px;z-index:99;
          background:#5a1f1f;color:#ffd7d7;font-size:12px;padding:5px 12px;border-radius:8px;
          max-width:92vw;border:1px solid #a33}
@@ -457,16 +457,22 @@ function w2s(wx, wy) {
 
 // ---- per-hero icon images ----
 const imgs = {};
+let iconsReady = false;
 function loadIcons(cb) {
+  if (iconsReady) { cb(); return; }
   let left = 0;
   for (const h of heroes) if (ICONS[h.npc]) left++;
-  if (!left) { cb(); return; }
+  if (!left) { iconsReady = true; cb(); return; }
   for (const h of heroes) {
     if (!ICONS[h.npc]) continue;
-    const im = new Image();
-    im.onload = im.onerror = () => { if (--left === 0) cb(); };
-    im.src = 'data:image/png;base64,' + ICONS[h.npc];
-    imgs[h.npc] = im;
+    (function (npc) {
+      const im = new Image();
+      im.onload = im.onerror = () => {
+        if (--left === 0) { iconsReady = true; cb(); }
+      };
+      im.src = 'data:image/png;base64,' + ICONS[npc];
+      imgs[npc] = im;
+    })(h.npc);
   }
 }
 
@@ -743,10 +749,16 @@ slider.addEventListener('input', draw);
 window.addEventListener('resize', () => { view.fit = 1; layout(); draw(); });
 
 layout();
-function bootDraw() { requestAnimationFrame(() => loadIcons(draw)); }
+if (mapImg.complete) draw();   // paint immediately; map pops in on load anyway
+function bootDraw() {
+  requestAnimationFrame(() => {
+    draw();                 // first frame immediately; icons pop in later
+    loadIcons(draw);        // redraw once portraits are ready
+  });
+}
 mapImg.onload = () => { mapReady = true; bootDraw(); };
 if (mapImg.complete) bootDraw();
-setTimeout(bootDraw, 500);      // retry once image/icon decoding settles
+setTimeout(bootDraw, 500);  // retry once image/icon decoding settles
 </script>
 </body>
 </html>
