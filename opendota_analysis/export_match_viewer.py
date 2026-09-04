@@ -27,7 +27,7 @@ import sys
 import urllib.request
 import ssl
 
-VER = "3.4 · 2026-09-04"  # bump on regeneration so stale phone copies are detectable
+VER = "3.5 · 2026-09-04"  # bump on regeneration so stale phone copies are detectable
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -267,20 +267,19 @@ TEMPLATE = r"""<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Dota2 Replay Viewer v__VER__ · __match__</title>
 <style>
- :root{--sideW:300px;--topH:44px;--ctrlH:48px}
  body{margin:0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
-      background:#101216;color:#dfe3ea;height:100vh;height:100dvh;overflow:hidden;
-      overscroll-behavior:none}
- #top{position:fixed;top:0;left:0;right:0;z-index:30;display:flex;align-items:center;gap:10px;
-      padding:8px 12px;background:#171a21;border-bottom:1px solid #262b36}
+      background:#101216;color:#dfe3ea;min-height:100vh;overscroll-behavior:none}
+ #top{display:flex;align-items:center;gap:10px;padding:8px 12px;background:#171a21;
+      border-bottom:1px solid #262b36}
  #top h1{font-size:15px;margin:0;font-weight:600;white-space:nowrap;overflow:hidden;
          text-overflow:ellipsis}
  #note{font-size:12px;color:#e6b450;background:#2a2414;border:1px solid #5a4a1a;
        padding:3px 9px;border-radius:10px;white-space:nowrap;max-width:56vw;overflow:hidden;
        text-overflow:ellipsis;flex:none}
  #note.ok{color:#7fb97f;background:#142a14;border-color:#1f5a1f}
- #main{position:fixed;top:var(--topH);bottom:var(--ctrlH);left:0;right:0;overflow:hidden}
- #mapwrap{position:absolute;top:0;left:0;right:var(--sideW);bottom:0;overflow:hidden;
+ #main{display:flex;flex-direction:row;align-items:stretch;flex:1 1 auto;min-width:0}
+ #mapwrap{position:relative;flex:1 1 auto;min-width:0;
+          height:calc(100vh - 46px - 52px);min-height:260px;overflow:hidden;
           background:#0a0c10;touch-action:none}
  #errbox{display:none;position:fixed;left:50%;transform:translateX(-50%);top:6px;z-index:99;
          background:#5a1f1f;color:#ffd7d7;font-size:12px;padding:5px 12px;border-radius:8px;
@@ -299,9 +298,8 @@ TEMPLATE = r"""<!doctype html>
  #leg .tgl{display:flex;gap:10px;margin-top:2px}
  #leg label{display:inline-flex;align-items:center;gap:3px;cursor:pointer}
  #leg input{accent-color:#4da3ff;margin:0;pointer-events:auto}
- #side{position:fixed;top:var(--topH);bottom:var(--ctrlH);right:0;width:var(--sideW);
-       display:flex;flex-direction:column;background:#14161c;border-left:1px solid #262b36;
-       overflow:hidden}
+ #side{width:300px;flex:none;display:flex;flex-direction:column;background:#14161c;
+       border-left:1px solid #262b36;height:calc(100vh - 46px - 52px);overflow:hidden}
  #side h3{margin:0;padding:9px 12px;font-size:13px;border-bottom:1px solid #22262f;flex:none}
  #herolist{flex:1;overflow:auto;padding:4px 0;-webkit-overflow-scrolling:touch}
  .hrow{display:flex;align-items:center;gap:8px;padding:5px 10px;cursor:pointer;font-size:13px}
@@ -316,8 +314,8 @@ TEMPLATE = r"""<!doctype html>
  .icowrap{width:26px;height:26px;border-radius:50%;flex:none;display:flex;align-items:center;
           justify-content:center;background:#0b0d12;overflow:hidden}
  .icowrap img{width:24px;height:13.5px}
- #controls{position:fixed;left:0;right:0;bottom:0;z-index:25;display:flex;align-items:center;
-           gap:10px;padding:6px 12px;padding-bottom:calc(6px + env(safe-area-inset-bottom,0px));
+ #controls{flex:none;display:flex;align-items:center;gap:10px;padding:6px 12px;
+           padding-bottom:calc(6px + env(safe-area-inset-bottom,0px));
            background:#171a21;border-top:1px solid #262b36}
  #time{font-variant-numeric:tabular-nums;min-width:96px;font-size:13px;text-align:center}
  input[type=range]{flex:1;accent-color:#4da3ff;min-width:0}
@@ -325,10 +323,9 @@ TEMPLATE = r"""<!doctype html>
        color:#dfe3ea;font-size:14px;cursor:pointer}
  #play:hover{background:#262c38}
  @media (max-width: 860px) {
-   :root{--sideW:0px}
-   #mapwrap{right:0}
-   #side{left:0;right:0;top:auto;bottom:var(--ctrlH);width:auto;height:132px;
-         border-left:none;border-top:1px solid #262b36}
+   #main{flex-direction:column}
+   #mapwrap{height:calc(100vh - 46px - 132px - 50px);min-height:260px}
+   #side{width:auto;height:132px;border-left:none;border-top:1px solid #262b36}
    #side h3{display:none}
    #herolist{display:flex;flex-direction:column;flex-wrap:wrap;overflow:auto}
    .hrow{flex:0 0 auto;width:264px}
