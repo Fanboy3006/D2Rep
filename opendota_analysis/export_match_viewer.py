@@ -41,6 +41,8 @@ ICON_URLS = [
 # official portraits are 256x144 cards; keep 128x72 in cache/HTML
 ICON_W, ICON_H = 128, 72
 _SSL = ssl._create_unverified_context()  # this machine's network restricts TLS
+import threading
+_ICON_LOCK = threading.Lock()  # serialize cache download/writes (parallel batch)
 
 
 def find_db(match_id):
@@ -53,63 +55,67 @@ def find_db(match_id):
 def hero_icon_b64(npc):
     """Return base64 of the cached official portrait for npc_dota_hero_x, or
     None. Downloads once from the Dota 2 CDN into assets/hero_icons and
-    downscales to 128x72 PNG."""
+    downscales to 128x72 PNG. Cache write is atomic + lock-protected so
+    parallel batch exports never double-fetch or write partial files."""
     stem = npc[len("npc_dota_hero_"):] if npc.startswith("npc_dota_hero_") else npc
     cached = os.path.join(ICON_CACHE, stem + ".png")
     if os.path.exists(cached):
         with open(cached, "rb") as f:
             return base64.b64encode(f.read()).decode("ascii")
-    url = None
-    for tpl in ICON_URLS:
-        u = tpl % stem
+    with _ICON_LOCK:
+        if os.path.exists(cached):  # another worker fetched it meanwhile
+            with open(cached, "rb") as f:
+                return base64.b64encode(f.read()).decode("ascii")
+        url = None
+        for tpl in ICON_URLS:
+            u = tpl % stem
+            try:
+                req = urllib.request.Request(u, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=30, context=_SSL) as r:
+                    raw = r.read()
+                url = u
+                break
+            except Exception as e:
+                print("  [icon] %s unavailable (%s)" % (u.rsplit("/", 1)[-1], e), file=sys.stderr)
+        if url is None:
+            return None
         try:
-            req = urllib.request.Request(u, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=30, context=_SSL) as r:
-                raw = r.read()
-            url = u
-            break
+            from PIL import Image
+            im = Image.open(io.BytesIO(raw))
+            if (im.width, im.height) != (ICON_W, ICON_H):
+                im = im.resize((ICON_W, ICON_H), Image.LANCZOS)
+            buf = io.BytesIO()
+            im.save(buf, "PNG", optimize=True)
+            data = buf.getvalue()
         except Exception as e:
-            print("  [icon] %s unavailable (%s)" % (u.rsplit("/", 1)[-1], e), file=sys.stderr)
-    if url is None:
-        return None
-    try:
-        from PIL import Image
-        im = Image.open(io.BytesIO(raw))
-        if (im.width, im.height) != (ICON_W, ICON_H):
-            im = im.resize((ICON_W, ICON_H), Image.LANCZOS)
-        buf = io.BytesIO()
-        im.save(buf, "PNG", optimize=True)
-        data = buf.getvalue()
-    except Exception as e:
-        print("  [icon] resize failed for %s: %s" % (stem, e), file=sys.stderr)
-        return None
-    os.makedirs(ICON_CACHE, exist_ok=True)
-    with open(cached, "wb") as f:
-        f.write(data)
+            print("  [icon] resize failed for %s: %s" % (stem, e), file=sys.stderr)
+            return None
+        os.makedirs(ICON_CACHE, exist_ok=True)
+        tmp = cached + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, cached)
     return base64.b64encode(data).decode("ascii")
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("target", help="match_id (searched under dems/db) or a db path")
-    ap.add_argument("--out", default=None)
-    ap.add_argument("--map", default=os.path.join(HERE, "assets", "dota_map_1024.png"))
-    ap.add_argument("--step", type=int, default=1, help="keep every Nth second (default 1)")
-    ap.add_argument("--no-icons", action="store_true", help="use plain team dots")
-    args = ap.parse_args()
-    step = max(1, args.step)
+def export(target, out=None, map_path=None, step=1, no_icons=False, quiet=False):
+    """Render one match viewer. `target` = match_id or db path. Returns a dict
+    with match_id / out / size_mb / heroes / samples / t0 / icons; raises on
+    missing db."""
+    if map_path is None:
+        map_path = os.path.join(HERE, "assets", "dota_map_1024.png")
+    step = max(1, step)
 
-    if args.target.endswith(".db") and os.path.exists(args.target):
-        db = args.target
+    if target.endswith(".db") and os.path.exists(target):
+        db = target
         match_id = os.path.basename(db)[:-3]
     else:
-        db = find_db(args.target)
+        db = find_db(target)
         if not db:
-            sys.exit("db not found for match %s under dems/db" % args.target)
-        match_id = args.target
-    if args.out is None:
-        args.out = os.path.join(HERE, "..", "dist", "viewer_%s.html" % match_id)
+            raise FileNotFoundError("db not found for match %s under dems/db" % target)
+        match_id = target
+    if out is None:
+        out = os.path.join(HERE, "..", "dist", "viewer_%s.html" % match_id)
 
     con = sqlite3.connect("file:%s?mode=ro" % os.path.abspath(db).replace("\\", "/"), uri=True)
     players = []
@@ -141,7 +147,7 @@ def main():
 
     # official hero portraits (base64) unless disabled
     icons = {}
-    if not args.no_icons:
+    if not no_icons:
         for p in players:
             if p["hero"] and p["hero"] in series:
                 b = hero_icon_b64(p["hero"])
@@ -151,7 +157,7 @@ def main():
     payload = {"match_id": int(match_id), "players": players, "series": series}
     data_json = json.dumps(payload, separators=(",", ":"))
 
-    with open(args.map, "rb") as f:
+    with open(map_path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("ascii")
     icons_json = json.dumps(icons, separators=(",", ":"))
 
@@ -159,15 +165,31 @@ def main():
             .replace("__ICONS_JSON__", icons_json)
             .replace("__MAP_B64__", b64)
             .replace("__match__", match_id))
-    os.makedirs(os.path.dirname(args.out), exist_ok=True)
-    with open(args.out, "w", encoding="utf-8") as f:
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, "w", encoding="utf-8") as f:
         f.write(html)
-    size_mb = os.path.getsize(args.out) / 1e6
+    size_mb = os.path.getsize(out) / 1e6
     n = sum(len(v) for v in series.values())
     t0 = min((v[0][0] for v in series.values() if v), default=0)
-    print("wrote %s (%.2f MB, %d heroes, %d samples, data from %ds%s)"
-          % (args.out, size_mb, len(series), n, t0,
-             "" if icons else ", no icons"))
+    if not quiet:
+        print("wrote %s (%.2f MB, %d heroes, %d samples, data from %ds%s)"
+              % (out, size_mb, len(series), n, t0,
+                 "" if icons else ", no icons"))
+    return {"match_id": match_id, "out": out, "size_mb": size_mb,
+            "heroes": len(series), "samples": n, "t0": t0, "icons": len(icons)}
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("target", help="match_id (searched under dems/db) or a db path")
+    ap.add_argument("--out", default=None)
+    ap.add_argument("--map", default=os.path.join(HERE, "assets", "dota_map_1024.png"))
+    ap.add_argument("--step", type=int, default=1, help="keep every Nth second (default 1)")
+    ap.add_argument("--no-icons", action="store_true", help="use plain team dots")
+    args = ap.parse_args()
+    export(args.target, out=args.out, map_path=args.map,
+           step=args.step, no_icons=args.no_icons)
     sys.exit(0)
 
 
