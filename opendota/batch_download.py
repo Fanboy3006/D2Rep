@@ -39,6 +39,7 @@ import json
 import os
 import ssl
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -161,6 +162,9 @@ def main():
                     help="stop after N completed downloads across all leagues")
     ap.add_argument("--partial-test-bytes", type=int, default=0,
                     help="debug: drop mid-file after N bytes to exercise resume")
+    ap.add_argument("--stall-abort", type=int, default=240,
+                    help="abort a download attempt (keep .part) if the raw file "
+                         "makes no progress for this many seconds")
     ap.add_argument("--log", default=None)
     args = ap.parse_args()
 
@@ -173,6 +177,46 @@ def main():
         if logf:
             logf.write(line + "\n")
             logf.flush()
+
+    def spawn_watchdog(outdir, league):
+        """Watch the newest .raw.part in outdir; on true stall (no byte change
+        for --stall-abort seconds) write a stall marker and os._exit so the
+        run can be relaunched; the next run skips matches that stalled twice."""
+        stop = threading.Event()
+        last = {}
+
+        def _watch():
+            while not stop.is_set():
+                time.sleep(15)
+                try:
+                    names = os.listdir(outdir)
+                except OSError:
+                    continue
+                parts = [os.path.join(outdir, n) for n in names if n.endswith(".raw.part")]
+                if not parts:
+                    continue
+                p = max(parts, key=os.path.getmtime)
+                try:
+                    sz = os.path.getsize(p)
+                except OSError:
+                    continue
+                now = time.time()
+                if last.get("p") == p and last.get("sz") == sz:
+                    if now - last.get("t", now) >= args.stall_abort:
+                        mid = os.path.basename(p).split(".")[0]
+                        marker = os.path.join(STATE_DIR, "stall_%d_%s.json" % (league, mid))
+                        with open(marker, "w", encoding="utf-8") as f:
+                            json.dump({"time": now, "size": sz}, f)
+                        log("WATCHDOG: no progress on %s for >%ds; wrote %s and "
+                            "aborting for resume (part=%d bytes)"
+                            % (p, args.stall_abort, marker, sz))
+                        os._exit(3)
+                else:
+                    last["p"], last["sz"], last["t"] = p, sz, now
+
+        t = threading.Thread(target=_watch, daemon=True)
+        t.start()
+        return stop
 
     done_total = 0
     for league in args.league:
@@ -187,6 +231,7 @@ def main():
         log("league %d: %d matches (state file has %d entries)" % (league, len(ids), len(state)))
         outdir = os.path.join(args.dem_root, str(league))
         os.makedirs(outdir, exist_ok=True)
+        spawn_watchdog(outdir, league)
         n_done = n_unavail = n_fail = n_skip = 0
         for mid in order:
             key = str(mid)
@@ -197,6 +242,23 @@ def main():
             if st.get("status") == "unavailable":
                 n_unavail += 1
                 continue
+
+            # stall handling: a previous watchdog abort for this match means the
+            # server connection black-holed; two stalls in a row -> unavailable
+            stall_marker = os.path.join(STATE_DIR, "stall_%d_%d.json" % (league, mid))
+            if os.path.exists(stall_marker):
+                os.remove(stall_marker)
+                attempts = st.get("attempts", 0) + 1
+                state[key] = {**st, "attempts": attempts,
+                              "status": "unavailable",
+                              "note": "stalled twice (server unreachable)"} \
+                    if attempts >= 2 else {**st, "attempts": attempts}
+                if attempts >= 2:
+                    n_unavail += 1
+                    log("match %d stalled twice -> marked unavailable" % mid)
+                    save_state(league, state, log)
+                    continue
+                save_state(league, state, log)
 
             info = api_get("/api/matches/%s" % mid, args.sleep, log)
             if info is None:

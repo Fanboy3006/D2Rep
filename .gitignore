@@ -9,6 +9,7 @@ vendor/
 offline_env_snapshot.tar.gz
 
 # 录像文件与数据库（体积大，另行同步）
+dems/
 *.dem
 *.db
 
@@ -30,7 +31,7 @@ Thumbs.db
 downloads/
 
 # 第4层分析产物（可随时重算，不入库）
-analysis/output/
+analysis/output*/
 
 # Python 编译缓存
 __pycache__/
