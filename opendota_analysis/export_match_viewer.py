@@ -27,7 +27,7 @@ import sys
 import urllib.request
 import ssl
 
-VER = "3.1 · 2026-09-04"  # bump on regeneration so stale phone copies are detectable
+VER = "3.2 · 2026-09-04"  # bump on regeneration so stale phone copies are detectable
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -212,11 +212,24 @@ def export(target, out=None, map_path=None, step=1, no_icons=False, quiet=False)
 
     with open(map_path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("ascii")
+    # lightweight 512px map copy for narrow screens: some Android browsers
+    # fail to decode/allocate the ~2MB base64 map; small screens don't need it.
+    try:
+        from PIL import Image
+        import io
+        im = Image.open(map_path).convert("RGB")
+        im = im.resize((512, 512), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, "PNG", optimize=True)
+        b64_lite = base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:
+        b64_lite = b64
     icons_json = json.dumps(icons, separators=(",", ":"))
 
     html = (TEMPLATE.replace("__DATA_JSON__", data_json)
             .replace("__ICONS_JSON__", icons_json)
             .replace("__MAP_B64__", b64)
+            .replace("__MAP_B64_LITE__", b64_lite)
             .replace("__VER__", VER)
             .replace("__match__", match_id))
     os.makedirs(os.path.dirname(out), exist_ok=True)
@@ -268,6 +281,11 @@ TEMPLATE = r"""<!doctype html>
  #main{flex:1;display:flex;min-height:0}
  #mapwrap{flex:1;position:relative;overflow:hidden;background:#0a0c10;touch-action:none;
           min-width:0;min-height:0}
+ #errbox{display:none;position:fixed;left:50%;transform:translateX(-50%);top:6px;z-index:99;
+         background:#5a1f1f;color:#ffd7d7;font-size:12px;padding:5px 12px;border-radius:8px;
+         max-width:92vw;border:1px solid #a33}
+ #dbg{display:none;position:fixed;right:8px;bottom:8px;z-index:98;font-size:10px;color:#b8c4d8;
+      background:#000c;padding:4px 8px;border-radius:6px;white-space:pre}
  canvas{display:block}
  #hint{position:absolute;bottom:10px;left:12px;font-size:11px;color:#7a8194;
        background:#000a;padding:3px 8px;border-radius:8px;pointer-events:none;max-width:70%}
@@ -305,6 +323,7 @@ TEMPLATE = r"""<!doctype html>
  #play:hover{background:#262c38}
  @media (max-width: 860px) {
    #main{flex-direction:column}
+   #mapwrap{min-height:300px}
    #side{width:100%;height:132px;border-left:none;border-top:1px solid #262b36}
    #side h3{display:none}
    #herolist{display:flex;flex-direction:column;flex-wrap:wrap;overflow:auto}
@@ -348,13 +367,26 @@ TEMPLATE = r"""<!doctype html>
   <span id="time">0:00</span>
   <input type="range" id="slider" min="0" max="0" step="1" value="0">
 </div>
+<div id="errbox"></div>
+<div id="dbg"></div>
 <script>
 "use strict";
 const DATA = __DATA_JSON__;
 const ICONS = __ICONS_JSON__;
+// full-res map for wide screens; 512px copy for narrow screens (some Android
+// browsers fail on the ~2MB base64 map / huge backing stores)
 const MAPB64 = "data:image/png;base64,__MAP_B64__";
+const MAPB64LITE = "data:image/png;base64,__MAP_B64_LITE__";
+const useLite = (document.documentElement.clientWidth || 0) < 720;
 const WORLD = 19134;                       // world units across map (map_background.py)
 const TEAMC = {2:'#46d160', 3:'#ff5f57'};
+
+function showErr(m) {
+  const b = document.getElementById('errbox');
+  b.textContent = m;
+  b.style.display = 'block';
+}
+window.addEventListener('error', e => showErr('脚本错误: ' + (e.message || e.type || '?')));
 
 // ---- heroes: only the real player heroes, with series ----
 const heroes = [];
@@ -397,7 +429,8 @@ noteEl.title = msg;
 const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d');
 const mapImg = new Image();
-mapImg.src = MAPB64;
+mapImg.src = useLite ? MAPB64LITE : MAPB64;
+mapImg.onerror = () => showErr('地图图像解码失败（image decode error）——请把下方版本号和本行文字发给我');
 let view = {half: 200, ox: 0, oy: 0, fit: 1};
 function layout() {
   const box = cv.parentElement.getBoundingClientRect();
@@ -596,6 +629,21 @@ function draw() {
     };
     listEl.appendChild(row);
   }
+  // debug panel: append "#dbg" to the URL and reload
+  if ((location.hash || '').indexOf('dbg') >= 0) {
+    const el = document.getElementById('dbg');
+    el.style.display = 'block';
+    el.textContent = 'v__VER__' +
+      '\nmap lite=' + useLite +
+      ' nat=' + mapImg.naturalWidth + 'x' + mapImg.naturalHeight +
+      ' complete=' + mapImg.complete +
+      '\ncanvas css=' + cv.clientWidth + 'x' + cv.clientHeight +
+      ' px=' + cv.width + 'x' + cv.height +
+      '\nview.half=' + Math.round(view.half) +
+      ' dpr=' + (window.devicePixelRatio || 1) +
+      ' heroes=' + heroes.length +
+      ' towers=' + (DATA.towers || []).length;
+  }
 }
 
 // ---- zoom / pan ----
@@ -687,8 +735,10 @@ slider.addEventListener('input', draw);
 window.addEventListener('resize', () => { view.fit = 1; layout(); draw(); });
 
 layout();
-mapImg.onload = () => loadIcons(draw);
-if (mapImg.complete) loadIcons(draw);
+function bootDraw() { requestAnimationFrame(() => loadIcons(draw)); }
+mapImg.onload = bootDraw;
+if (mapImg.complete) bootDraw();
+setTimeout(bootDraw, 500);      // retry once image/icon decoding settles
 </script>
 </body>
 </html>
