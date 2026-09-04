@@ -432,6 +432,7 @@ const mapImg = new Image();
 mapImg.src = useLite ? MAPB64LITE : MAPB64;
 mapImg.onerror = () => showErr('地图图像解码失败（image decode error）——请把下方版本号和本行文字发给我');
 let view = {half: 200, ox: 0, oy: 0, fit: 1};
+let mapReady = false;   // set once the map image finished decoding OK
 function layout() {
   const box = cv.parentElement.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
@@ -629,6 +630,13 @@ function draw() {
     };
     listEl.appendChild(row);
   }
+  // self-test: green pixel bottom-right + blue bottom-left only if canvas
+  // paint actually lands; red text when the map image is unusable
+  ctx.fillStyle = '#00e000'; ctx.fillRect(cv.clientWidth - 10, cv.clientHeight - 10, 8, 8);
+  ctx.fillStyle = '#0088ff'; ctx.fillRect(2, cv.clientHeight - 10, 8, 8);
+  if (mapImg.complete && !mapImg.naturalWidth) {
+    showErr('地图图像 0x0（decode fail）');
+  }
   // debug panel: append "#dbg" to the URL and reload
   if ((location.hash || '').indexOf('dbg') >= 0) {
     const el = document.getElementById('dbg');
@@ -736,7 +744,7 @@ window.addEventListener('resize', () => { view.fit = 1; layout(); draw(); });
 
 layout();
 function bootDraw() { requestAnimationFrame(() => loadIcons(draw)); }
-mapImg.onload = bootDraw;
+mapImg.onload = () => { mapReady = true; bootDraw(); };
 if (mapImg.complete) bootDraw();
 setTimeout(bootDraw, 500);      // retry once image/icon decoding settles
 </script>
