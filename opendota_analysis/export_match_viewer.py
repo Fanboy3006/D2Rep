@@ -27,6 +27,8 @@ import sys
 import urllib.request
 import ssl
 
+VER = "3.1 · 2026-09-04"  # bump on regeneration so stale phone copies are detectable
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
@@ -215,6 +217,7 @@ def export(target, out=None, map_path=None, step=1, no_icons=False, quiet=False)
     html = (TEMPLATE.replace("__DATA_JSON__", data_json)
             .replace("__ICONS_JSON__", icons_json)
             .replace("__MAP_B64__", b64)
+            .replace("__VER__", VER)
             .replace("__match__", match_id))
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
@@ -249,7 +252,7 @@ TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Dota2 Replay Viewer - __match__</title>
+<title>Dota2 Replay Viewer v__VER__ · __match__</title>
 <style>
  body{margin:0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
       background:#101216;color:#dfe3ea;height:100vh;height:100dvh;display:flex;
@@ -314,7 +317,8 @@ TEMPLATE = r"""<!doctype html>
 </head>
 <body>
 <div id="top">
-  <h1>Dota2 复盘 · 比赛 __match__</h1>
+  <h1>Dota2 复盘 · 比赛 __match__
+    <span style="font-weight:400;color:#8fa0b8;font-size:11px;margin-left:6px">v__VER__</span></h1>
   <span id="note"></span>
 </div>
 <div id="main">
