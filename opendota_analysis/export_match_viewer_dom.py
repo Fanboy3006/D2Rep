@@ -340,11 +340,15 @@ def main():
         href = 'https://www.opendota.com/players/%d' % acc if acc > 0 else None
         nm = ('<a href="%s" target="_blank" rel="noopener" title="%s">%s</a>' % (href, disp, disp)
               if href else '<span>%s</span>' % disp)
+        a0 = arr[0]
+        hf0 = (100.0 * a0[3] / a0[4]) if a0[4] else 0
+        mf0 = (100.0 * a0[5] / a0[6]) if a0[6] else 0
         hero_markup.append(
             '<div class="hm" data-hero="%s" style="left:%.3f%%;top:%.3f%%">%s'
-            '<span class="hbar"><i></i></span><span class="mbar"><i></i></span>'
+            '<span class="hbar"><i style="width:%.1f%%"></i></span>'
+            '<span class="mbar"><i style="width:%.1f%%"></i></span>'
             '<span class="hnm">%s</span></div>' % (
-                p["hero"], left, top, ico, nm))
+                p["hero"], left, top, ico, hf0, mf0, nm))
     tower_markup = []
     for tw in payload["towers"]:
         left, top = pct(tw["x"], tw["y"])
@@ -502,10 +506,10 @@ TEMPLATE = r"""<!doctype html>
  .hm .ico{width:46px;height:26px;display:block;border:2px solid #555;border-radius:4px}
  .hm .hnm{display:block;font-size:10px;color:#fff;text-shadow:0 0 2px #000;white-space:nowrap;
           overflow:hidden;text-overflow:ellipsis;width:64px;margin:1px auto 0}
- .hm .hbar,.hm .mbar{display:block;height:4px;background:#262a36;margin:1px auto;width:50px;
-     border-radius:2px;overflow:hidden}
- .hm .hbar i{display:block;height:100%;background:#2ecc71}
- .hm .mbar i{display:block;height:100%;background:#3498db}
+ .hm .hbar,.hm .mbar{display:block;height:5px;background:#1a1e26;margin:1px auto;width:52px;
+     border-radius:3px;overflow:hidden;border:1px solid #00000066}
+ .hm .hbar i{display:block;height:100%;background:linear-gradient(90deg,#27ae60,#5fe08a)}
+ .hm .mbar i{display:block;height:100%;background:linear-gradient(90deg,#2980b9,#5bc0ff)}
  .panel{width:260px;flex:none;padding:10px;border-left:1px solid #262b36}
  .panel.tgl{display:flex;gap:12px;align-items:center;font-size:12px;margin-bottom:8px}
  .panel input[type=checkbox]{accent-color:#4da3ff}
@@ -603,14 +607,18 @@ function fmt(s) { s = Math.max(0, Math.round(s)); return Math.floor(s / 60) + ':
 function draw() {
   var t = +document.getElementById('slider').value;
   document.getElementById('time').textContent = fmt(t - t0);
-  for (var i = 0; i < heroes.length; i++) {
-    var h = heroes[i], st = stateAt(h.arr, t);
+  var mks = document.querySelectorAll('.hm');
+  for (var mi = 0; mi < mks.length; mi++) {
+    var el = mks[mi], hero = el.getAttribute('data-hero');
+    var arr = DATA.series[hero];
+    if (!arr || !arr.length) continue;
+    var st = stateAt(arr, t);
     var xy = pct(st[1], st[2]);
-    h.el.style.left = xy[0] + '%'; h.el.style.top = xy[1] + '%';
+    el.style.left = xy[0] + '%'; el.style.top = xy[1] + '%';
     var hf = st[4] ? Math.min(1, st[3] / st[4]) : 0;
     var mf = st[6] ? Math.min(1, st[5] / st[6]) : 0;
-    h.el.querySelector('.hbar i').style.width = (hf * 100) + '%';
-    h.el.querySelector('.mbar i').style.width = (mf * 100) + '%';
+    el.querySelector('.hbar i').style.width = (hf * 100) + '%';
+    el.querySelector('.mbar i').style.width = (mf * 100) + '%';
   }
   for (var j = 0; j < DATA.towers.length; j++) {
     var tw = DATA.towers[j], els = document.querySelectorAll('.tw');
