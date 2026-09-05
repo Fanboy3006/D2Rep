@@ -128,6 +128,21 @@ def load_payload(target, step=1):
                                     "team": p["team"], "d": None})
         elif tid in towers:
             towers[tid]["d"] = int(sec)
+    cds = {}
+    pend = {}
+    for etype, sec, hero, ab in con.execute(
+            """SELECT event_type, game_time_sec, actor_id, target_id
+               FROM game_events
+               WHERE event_type IN ('ability_cd_start','ability_cd_end')"""):
+        if not hero:
+            continue
+        key = (hero, ab)
+        if etype == "ability_cd_start":
+            pend[key] = sec
+        else:
+            start = pend.pop(key, None)
+            if start is not None:
+                cds.setdefault(hero, {}).setdefault(ab, []).append([start, sec])
     con.close()
     towers = list(towers.values())
 
@@ -158,7 +173,7 @@ def load_payload(target, step=1):
     payload = {"match_id": int(match_id), "players": players, "series": series,
                "meta": {"raw_end": raw_end, "active_end": active_end},
                "towers": towers, "camps": [[c[0], c[1], c[2]] for c in mann.NEUTRAL_CAMPS],
-               "roshan": list(mann.ROSHAN)}
+               "roshan": list(mann.ROSHAN), "cds": cds}
     return match_id, payload, icons
 
 
@@ -217,6 +232,35 @@ def main():
         camp_markup.append('<div class="camp rosh" style="left:%.3f%%;top:%.3f%%"></div>'
                            % (left, top))
 
+    # ---- skill-cooldown chips per hero ----
+    import re
+    def camel(npc):
+        s = npc[len("npc_dota_hero_"):] if npc.startswith("npc_dota_hero_") else npc
+        return "".join(w.capitalize() for w in s.split("_"))
+    hero_tokens = {camel(p["hero"]) for p in payload["players"] if p["hero"]}
+    def ab_label(cls):
+        lb = cls[len("CDOTA_Ability_"):] if cls.startswith("CDOTA_Ability_") else cls
+        for t in hero_tokens:
+            if lb.startswith(t + "_"):
+                lb = lb[len(t) + 1:]
+                break
+        lb = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", lb)
+        return " ".join(lb.replace("_", " ").split())
+    skill_rows = []
+    for p in payload["players"]:
+        cds_for_hero = payload["cds"].get(p["hero"], {})
+        if not cds_for_hero:
+            continue
+        chips = []
+        for ab in sorted(cds_for_hero):
+            chips.append('<span class="chip" data-h="%s" data-a="%s" data-label="%s"></span>'
+                         % (p["hero"], ab, ab_label(ab)))
+        skill_rows.append('<div class="skrow"><span class="skhero">%s</span>'
+                          '<span class="skchips">%s</span></div>'
+                          % ((p["name"] or p["hero"]), "".join(chips)))
+    skills_block = ('<div class="skills" id="skills"><div class="skh">技能CD（灰色=冷却中，数字=剩余秒）</div>'
+                    + "".join(skill_rows) + "</div>")
+
     # map image (downscale to 768 for memory friendliness everywhere)
     from PIL import Image
     im = Image.open(args.map).convert("RGB").resize((768, 768), Image.LANCZOS)
@@ -231,7 +275,8 @@ def main():
             .replace("__TOWERS__", "\n".join(tower_markup))
             .replace("__CAMPS__", "\n".join(camp_markup))
             .replace("__MATCH__", match_id)
-            .replace("__T0__", str(int(t0))))
+            .replace("__T0__", str(int(t0)))
+            .replace("__SKILLS__", skills_block))
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:
         f.write(html)
@@ -287,12 +332,23 @@ TEMPLATE = r"""<!doctype html>
  .ctrl button{width:36px;height:28px;background:#1b1f28;color:#dfe3ea;border:1px solid #2c3240;
               border-radius:6px;font-size:14px}
  .note{font-size:12px;color:#9aa2b2;padding:2px 12px 6px}
+ .skills{margin:8px auto;max-width:96vw;padding:8px 12px;background:#15171d;
+         border:1px solid #262b36;border-radius:10px}
+ .skills .skh{font-size:12px;color:#9fb0c8;margin-bottom:6px}
+ .skrow{display:flex;align-items:center;gap:8px;margin:4px 0;flex-wrap:wrap}
+ .skhero{width:112px;font-size:12px;color:#aeb9cc;overflow:hidden;text-overflow:ellipsis;
+         white-space:nowrap;flex:none}
+ .skchips{display:flex;gap:6px;flex-wrap:wrap}
+ .chip{min-width:40px;padding:3px 7px;border-radius:6px;background:#1f2a3a;color:#cfe3ff;
+       font-size:11px;text-align:center;border:1px solid #2c3c55;white-space:nowrap}
+ .chip.cd{background:#2a2e36;color:#7d8694;border-color:#3a3f4a;text-align:center}
  @media (max-width:760px){
    .wrap{flex-direction:column}
    .panel{width:100%;border-left:none;border-top:1px solid #262b36;
           display:flex;gap:16px;align-items:center;padding:6px 12px}
    .panel .leg{display:none}
    .board{max-width:96vw}
+   .skhero{width:80px}
  }
 </style>
 </head>
@@ -316,6 +372,7 @@ __CAMPS____TOWERS____HEROES__
     </div>
   </div>
 </div>
+__SKILLS__
 <div class="ctrl">
   <button id="play">▶</button>
   <span id="time">0:00</span>
@@ -343,6 +400,7 @@ var heroes = [];
   var H = 2 * 0; // world half for % calc below
 })();
 var WORLD = 19134, half = WORLD / 2;
+var cdmap = DATA.cds || {};
 function pct(x, y) { return [(x + half) / WORLD * 100, (half - y) / WORLD * 100]; }
 function stateAt(arr, t) {
   var lo = 0, hi = arr.length - 1;
@@ -381,18 +439,33 @@ function draw() {
     if (els[j]) els[j].className = 'tw t' + (tw.team === 2 ? 2 : 3) +
       (tw.d != null && t >= tw.d ? ' dead' : '');
   }
+  // skill cooldown chips: gray + remaining seconds when on cooldown
+  var chips = document.querySelectorAll('.chip');
+  for (var k = 0; k < chips.length; k++) {
+    var c = chips[k], arr = (cdmap[c.dataset.h] || {})[c.dataset.a], inter = null;
+    if (arr) {
+      for (var q = 0; q < arr.length; q++) {
+        if (t >= arr[q][0] && t <= arr[q][1]) { inter = arr[q]; break; }
+      }
+    }
+    if (inter) { c.classList.add('cd'); c.textContent = Math.ceil(inter[1] - t); }
+    else { c.classList.remove('cd'); c.textContent = c.dataset.label; }
+  }
 }
 document.getElementById('slider').addEventListener('input', draw);
 document.getElementById('tgc').addEventListener('change', draw);
 document.getElementById('tgt').addEventListener('change', draw);
-document.getElementById('play').addEventListener('click', function () {
-  var s = document.getElementById('slider');
+document.getElementById('play').addEventListener('click', function () {  var s = document.getElementById('slider');
   if (this._t) { clearInterval(this._t); this._t = null; this.textContent = '▶'; return; }
   this.textContent = '⏸'; var self = this;
   this._t = setInterval(function () {
     var v = +s.value + 1; if (v > s.max) v = s.min; s.value = v; draw();
   }, 100);
 });
+if (!document.querySelector('.skrow')) {
+  var sk = document.getElementById('skills');
+  if (sk) sk.style.display = 'none';
+}
 draw();
 </script>
 </body>

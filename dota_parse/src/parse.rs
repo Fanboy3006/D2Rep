@@ -548,6 +548,147 @@ impl BuildingExtractor {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ability cooldown extractor (技能冷却追踪)
+// ---------------------------------------------------------------------------
+
+/// One ability-cooldown transition (enter/leave cooldown) of one hero ability.
+struct AbilityEvent {
+    t: i64,
+    pid: u32,         // m_iPlayerID (2 x header index)
+    ability: String,  // e.g. "CDOTA_Ability_Invoker_ForgeSpirit"
+    start: bool,
+    remaining: f32,   // cooldown seconds left at the transition (len at start)
+}
+
+/// Ability extractor: per whole second, for every hero entity read its
+/// `m_vecAbilities.*` ability handles, look up each ability entity's current
+/// `m_fCooldown` (seconds remaining) and emit `ability_cd_start` /
+/// `ability_cd_end` on cooldown transitions. Passive/innate abilities never
+/// leave cooldown (m_fCooldown stays 0) so they are naturally filtered out.
+/// Sampled on the parity-proof whole-second gate like heroes/buildings.
+struct AbilityExtractor {
+    /// (hero pid, ability class) -> when its current cooldown started
+    active: HashMap<(u32, String), i64>,
+    events: Vec<AbilityEvent>,
+    last_sec: i64,
+}
+
+impl Default for AbilityExtractor {
+    fn default() -> Self {
+        AbilityExtractor {
+            active: HashMap::new(),
+            events: Vec::new(),
+            last_sec: i64::MIN,
+        }
+    }
+}
+
+#[observer]
+#[uses_all]
+impl AbilityExtractor {
+    #[on_tick_start]
+    fn on_tick_start(&mut self, ctx: &Context) -> ObserverResult {
+        let tick = ctx.tick();
+        let t = i64::from(tick / TICK_RATE);
+        if t == self.last_sec {
+            return Ok(());
+        }
+        self.last_sec = t;
+        // pass 1: ability handle -> (class, remaining seconds)
+        let mut abilities: HashMap<u32, (String, f32)> = HashMap::new();
+        for e in ctx.entities().iter() {
+            let cls = e.class().name();
+            if !cls.starts_with("CDOTA_Ability_") || cls.contains("Courier") {
+                continue;
+            }
+            let cd = try_property!(e, f32, "m_fCooldown").unwrap_or(0.0);
+            abilities.insert(e.handle(), (cls.to_string(), cd));
+        }
+        // pass 2: per hero, iterate its ability handles and track transitions
+        for e in ctx.entities().iter() {
+            let cls = e.class().name();
+            if !cls.starts_with("CDOTA_Unit_Hero_") {
+                continue;
+            }
+            let pid = match try_property!(e, u32, "m_iPlayerID") {
+                Some(p) => p,
+                None => continue,
+            };
+            let mut ability_handles: Vec<u32> = Vec::new();
+            for f in e.fields() {
+                if f.name.starts_with("m_vecAbilities.") {
+                    if let Some(v) = f.value {
+                        if let source2_demo::FieldValue::Unsigned32(h) = v {
+                            ability_handles.push(*h);
+                        }
+                    }
+                }
+            }
+            for h in ability_handles {
+                let Some((ab_cls, cd)) = abilities.get(&h) else { continue };
+                let key = (pid, ab_cls.clone());
+                if cd > &0.0 {
+                    if !self.active.contains_key(&key) {
+                        self.events.push(AbilityEvent {
+                            t,
+                            pid,
+                            ability: ab_cls.clone(),
+                            start: true,
+                            remaining: *cd,
+                        });
+                        self.active.insert(key, t);
+                    }
+                } else if let Some(start) = self.active.remove(&key) {
+                    self.events.push(AbilityEvent {
+                        t,
+                        pid,
+                        ability: ab_cls.clone(),
+                        start: false,
+                        remaining: 0.0,
+                    });
+                    let _ = start;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Assemble `game_events` rows for ability cooldown transitions (resolving the
+/// hero npc via the header players: pid = 2 x header index).
+fn build_ability_event_rows(events: &[AbilityEvent], players: &[HeaderPlayer]) -> Vec<EventRow> {
+    let mut rows = Vec::new();
+    let mut seq: HashMap<(&'static str, String, i64), i64> = HashMap::new();
+    for ev in events {
+        let hero = (ev.pid as usize / 2)
+            .checked_sub(0)
+            .and_then(|i| players.get(i))
+            .and_then(|p| p.hero_npc.clone())
+            .unwrap_or_default();
+        let etype: &'static str = if ev.start { "ability_cd_start" } else { "ability_cd_end" };
+        let key = (etype, hero.clone(), ev.t);
+        let n = seq.entry(key).or_insert(0);
+        let event_seq = *n;
+        *n += 1;
+        rows.push(EventRow {
+            game_time_sec: ev.t,
+            event_type: etype,
+            actor_id: if hero.is_empty() { None } else { Some(hero.clone()) },
+            target_id: Some(ev.ability.clone()),
+            x: None,
+            y: None,
+            properties: serde_json::json!({
+                "hero": hero,
+                "ability": ev.ability,
+                "remaining": ev.remaining,
+            }),
+            event_seq,
+        });
+    }
+    rows
+}
+
 /// Assemble `game_events` rows for building spawn/destroy events.
 fn build_building_event_rows(events: &[BuildingEvent]) -> Vec<EventRow> {
     let mut rows = Vec::new();
@@ -810,6 +951,7 @@ pub fn parse_replay(
     let purchase = parser.register_observer::<PurchaseExtractor>();
     let ward = parser.register_observer::<WardExtractor>();
     let building = parser.register_observer::<BuildingExtractor>();
+    let ability = parser.register_observer::<AbilityExtractor>();
 
     // Sampling is gated on whole-second change inside the extractor, so no
     // interval injection is needed. (`interval_sec` is kept in the signature
@@ -821,6 +963,7 @@ pub fn parse_replay(
     let purchase = purchase.borrow();
     let ward = ward.borrow();
     let building = building.borrow();
+    let ability = ability.borrow();
 
     // --- assemble ---
     let identity_rows = build_identity_rows(&players);
@@ -828,6 +971,7 @@ pub fn parse_replay(
     let mut event_rows = build_event_rows(&purchase.purchases);
     event_rows.extend(build_ward_event_rows(&ward.placed, &ward.destroyed));
     event_rows.extend(build_building_event_rows(&building.events));
+    event_rows.extend(build_ability_event_rows(&ability.events, &players));
 
     // entity-level counts (by resolved entity_id) for the console log
     let mut entity_log: Vec<(String, usize, i64, i64)> = Vec::new();
