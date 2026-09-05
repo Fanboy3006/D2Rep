@@ -78,6 +78,42 @@ def ability_icon_b64(cls):
         return base64.b64encode(data).decode("ascii")
 
 
+ITEM_ICON_KEY = {"Black_King_Bar": "black_king_bar", "RefresherOrb": "refresher_orb"}
+
+
+def item_icon_b64(short):
+    """Active-item icon (Black_King_Bar/RefresherOrb) from Steam CDN items/."""
+    key = ITEM_ICON_KEY.get(short, short.lower())
+    cached = os.path.join(ABICON_CACHE, "item_" + key + ".png")
+    if os.path.exists(cached):
+        with open(cached, "rb") as f:
+            return base64.b64encode(f.read()).decode("ascii")
+    with _LOCK:
+        if os.path.exists(cached):
+            with open(cached, "rb") as f:
+                return base64.b64encode(f.read()).decode("ascii")
+        try:
+            url = "https://cdn.cloudflare.steamstatic.com/apps/dota2/images/items/%s_lg.png" % key
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=30, context=_SSL) as r:
+                raw = r.read()
+            from PIL import Image
+            im = Image.open(io.BytesIO(raw)).convert("RGBA").resize((48, 48), Image.LANCZOS)
+            buf = io.BytesIO(); im.save(buf, "PNG", optimize=True)
+            data = buf.getvalue()
+        except Exception:
+            return None
+        os.makedirs(ABICON_CACHE, exist_ok=True)
+        tmp = cached + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, cached)
+        return base64.b64encode(data).decode("ascii")
+
+
+ITEM_LABEL = {"Black_King_Bar": "BKB", "RefresherOrb": "刷新球"}
+
+
 def hero_icon_b64(npc):
     stem = npc[len("npc_dota_hero_"):] if npc.startswith("npc_dota_hero_") else npc
     cached = os.path.join(ICON_CACHE, stem + ".png")
@@ -188,21 +224,42 @@ def load_payload(target, step=1):
                                     "team": p["team"], "d": None})
         elif tid in towers:
             towers[tid]["d"] = int(sec)
-    cds = {}
-    pend = {}
-    for etype, sec, hero, ab in con.execute(
+    sk = {}  # hero -> {"ab": {ability:{learned,cds}}, "items": {short:{known,cds}}}
+    ab_state = {}
+    item_state = {}
+    for etype, sec, hero, tid in con.execute(
             """SELECT event_type, game_time_sec, actor_id, target_id
                FROM game_events
-               WHERE event_type IN ('ability_cd_start','ability_cd_end')"""):
-        if not hero:
+               WHERE event_type IN ('ability_known','ability_learn',
+                                    'ability_cd_start','ability_cd_end',
+                                    'item_known','item_cd_start','item_cd_end')"""):
+        if not hero or not tid:
             continue
-        key = (hero, ab)
-        if etype == "ability_cd_start":
-            pend[key] = sec
+        if etype.startswith("ability_"):
+            st = ab_state.setdefault((hero, tid), {"learned": -1, "pend": None, "cds": []})
+            if etype == "ability_known":
+                st["known"] = sec
+            elif etype == "ability_learn":
+                st["learned"] = sec
+            elif etype == "ability_cd_start":
+                st["pend"] = sec
+            elif etype == "ability_cd_end" and st["pend"] is not None:
+                st["cds"].append([st["pend"], sec]); st["pend"] = None
         else:
-            start = pend.pop(key, None)
-            if start is not None:
-                cds.setdefault(hero, {}).setdefault(ab, []).append([start, sec])
+            short = tid.split(":", 1)[1] if ":" in tid else tid
+            st = item_state.setdefault((hero, short), {"known": -1, "pend": None, "cds": []})
+            if etype == "item_known":
+                st["known"] = sec
+            elif etype == "item_cd_start":
+                st["pend"] = sec
+            elif etype == "item_cd_end" and st["pend"] is not None:
+                st["cds"].append([st["pend"], sec]); st["pend"] = None
+    for (hero, ab), st in ab_state.items():
+        sk.setdefault(hero, {"ab": {}, "items": {}})["ab"][ab] = {
+            "learned": st["learned"], "cds": st["cds"]}
+    for (hero, short), st in item_state.items():
+        sk.setdefault(hero, {"ab": {}, "items": {}})["items"][short] = {
+            "known": st["known"], "cds": st["cds"]}
     con.close()
     towers = list(towers.values())
 
@@ -233,7 +290,7 @@ def load_payload(target, step=1):
     payload = {"match_id": int(match_id), "players": players, "series": series,
                "meta": {"raw_end": raw_end, "active_end": active_end},
                "towers": towers, "camps": [[c[0], c[1], c[2]] for c in mann.NEUTRAL_CAMPS],
-               "roshan": list(mann.ROSHAN), "cds": cds}
+               "roshan": list(mann.ROSHAN), "sk": sk}
     return match_id, payload, icons
 
 
@@ -319,29 +376,38 @@ def main():
                 break
         lb = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", lb)
         return " ".join(lb.replace("_", " ").split())
-    skill_rows = []
+    def chip(hero, kind, key, icon, label, when):
+        img = ('<img class="cico" src="data:image/png;base64,%s" alt="">' % icon) if icon else ''
+        return ('<span class="chip" data-h="%s" data-kind="%s" data-a="%s" data-when="%s" '
+                'data-label="%s" title="%s">%s<span class="ctxt">%s</span>'
+                '<span class="cnum"></span></span>'
+                % (hero, kind, key, when, label, label, img, label))
+    bands = {2: [], 3: []}
     for p in payload["players"]:
-        cds_for_hero = payload["cds"].get(p["hero"], {})
-        if not cds_for_hero:
+        hero = p["hero"]
+        skh = (payload.get("sk") or {}).get(hero)
+        if not skh:
             continue
-        chips = []
-        for ab in sorted(cds_for_hero):
-            icon = ability_icon_b64(ab)
-            img = ('<img class="cico" src="data:image/png;base64,%s" alt="">' % icon) if icon else ''
-            chips.append('<span class="chip" data-h="%s" data-a="%s" data-label="%s" title="%s">'
-                         '%s<span class="ctxt">%s</span><span class="cnum"></span></span>'
-                         % (p["hero"], ab, ab_label(ab), ab_label(ab), img, ab_label(ab)))
+        h_chips = []
+        for ab in sorted(skh["ab"]):
+            st = skh["ab"][ab]
+            h_chips.append(chip(hero, "ab", ab, ability_icon_b64(ab), ab_label(ab), st["learned"]))
+        for short in sorted(skh["items"]):
+            st = skh["items"][short]
+            lb = ITEM_LABEL.get(short, short)
+            h_chips.append(chip(hero, "item", short, item_icon_b64(short), lb, st["known"]))
+        if not h_chips:
+            continue
         disp, acc = player_disp(p)
-        hid = ('<img class="hico" src="data:image/png;base64,%s" alt="">' % icons[p["hero"]]
-               if p["hero"] in icons else '')
+        hid = ('<img class="hico" src="data:image/png;base64,%s" alt="">' % icons[hero]
+               if hero in icons else '')
         name_html = (player_link('https://www.opendota.com/players/%d' % acc, disp) if acc > 0
                      else '<span>%s</span>' % disp)
-        skill_rows.append('<div class="skrow">'
-                          '<span class="skhero">%s<span class="skname">%s</span></span>'
-                          '<span class="skchips">%s</span></div>'
-                          % (hid, name_html, "".join(chips)))
-    skills_block = ('<div class="skills" id="skills"><div class="skh">技能CD（灰色=冷却中，数字=剩余秒）</div>'
-                    + "".join(skill_rows) + "</div>")
+        block = ('<div class="hblock"><div class="hhead">%s<span class="skname">%s</span></div>'
+                 '<div class="chips">%s</div></div>' % (hid, name_html, "".join(h_chips)))
+        bands[p["team"] if p["team"] in (2, 3) else 2].append(block)
+    band_l = ('<div class="band left"><div class="bh">天辉</div>' + "".join(bands[2]) + '</div>')
+    band_r = ('<div class="band right"><div class="bh">夜魇</div>' + "".join(bands[3]) + '</div>')
 
     # map image (downscale to 768 for memory friendliness everywhere)
     from PIL import Image
@@ -358,7 +424,8 @@ def main():
             .replace("__CAMPS__", "\n".join(camp_markup))
             .replace("__MATCH__", match_id)
             .replace("__T0__", str(int(t0)))
-            .replace("__SKILLS__", skills_block))
+            .replace("__BANDL__", band_l)
+            .replace("__BANDR__", band_r))
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:
         f.write(html)
@@ -379,9 +446,34 @@ TEMPLATE = r"""<!doctype html>
       border-bottom:1px solid #262b36;flex-wrap:wrap}
  .top h1{font-size:15px;margin:0;font-weight:600}
  .top .ver{font-size:11px;color:#8fa0b8}
- .wrap{display:flex;flex-direction:row;align-items:flex-start}
+ .stage{display:flex;flex-direction:row;align-items:flex-start;gap:6px;padding:4px}
+ .band{width:min(30vw,300px);min-width:210px;max-height:calc(100vh - 150px);
+       overflow:auto;background:#12141a;border:1px solid #23262e;border-radius:10px;
+       padding:6px;box-sizing:border-box}
+ .band .bh{font-size:12px;color:#9fb0c8;margin:2px 4px 4px}
+ .band.left .bh{color:#7bd77b}
+ .band.right .bh{color:#ff8b8b}
+ .hblock{margin:4px 0;padding:4px 4px 6px;border-bottom:1px solid #20242c}
+ .hblock:last-child{border-bottom:none}
+ .hhead{display:flex;align-items:center;gap:6px;font-size:12px;color:#cfe3ff;margin-bottom:3px}
+ .hhead .hico{width:24px;height:24px;border-radius:5px}
+ .hhead .skname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ .hhead .skname a{color:#cfe3ff;text-decoration:none}
+ .hhead .skname a:hover{text-decoration:underline}
+ .chips{display:flex;gap:5px;flex-wrap:wrap}
+ .chip{display:inline-flex;align-items:center;gap:4px;padding:2px 5px;
+       border-radius:6px;background:#1f2a3a;color:#cfe3ff;font-size:11px;
+       border:1px solid #2c3c55;white-space:nowrap}
+ .chip .cico{width:22px;height:22px;border-radius:4px;flex:none}
+ .chip .ctxt{font-size:11px}
+ .chip .cnum{font-size:11px;font-weight:700}
+ .chip.locked{background:#1a1d23;color:#5f6772;border-color:#262b33}
+ .chip.locked .cico{filter:grayscale(1);opacity:.35}
+ .chip.cd{background:#262a31;color:#7d8694;border-color:#3a3f4a}
+ .chip.cd .cico{filter:grayscale(1);opacity:.45}
+ .chip.cd .ctxt{display:none}
  .board{position:relative;flex:1 1 auto;min-width:0;aspect-ratio:1/1;
-        max-width:min(96vw,96vh);margin:8px auto;background:#0a0c10;overflow:hidden}
+        max-width:min(96vw,96vh);margin:4px auto;background:#0a0c10;overflow:hidden}
  .board img{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;display:block}
  .mk{position:absolute;transform:translate(-50%,-50%)}
  .camp{width:10px;height:10px;position:absolute;transform:translate(-50%,-50%);opacity:.95}
@@ -435,12 +527,10 @@ TEMPLATE = r"""<!doctype html>
  .chip.cd .cico{filter:grayscale(1);opacity:.45}
  .chip.cd .ctxt{display:none}
  @media (max-width:760px){
-   .wrap{flex-direction:column}
-   .panel{width:100%;border-left:none;border-top:1px solid #262b36;
-          display:flex;gap:16px;align-items:center;padding:6px 12px}
-   .panel .leg{display:none}
-   .board{max-width:96vw}
-   .skhero{width:80px}
+   .stage{flex-direction:column}
+   .band{width:100%;max-height:none;order:2}
+   .band.right{order:3}
+   .board{order:1;max-width:96vw}
  }
 </style>
 </head>
@@ -449,22 +539,14 @@ TEMPLATE = r"""<!doctype html>
   <span class="ver">兼容版 · 无需浏览器高级特性</span></h1>
 </div>
 <div class="note">点击"播放"或拖动时间条查看走位；若页面本身不能互动（如部分系统预览），仍会显示初始局面。</div>
-<div class="wrap">
+<div class="stage">
+  __BANDL__
   <div class="board"><img src="data:image/png;base64,__MAP_B64__" alt="map">
 __CAMPS____TOWERS____HEROES__
   </div>
-  <div class="panel">
-    <div class="tgl">
-      <label><input type="checkbox" id="tgc" checked> 野点</label>
-      <label><input type="checkbox" id="tgt" checked> 塔</label>
-    </div>
-    <div class="leg">
-      <div>●天辉　<span style="color:#ff5f57">●</span>夜魇</div>
-      <div>▲野点　◆远古　◉肉山　<span style="color:#46d160">◉</span>塔=存活　<span style="color:#4c525e">✕</span>=摧毁</div>
-    </div>
-  </div>
+  __BANDR__
 </div>
-__SKILLS__
+<div class="note" style="text-align:center">▲野点　◆远古　◉肉山　<span style="color:#46d160">◉</span>塔=存活　<span style="color:#4c525e">✕</span>=摧毁 · 技能灰=未学/冷却中(数字为剩余秒)</div>
 <div class="ctrl">
   <button id="play">▶</button>
   <span id="time">0:00</span>
@@ -492,7 +574,7 @@ var heroes = [];
   var H = 2 * 0; // world half for % calc below
 })();
 var WORLD = 19134, half = WORLD / 2;
-var cdmap = DATA.cds || {};
+var cdmap = DATA.sk || {};   // hero -> { ab:{ability:{learned,cds}}, items:{short:{known,cds}} }
 function pct(x, y) { return [(x + half) / WORLD * 100, (half - y) / WORLD * 100]; }
 function stateAt(arr, t) {
   var lo = 0, hi = arr.length - 1;
@@ -510,12 +592,6 @@ function fmt(s) { s = Math.max(0, Math.round(s)); return Math.floor(s / 60) + ':
 function draw() {
   var t = +document.getElementById('slider').value;
   document.getElementById('time').textContent = fmt(t - t0);
-  var showc = document.getElementById('tgc').checked ? '' : 'none';
-  var showt = document.getElementById('tgt').checked ? '' : 'none';
-  var cs = document.querySelectorAll('.camp'), k;
-  for (k = 0; k < cs.length; k++) cs[k].style.display = showc;
-  var tws = document.querySelectorAll('.tw');
-  for (k = 0; k < tws.length; k++) tws[k].style.display = showt;
   for (var i = 0; i < heroes.length; i++) {
     var h = heroes[i], st = stateAt(h.arr, t);
     var xy = pct(st[1], st[2]);
@@ -527,35 +603,40 @@ function draw() {
   }
   for (var j = 0; j < DATA.towers.length; j++) {
     var tw = DATA.towers[j], els = document.querySelectorAll('.tw');
-    // towers markup order equals DATA.towers order (baked); reuse index j
     if (els[j]) els[j].className = 'tw t' + (tw.team === 2 ? 2 : 3) +
       (tw.d != null && t >= tw.d ? ' dead' : '');
   }
-  // skill cooldown chips: gray + remaining seconds when on cooldown
+  // skill/item cooldown chips: locked (unlearned/unowned) / cooldown / ready
   var chips = document.querySelectorAll('.chip');
   for (var k = 0; k < chips.length; k++) {
-    var c = chips[k], arr = (cdmap[c.dataset.h] || {})[c.dataset.a], inter = null;
-    if (arr) {
+    var c = chips[k], skh = cdmap[c.dataset.h] || {};
+    var entry = c.dataset.kind === 'item' ? (skh.items || {})[c.dataset.a]
+                                          : (skh.ab || {})[c.dataset.a];
+    var num = c.querySelector('.cnum'), tx = c.querySelector('.ctxt');
+    var when = parseInt(c.dataset.when || '-1', 10);
+    var inter = null;
+    if (entry) {
+      var arr = entry.cds || [];
       for (var q = 0; q < arr.length; q++) {
         if (t >= arr[q][0] && t <= arr[q][1]) { inter = arr[q]; break; }
       }
     }
-    if (inter) {
-      c.classList.add('cd');
-      var num = c.querySelector('.cnum'), tx = c.querySelector('.ctxt');
+    if (inter) {                       // on cooldown: grey + remaining seconds
+      c.classList.add('cd'); c.classList.remove('locked');
       if (num) num.textContent = Math.ceil(inter[1] - t);
       if (tx) tx.textContent = '';
-    } else {
-      c.classList.remove('cd');
-      var tx2 = c.querySelector('.ctxt'), num2 = c.querySelector('.cnum');
-      if (tx2) tx2.textContent = c.dataset.label;
-      if (num2) num2.textContent = '';
+    } else if (when < 0 || t < when) { // not yet learned / not yet owned
+      c.classList.add('locked'); c.classList.remove('cd');
+      if (num) num.textContent = '';
+      if (tx) tx.textContent = c.dataset.label;
+    } else {                           // ready
+      c.classList.remove('cd', 'locked');
+      if (num) num.textContent = '';
+      if (tx) tx.textContent = c.dataset.label;
     }
   }
 }
 document.getElementById('slider').addEventListener('input', draw);
-document.getElementById('tgc').addEventListener('change', draw);
-document.getElementById('tgt').addEventListener('change', draw);
 document.getElementById('play').addEventListener('click', function () {  var s = document.getElementById('slider');
   if (this._t) { clearInterval(this._t); this._t = null; this.textContent = '▶'; return; }
   this.textContent = '⏸'; var self = this;
@@ -563,10 +644,6 @@ document.getElementById('play').addEventListener('click', function () {  var s =
     var v = +s.value + 1; if (v > s.max) v = s.min; s.value = v; draw();
   }, 100);
 });
-if (!document.querySelector('.skrow')) {
-  var sk = document.getElementById('skills');
-  if (sk) sk.style.display = 'none';
-}
 draw();
 </script>
 </body>

@@ -705,7 +705,7 @@ impl AbilityExtractor {
 }
 
 // active items we track cooldowns for (short class name after CDOTA_Item_)
-const ITEM_TRACK: &[&str] = &["Black_King_Bar", "Refresher_Orb"];
+const ITEM_TRACK: &[&str] = &["Black_King_Bar", "RefresherOrb"];
 
 /// Assemble `game_events` rows for ability/item knowledge, learning and
 /// cooldown transitions (resolving hero npc via header players: pid=2 x index).
