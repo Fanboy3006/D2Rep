@@ -260,6 +260,35 @@ def load_payload(target, step=1):
     for (hero, short), st in item_state.items():
         sk.setdefault(hero, {"ab": {}, "items": {}})["items"][short] = {
             "known": st["known"], "cds": st["cds"]}
+    # ---- active wards (observer/sentry) ----
+    placed_by_k = {}
+    for t, team, x, y, kind in con.execute(
+            """SELECT game_time_sec, json_extract(properties,'$.team'), x, y,
+                      json_extract(properties,'$.ward_type')
+               FROM game_events WHERE event_type='ward_placed'"""):
+        if team is None or x is None:
+            continue
+        placed_by_k.setdefault((int(team), kind), []).append((int(t), float(x), float(y)))
+    destroyed_by_k = {}
+    for t, team, kind in con.execute(
+            """SELECT game_time_sec, json_extract(properties,'$.team'),
+                      json_extract(properties,'$.ward_type')
+               FROM game_events WHERE event_type='ward_destroyed'"""):
+        if team is None:
+            continue
+        destroyed_by_k.setdefault((int(team), kind), []).append(int(t))
+    wards = []
+    for (team, kind), plist in placed_by_k.items():
+        dlist = sorted(destroyed_by_k.get((team, kind), []))
+        di = 0
+        for (pt, x, y) in sorted(plist):
+            dstr = None
+            while di < len(dlist) and dlist[di] < pt:
+                di += 1
+            if di < len(dlist):
+                dstr = dlist[di]; di += 1
+            wards.append([int(round(x)), int(round(y)), int(team), kind, int(pt),
+                          int(dstr) if dstr is not None else 0])
     con.close()
     towers = list(towers.values())
 
@@ -290,7 +319,7 @@ def load_payload(target, step=1):
     payload = {"match_id": int(match_id), "players": players, "series": series,
                "meta": {"raw_end": raw_end, "active_end": active_end},
                "towers": towers, "camps": [[c[0], c[1], c[2]] for c in mann.NEUTRAL_CAMPS],
-               "roshan": list(mann.ROSHAN), "sk": sk}
+               "roshan": list(mann.ROSHAN), "sk": sk, "wards": wards}
     return match_id, payload, icons
 
 
@@ -457,6 +486,13 @@ TEMPLATE = r"""<!doctype html>
       border-bottom:1px solid #262b36;flex-wrap:wrap}
  .top h1{font-size:15px;margin:0;font-weight:600}
  .top .ver{font-size:11px;color:#8fa0b8}
+ .tglbar{display:flex;gap:14px;align-items:center;justify-content:center;padding:4px 8px;
+         font-size:12px;color:#cfe3ff;flex-wrap:wrap}
+ .tglbar label{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
+ .tglbar input{accent-color:#4da3ff}
+ .ward{position:absolute;width:9px;height:9px;border-radius:50%;transform:translate(-50%,-50%);
+       border:1px solid #0b0d12;z-index:2}
+ .ward.sentry{border-radius:1px;transform:translate(-50%,-50%) rotate(45deg)}
  .stage{display:flex;flex-direction:row;align-items:flex-start;gap:6px;padding:4px}
  .band{width:min(30vw,300px);min-width:210px;max-height:calc(100vh - 150px);
        overflow:auto;background:#12141a;border:1px solid #23262e;border-radius:10px;
@@ -559,10 +595,17 @@ TEMPLATE = r"""<!doctype html>
   <span class="ver">兼容版 · 无需浏览器高级特性</span></h1>
 </div>
 <div class="note">点击"播放"或拖动时间条查看走位；若页面本身不能互动（如部分系统预览），仍会显示初始局面。</div>
+<div class="tglbar">
+  <label><input type="checkbox" id="tgHp" checked> 血蓝</label>
+  <label><input type="checkbox" id="tgWard" checked> 眼位</label>
+  <label><input type="checkbox" id="tgCamp" checked> 野点</label>
+  <label><input type="checkbox" id="tgTower" checked> 塔</label>
+</div>
 <div class="stage">
   __BANDL__
   <div class="board"><img src="data:image/png;base64,__MAP_B64__" alt="map">
-__CAMPS____TOWERS____HEROES__
+__CAMPS__<div class="wardlayer" id="wardlayer"></div>
+__TOWERS____HEROES__
   </div>
   __BANDR__
 </div>
@@ -612,6 +655,33 @@ function fmt(s) { s = Math.max(0, Math.round(s)); return Math.floor(s / 60) + ':
 function draw() {
   var t = +document.getElementById('slider').value;
   document.getElementById('time').textContent = fmt(t - t0);
+  var tgHp = document.getElementById('tgHp').checked;
+  var tgWard = document.getElementById('tgWard').checked;
+  var tgCamp = document.getElementById('tgCamp').checked;
+  var tgTower = document.getElementById('tgTower').checked;
+  var i, wd, xy;
+  var wl = document.getElementById('wardlayer');
+  wl.style.display = tgWard ? '' : 'none';
+  if (tgWard) {
+    var h = '';
+    for (i = 0; i < (DATA.wards || []).length; i++) {
+      wd = DATA.wards[i];
+      if (t >= wd[4] && (wd[5] === 0 || t < wd[5])) {
+        xy = pct(wd[0], wd[1]);
+        var col = wd[2] === 2 ? '#46d160' : '#ff5f57';
+        var cls = 'ward' + (wd[3] === 'sentry' ? ' sentry' : '');
+        h += '<span class="' + cls + '" style="left:' + xy[0] + '%;top:' + xy[1] +
+             '%;background:' + col + '"></span>';
+      }
+    }
+    wl.innerHTML = h;
+  }
+  var cs = document.querySelectorAll('.camp');
+  for (i = 0; i < cs.length; i++) cs[i].style.display = tgCamp ? '' : 'none';
+  var tws = document.querySelectorAll('.tw');
+  for (i = 0; i < tws.length; i++) tws[i].style.display = tgTower ? '' : 'none';
+  var bars = document.querySelectorAll('.hm .bars');
+  for (i = 0; i < bars.length; i++) bars[i].style.display = tgHp ? '' : 'none';
   var mks = document.querySelectorAll('.hm');
   for (var mi = 0; mi < mks.length; mi++) {
     var el = mks[mi], hero = el.getAttribute('data-hero');
@@ -672,6 +742,10 @@ function draw() {
   }
 }
 document.getElementById('slider').addEventListener('input', draw);
+['tgHp', 'tgWard', 'tgCamp', 'tgTower'].forEach(function (id) {
+  var el = document.getElementById(id);
+  if (el) el.addEventListener('change', draw);
+});
 document.getElementById('play').addEventListener('click', function () {  var s = document.getElementById('slider');
   if (this._t) { clearInterval(this._t); this._t = null; this.textContent = '▶'; return; }
   this.textContent = '⏸'; var self = this;
