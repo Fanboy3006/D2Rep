@@ -289,8 +289,24 @@ def load_payload(target, step=1):
                 dstr = dlist[di]; di += 1
             wards.append([int(round(x)), int(round(y)), int(team), kind, int(pt),
                           int(dstr) if dstr is not None else 0])
+    # smoke of deceit count per hero + first buy per team (shop proxy)
+    smoke_counts = {}
+    for t, hero, cnt in con.execute(
+            """SELECT game_time_sec, actor_id, json_extract(properties,'$.remaining')
+               FROM game_events WHERE event_type='smoke_count'"""):
+        if hero:
+            smoke_counts.setdefault(hero, []).append([int(t), int(cnt or 0)])
+    team_of = {p["hero"]: p["team"] for p in players if p["team"] in (2, 3)}
+    team_buy = {2: -1, 3: -1}
+    for t, hero, props in con.execute(
+            """SELECT game_time_sec, actor_id, properties FROM game_events
+               WHERE event_type='purchase' AND properties LIKE '%smoke_of_deceit%'"""):
+        team = team_of.get(hero)
+        if team is not None and team_buy[team] == -1:
+            team_buy[team] = int(t)
     con.close()
     towers = list(towers.values())
+
 
     raw_end = max((a[-1][0] for a in series.values() if a), default=0)
     move_end = 0
@@ -319,7 +335,8 @@ def load_payload(target, step=1):
     payload = {"match_id": int(match_id), "players": players, "series": series,
                "meta": {"raw_end": raw_end, "active_end": active_end},
                "towers": towers, "camps": [[c[0], c[1], c[2]] for c in mann.NEUTRAL_CAMPS],
-               "roshan": list(mann.ROSHAN), "sk": sk, "wards": wards}
+               "roshan": list(mann.ROSHAN), "sk": sk, "wards": wards,
+               "smoke": {"counts": smoke_counts, "team_buy": team_buy}}
     return match_id, payload, icons
 
 
@@ -453,11 +470,13 @@ def main():
     im = Image.open(args.map).convert("RGB").resize((768, 768), Image.LANCZOS)
     buf = io.BytesIO(); im.save(buf, "PNG", optimize=True)
     map_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    smoke_ico = item_icon_b64("Smoke_Of_Deceit") or ""
 
     data_json = json.dumps(payload, separators=(",", ":"))
     html = (TEMPLATE
             .replace("__DATA_JSON__", data_json)
             .replace("__MAP_B64__", map_b64)
+            .replace("__SMOKEICO__", smoke_ico)
             .replace("__HEROES__", "\n".join(hero_markup))
             .replace("__TOWERS__", "\n".join(tower_markup))
             .replace("__CAMPS__", "\n".join(camp_markup))
@@ -490,6 +509,15 @@ TEMPLATE = r"""<!doctype html>
          font-size:12px;color:#cfe3ff;flex-wrap:wrap}
  .tglbar label{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
  .tglbar input{accent-color:#4da3ff}
+ .smokebar{display:flex;align-items:center;gap:18px;flex-wrap:wrap;padding:4px 10px;font-size:12px;color:#cfe3ff}
+ .smokebar .sbh{font-weight:700;color:#d6b06a}
+ .smokebar .sbrow{display:flex;align-items:center;gap:8px}
+ .smokebar .sbt{width:38px;color:#9fb0c8;flex:none}
+ .smokebar .sbhold{display:flex;gap:8px;flex-wrap:wrap}
+ .smokebar .sbitem{display:inline-flex;align-items:center;gap:4px;background:#1f2a3a;border:1px solid #2c3c55;border-radius:6px;padding:2px 6px}
+ .smokebar .sbico{width:20px;height:20px;border-radius:4px}
+ .smokebar .sbshop{color:#7fd8ff;margin-left:4px}
+ .smokebar .sbnone{color:#555}
  .ward{position:absolute;width:9px;height:9px;border-radius:50%;transform:translate(-50%,-50%);
        border:1px solid #0b0d12;z-index:2}
  .ward.sentry{border-radius:1px;transform:translate(-50%,-50%) rotate(45deg)}
@@ -601,6 +629,10 @@ TEMPLATE = r"""<!doctype html>
   <label><input type="checkbox" id="tgCamp" checked> 野点</label>
   <label><input type="checkbox" id="tgTower" checked> 塔</label>
 </div>
+<div class="smokebar"><span class="sbh">诡计之雾</span>
+  <div class="sbrow"><span class="sbt">天辉</span><span class="sbhold" id="sbhold2"></span><span class="sbshop" id="sbshop2"></span></div>
+  <div class="sbrow"><span class="sbt">夜魇</span><span class="sbhold" id="sbhold3"></span><span class="sbshop" id="sbshop3"></span></div>
+</div>
 <div class="stage">
   __BANDL__
   <div class="board"><img src="data:image/png;base64,__MAP_B64__" alt="map">
@@ -638,6 +670,28 @@ var heroes = [];
 })();
 var WORLD = 19134, half = WORLD / 2;
 var cdmap = DATA.sk || {};   // hero -> { ab:{ability:{learned,cds}}, items:{short:{known,cds}} }
+var SMOKEICO = "__SMOKEICO__";
+function drawSmoke(t) {
+  var smoke = DATA.smoke || {}, counts = smoke.counts || {}, tb = smoke.team_buy || {};
+  var teamOf = {}; DATA.players.forEach(function (p) { teamOf[p.hero] = p.team; });
+  var nameOf = {}; DATA.players.forEach(function (p) { nameOf[p.hero] = (p.name || p.hero); });
+  for (var team = 2; team <= 3; team++) {
+    var hold = '';
+    for (var i = 0; i < DATA.players.length; i++) {
+      var p = DATA.players[i];
+      if (p.team !== team) continue;
+      var arr = counts[p.hero], c = 0;
+      if (arr) { for (var j = arr.length - 1; j >= 0; j--) { if (arr[j][0] <= t) { c = arr[j][1]; break; } } }
+      if (c > 0) {
+        hold += '<span class="sbitem"><img class="sbico" src="data:image/png;base64,' + SMOKEICO +
+                '">' + String(nameOf[p.hero]).slice(0, 12) + '×' + c + '</span>';
+      }
+    }
+    var shop = (tb[team] === undefined || tb[team] === -1 || t < tb[team]) ? '🛒商店有' : '';
+    document.getElementById('sbhold' + team).innerHTML = hold || '<span class="sbnone">无</span>';
+    document.getElementById('sbshop' + team).innerHTML = shop;
+  }
+}
 function pct(x, y) { return [(x + half) / WORLD * 100, (half - y) / WORLD * 100]; }
 function stateAt(arr, t) {
   var lo = 0, hi = arr.length - 1;
@@ -682,6 +736,7 @@ function draw() {
   for (i = 0; i < tws.length; i++) tws[i].style.display = tgTower ? '' : 'none';
   var bars = document.querySelectorAll('.hm .bars');
   for (i = 0; i < bars.length; i++) bars[i].style.display = tgHp ? '' : 'none';
+  drawSmoke(t);
   var mks = document.querySelectorAll('.hm');
   for (var mi = 0; mi < mks.length; mi++) {
     var el = mks[mi], hero = el.getAttribute('data-hero');

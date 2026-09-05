@@ -576,6 +576,7 @@ struct AbilityExtractor {
     known: HashSet<(u32, String)>,
     learned: HashSet<(u32, String)>,
     item_known: HashSet<(u32, String)>,
+    smoke_last: HashMap<u32, u32>,
     events: Vec<AbilityEvent>,
     last_sec: i64,
 }
@@ -587,6 +588,7 @@ impl Default for AbilityExtractor {
             known: HashSet::new(),
             learned: HashSet::new(),
             item_known: HashSet::new(),
+            smoke_last: HashMap::new(),
             events: Vec::new(),
             last_sec: i64::MIN,
         }
@@ -700,6 +702,25 @@ impl AbilityExtractor {
                 });
             }
         }
+        // pass 4: smoke of deceit count per hero (panels as smoke_count changes)
+        let mut smoke: HashMap<u32, u32> = HashMap::new();
+        for e in ctx.entities().iter() {
+            if e.class().name() != "CDOTA_Item_Smoke_Of_Deceit" {
+                continue;
+            }
+            if let Some(pid) = try_property!(e, u32, "m_iPlayerOwnerID") {
+                *smoke.entry(pid).or_insert(0) += 1;
+            }
+        }
+        for (pid, cnt) in smoke {
+            if self.smoke_last.get(&pid) != Some(&cnt) {
+                self.events.push(AbilityEvent {
+                    t, pid, key: "SMOKE".to_string(), kind: "smoke",
+                    phase: "count", remaining: cnt as f32,
+                });
+                self.smoke_last.insert(pid, cnt);
+            }
+        }
         Ok(())
     }
 }
@@ -721,6 +742,7 @@ fn build_ability_event_rows(events: &[AbilityEvent], players: &[HeaderPlayer]) -
             ("item", "known") => "item_known",
             ("item", "cd_start") => "item_cd_start",
             ("item", "cd_end") => "item_cd_end",
+            ("smoke", "count") => "smoke_count",
             _ => "ability_cd_start",
         }
     }
