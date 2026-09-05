@@ -539,7 +539,7 @@ TEMPLATE = r"""<!doctype html>
  .smokebar .sbico{width:20px;height:20px;border-radius:4px}
  .smokebar .sbshop{color:#7fd8ff;margin-left:4px}
  .smokebar .sbnone{color:#555}
- .ward{position:absolute;width:16px;height:16px;transform:translate(-50%,-50%);border:none;z-index:2;pointer-events:none}
+ .board .ward{position:absolute;width:11px;height:11px;transform:translate(-50%,-50%);border:none;z-index:2;pointer-events:none;opacity:.85}
        border:1px solid #0b0d12;z-index:2}
  .ward.sentry{border-radius:1px;transform:translate(-50%,-50%) rotate(45deg)}
  .stage{display:flex;flex-direction:row;align-items:flex-start;gap:6px;padding:4px}
@@ -576,8 +576,8 @@ TEMPLATE = r"""<!doctype html>
         margin:4px auto;background:#0a0c10;overflow:hidden}
  .board img{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;display:block}
  .mk{position:absolute;transform:translate(-50%,-50%)}
- .camp,.tw{width:20px;height:20px;position:absolute;transform:translate(-50%,-50%);opacity:.96;pointer-events:none;z-index:2}
-.camp img,.tw img{width:100%;height:100%;display:block;object-fit:contain}
+ .camp,.tw{width:22px;height:22px;position:absolute;transform:translate(-50%,-50%);opacity:.98;pointer-events:none;z-index:3}
+.board .camp img,.board .tw img{position:relative;inset:auto;width:100%;height:100%;display:block;object-fit:contain;left:0;top:0}
  .t2,.t3{display:none}
  .ct2,.ct1,.ct0{display:none}
  .ct1{background:#8394ac;clip-path:polygon(50% 0,100% 100%,0 100%);width:8px;height:8px}

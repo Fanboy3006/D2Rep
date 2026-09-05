@@ -11,9 +11,13 @@ high-contrast so they read at a glance on the busy map.
 """
 
 # ---------------------------------------------------------------- palette
-RADIANT = "#46d160"
-DIRE = "#ff5f57"
-ANCIENT = "#e8b64c"
+RADIANT = "#3fbf4f"       # team green
+DIRE = "#e5484d"          # team red
+CAMP_YELLOW = "#e8b64c"   # neutral camp marker (common dota minimap yellow)
+CAMP_OLIVE = "#b9a03a"    # darker camp tier
+ANCIENT = "#8fd14f"       # ancient camp (green, like in-game)
+WARD_OBS = "#35c759"      # observer ward dot (green)
+WARD_SENT = "#3b82f6"     # sentry ward (blue)
 DARK = "#0b0d12"
 
 
@@ -39,33 +43,30 @@ def svg_tower(team, dead=False, tier=1):
 
 
 def svg_camp(ctype):
-    """Neutral camp glyph by tier. ctype 0..3 (3 = ancient)."""
-    if ctype >= 3:  # ancient: gold crown/gem
-        body = ('<polygon points="5,15 7,7 11,11 15,7 17,15" fill="%s" stroke="%s" stroke-width="1"/>'
-                '<rect x="6" y="15" width="10" height="4" rx="1" fill="%s"/>') % (ANCIENT, DARK, ANCIENT)
+    """Neutral camp marker by tier (dota-minimap style). ctype 0..3 (3=ancient).
+    Default camps are a yellow/olive camp blob; ancient is a green gem."""
+    if ctype >= 3:  # ancient: green gem/diamond
+        body = ('<polygon points="11,3 15,11 11,19 7,11" fill="%s" stroke="%s" stroke-width="1"/>'
+                '<polygon points="11,6 13,11 11,16 9,11" fill="#eaffd0"/>') % (ANCIENT, DARK)
         return _svg(22, 22, body)
-    col = ["#66778f", "#8394ac", "#aab6c8"][min(ctype, 2)]
-    # single monster silhouette (varies slightly by tier) in a small camp marker
-    if ctype == 2:
-        body = ('<circle cx="11" cy="11" r="7" fill="%s" stroke="%s" stroke-width="1"/>'
-                '<polygon points="6,15 9,9 13,9 16,15" fill="#2a3341"/>'
-                '<circle cx="9" cy="8" r="1.4" fill="#12161d"/>'
-                '<circle cx="13" cy="8" r="1.4" fill="#12161d"/>') % (col, DARK)
-    else:
-        body = ('<polygon points="7,16 9,6 13,6 15,16" fill="%s" stroke="%s" stroke-width="1"/>'
-                '<circle cx="11" cy="17" r="2" fill="%s"/>') % (col, DARK, col)
+    # two tone camp mound (yellow/olive) with darker inner
+    outer = CAMP_YELLOW if ctype >= 2 else CAMP_OLIVE if ctype >= 1 else "#8a9a5b"
+    body = ('<circle cx="11" cy="11" r="7" fill="%s" stroke="%s" stroke-width="1"/>'
+            '<path d="M6 13 L11 8 L16 13 L11 16 Z" fill="%s"/>'
+            '<circle cx="11" cy="11" r="1.6" fill="%s"/>') % (outer, DARK, "#2b2010", DARK)
     return _svg(22, 22, body)
 
 
 def svg_ward(sentry=False):
-    """Ward observation glyph. sentry= true -> diamond, false -> circle (observer)."""
+    """Ward dot (official minimap style): small filled circle with a ring.
+    observer = green, sentry = blue (sentry slightly diamond)."""
     if sentry:
-        body = ('<rect x="5" y="5" width="10" height="10" rx="1" fill="#2f6fd8" '
-                'stroke="#0b0d12" stroke-width="1.2" transform="rotate(45 10 10)"/>')
+        body = ('<polygon points="8,2 14,8 8,14 2,8" fill="%s" stroke="#0b0d12" stroke-width="1"/>'
+                '<polygon points="8,5 11,8 8,11 5,8" fill="#dbe9ff"/>') % WARD_SENT
     else:
-        body = ('<circle cx="10" cy="10" r="6" fill="#4da3ff" stroke="#0b0d12" stroke-width="1.2"/>'
-                '<circle cx="10" cy="10" r="2" fill="#cfe9ff"/>')
-    return _svg(20, 20, body)
+        body = ('<circle cx="8" cy="8" r="5" fill="%s" stroke="#0b0d12" stroke-width="1"/>'
+                '<circle cx="8" cy="8" r="2" fill="#eaffef"/>') % WARD_OBS
+    return _svg(16, 16, body)
 
 
 def svg_roshan():
