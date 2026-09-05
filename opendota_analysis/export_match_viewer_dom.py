@@ -38,6 +38,45 @@ _SSL = ssl._create_unverified_context()
 import threading
 _LOCK = threading.Lock()
 
+ABICON_CACHE = os.path.join(HERE, "assets", "ability_icons")
+ABICON_URL = "https://cdn.cloudflare.steamstatic.com/apps/dota2/images/abilities/%s_lg.png"
+import re as _re
+
+
+def ability_key(cls):
+    """CDOTA_Ability_Invoker_SunStrike -> invoker_sun_strike (used by CDN)."""
+    s = cls[len("CDOTA_Ability_"):] if cls.startswith("CDOTA_Ability_") else cls
+    return _re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", s).lower()
+
+
+def ability_icon_b64(cls):
+    """Official ability icon from the Steam CDN, cached under assets/ability_icons."""
+    key = ability_key(cls)
+    cached = os.path.join(ABICON_CACHE, key + ".png")
+    if os.path.exists(cached):
+        with open(cached, "rb") as f:
+            return base64.b64encode(f.read()).decode("ascii")
+    with _LOCK:
+        if os.path.exists(cached):
+            with open(cached, "rb") as f:
+                return base64.b64encode(f.read()).decode("ascii")
+        try:
+            req = urllib.request.Request(ABICON_URL % key, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=30, context=_SSL) as r:
+                raw = r.read()
+            from PIL import Image
+            im = Image.open(io.BytesIO(raw)).convert("RGBA").resize((48, 48), Image.LANCZOS)
+            buf = io.BytesIO(); im.save(buf, "PNG", optimize=True)
+            data = buf.getvalue()
+        except Exception:
+            return None
+        os.makedirs(ABICON_CACHE, exist_ok=True)
+        tmp = cached + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, cached)
+        return base64.b64encode(data).decode("ascii")
+
 
 def hero_icon_b64(npc):
     stem = npc[len("npc_dota_hero_"):] if npc.startswith("npc_dota_hero_") else npc
@@ -79,6 +118,27 @@ def find_db(match_id):
     p = os.path.join(HERE, "..", "dems", "db", "*", "%s.db" % match_id)
     hits = glob.glob(p)
     return hits[0] if hits else None
+
+
+STEAM_BASE = 76561197960265728  # steam64 -> account_id (opendota / matches)
+
+
+def load_official(match_id):
+    """opendota match players[].name -> official player id, keyed by account_id.
+    Returns {} if the cached opendota match json is unavailable."""
+    p = os.path.join(HERE, "..", ".tmp", "op_match_%s.json" % match_id)
+    if not os.path.exists(p):
+        return {}
+    try:
+        m = json.load(open(p, encoding="utf-8"))
+    except Exception:
+        return {}
+    d = {}
+    for pl in m.get("players", []):
+        acc = pl.get("account_id")
+        if acc is not None:
+            d[acc] = pl.get("name") or ""
+    return d
 
 
 def load_payload(target, step=1):
@@ -196,6 +256,15 @@ def main():
     args = ap.parse_args()
 
     match_id, payload, icons = load_payload(args.target, args.step)
+    official = load_official(match_id)
+
+    def player_disp(p):
+        acc = (p.get("steam") or 0) - STEAM_BASE
+        nm = official.get(acc)
+        return (nm or p["name"] or p["hero"]), acc
+
+    def player_link(href, text):
+        return '<a href="%s" target="_blank" rel="noopener">%s</a>' % (href, text)
     if args.out is None:
         args.out = os.path.join(HERE, "..", "dist", "viewer_%s_lite.html" % match_id)
 
@@ -210,11 +279,15 @@ def main():
         left, top = pct(x, y)
         ico = ('<img class="ico" src="data:image/png;base64,%s" alt="">' % icons[p["hero"]]
                if p["hero"] in icons else '')
+        disp, acc = player_disp(p)
+        href = 'https://www.opendota.com/players/%d' % acc if acc > 0 else None
+        nm = ('<a href="%s" target="_blank" rel="noopener" title="%s">%s</a>' % (href, disp, disp)
+              if href else '<span>%s</span>' % disp)
         hero_markup.append(
             '<div class="hm" data-hero="%s" style="left:%.3f%%;top:%.3f%%">%s'
             '<span class="hbar"><i></i></span><span class="mbar"><i></i></span>'
             '<span class="hnm">%s</span></div>' % (
-                p["hero"], left, top, ico, (p["name"] or p["hero"])))
+                p["hero"], left, top, ico, nm))
     tower_markup = []
     for tw in payload["towers"]:
         left, top = pct(tw["x"], tw["y"])
@@ -253,11 +326,20 @@ def main():
             continue
         chips = []
         for ab in sorted(cds_for_hero):
-            chips.append('<span class="chip" data-h="%s" data-a="%s" data-label="%s"></span>'
-                         % (p["hero"], ab, ab_label(ab)))
-        skill_rows.append('<div class="skrow"><span class="skhero">%s</span>'
+            icon = ability_icon_b64(ab)
+            img = ('<img class="cico" src="data:image/png;base64,%s" alt="">' % icon) if icon else ''
+            chips.append('<span class="chip" data-h="%s" data-a="%s" data-label="%s" title="%s">'
+                         '%s<span class="ctxt">%s</span><span class="cnum"></span></span>'
+                         % (p["hero"], ab, ab_label(ab), ab_label(ab), img, ab_label(ab)))
+        disp, acc = player_disp(p)
+        hid = ('<img class="hico" src="data:image/png;base64,%s" alt="">' % icons[p["hero"]]
+               if p["hero"] in icons else '')
+        name_html = (player_link('https://www.opendota.com/players/%d' % acc, disp) if acc > 0
+                     else '<span>%s</span>' % disp)
+        skill_rows.append('<div class="skrow">'
+                          '<span class="skhero">%s<span class="skname">%s</span></span>'
                           '<span class="skchips">%s</span></div>'
-                          % ((p["name"] or p["hero"]), "".join(chips)))
+                          % (hid, name_html, "".join(chips)))
     skills_block = ('<div class="skills" id="skills"><div class="skh">技能CD（灰色=冷却中，数字=剩余秒）</div>'
                     + "".join(skill_rows) + "</div>")
 
@@ -336,12 +418,22 @@ TEMPLATE = r"""<!doctype html>
          border:1px solid #262b36;border-radius:10px}
  .skills .skh{font-size:12px;color:#9fb0c8;margin-bottom:6px}
  .skrow{display:flex;align-items:center;gap:8px;margin:4px 0;flex-wrap:wrap}
- .skhero{width:112px;font-size:12px;color:#aeb9cc;overflow:hidden;text-overflow:ellipsis;
-         white-space:nowrap;flex:none}
+ .skhero{width:132px;display:flex;align-items:center;gap:6px;font-size:12px;color:#aeb9cc;
+         flex:none;overflow:hidden}
+ .skhero .hico{width:26px;height:26px;border-radius:5px;flex:none}
+ .skhero .skname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ .skhero .skname a{color:#cfe3ff;text-decoration:none}
+ .skhero .skname a:hover{text-decoration:underline}
  .skchips{display:flex;gap:6px;flex-wrap:wrap}
- .chip{min-width:40px;padding:3px 7px;border-radius:6px;background:#1f2a3a;color:#cfe3ff;
-       font-size:11px;text-align:center;border:1px solid #2c3c55;white-space:nowrap}
- .chip.cd{background:#2a2e36;color:#7d8694;border-color:#3a3f4a;text-align:center}
+ .chip{display:inline-flex;align-items:center;gap:5px;min-width:40px;padding:3px 6px;
+       border-radius:6px;background:#1f2a3a;color:#cfe3ff;font-size:11px;
+       border:1px solid #2c3c55;white-space:nowrap}
+ .chip .cico{width:24px;height:24px;border-radius:4px;flex:none}
+ .chip .ctxt{font-size:11px}
+ .chip .cnum{font-size:12px;font-weight:700;letter-spacing:0}
+ .chip.cd{background:#262a31;color:#7d8694;border-color:#3a3f4a}
+ .chip.cd .cico{filter:grayscale(1);opacity:.45}
+ .chip.cd .ctxt{display:none}
  @media (max-width:760px){
    .wrap{flex-direction:column}
    .panel{width:100%;border-left:none;border-top:1px solid #262b36;
@@ -448,8 +540,17 @@ function draw() {
         if (t >= arr[q][0] && t <= arr[q][1]) { inter = arr[q]; break; }
       }
     }
-    if (inter) { c.classList.add('cd'); c.textContent = Math.ceil(inter[1] - t); }
-    else { c.classList.remove('cd'); c.textContent = c.dataset.label; }
+    if (inter) {
+      c.classList.add('cd');
+      var num = c.querySelector('.cnum'), tx = c.querySelector('.ctxt');
+      if (num) num.textContent = Math.ceil(inter[1] - t);
+      if (tx) tx.textContent = '';
+    } else {
+      c.classList.remove('cd');
+      var tx2 = c.querySelector('.ctxt'), num2 = c.querySelector('.cnum');
+      if (tx2) tx2.textContent = c.dataset.label;
+      if (num2) num2.textContent = '';
+    }
   }
 }
 document.getElementById('slider').addEventListener('input', draw);
