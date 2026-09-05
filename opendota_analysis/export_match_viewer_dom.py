@@ -403,10 +403,13 @@ def main():
                if hero in icons else '')
         name_html = (player_link('https://www.opendota.com/players/%d' % acc, disp) if acc > 0
                      else '<span>%s</span>' % disp)
+        a0 = (payload["series"].get(hero) or [None])[0]
+        hp0 = (a0[3] if a0 else 0); hpm0 = (a0[4] if a0 else 0); mp0 = (a0[5] if a0 else 0)
+        hstats_init = '%d/%d<span class="mp">%d</span>' % (hp0, hpm0, mp0)
         block = ('<div class="hblock" data-hero="%s"><div class="hhead">%s<span class="skname">%s</span>'
-                 '<span class="hstats"></span></div>'
+                 '<span class="hstats">%s</span></div>'
                  '<div class="chips">%s</div></div>'
-                 % (p["hero"], hid, name_html, "".join(h_chips)))
+                 % (p["hero"], hid, name_html, hstats_init, "".join(h_chips)))
         bands[p["team"] if p["team"] in (2, 3) else 2].append(block)
     band_l = ('<div class="band left"><div class="bh">天辉</div>' + "".join(bands[2]) + '</div>')
     band_r = ('<div class="band right"><div class="bh">夜魇</div>' + "".join(bands[3]) + '</div>')
@@ -463,8 +466,9 @@ TEMPLATE = r"""<!doctype html>
  .hhead .skname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
  .hhead .skname a{color:#cfe3ff;text-decoration:none}
  .hhead .skname a:hover{text-decoration:underline}
- .hstats{margin-left:auto;font-size:10px;color:#9fe3a6;font-variant-numeric:tabular-nums;flex:none}
- .hstats .mp{color:#7fc4f0;margin-left:6px}
+ .hstats{margin-left:auto;font-size:11px;font-weight:600;color:#8fe89a;font-variant-numeric:tabular-nums;
+         flex:none;white-space:nowrap}
+ .hstats .mp{color:#6fc4f5;margin-left:7px}
  .chips{display:flex;gap:5px;flex-wrap:wrap}
  .chip{display:inline-flex;align-items:center;gap:4px;padding:2px 5px;
        border-radius:6px;background:#1f2a3a;color:#cfe3ff;font-size:11px;
@@ -613,16 +617,16 @@ function draw() {
     if (els[j]) els[j].className = 'tw t' + (tw.team === 2 ? 2 : 3) +
       (tw.d != null && t >= tw.d ? ' dead' : '');
   }
-  // per-hero side stats: current HP / mana
+  // per-hero side stats: current HP / mana (reads data directly, no DOM dep)
   var hblocks = document.querySelectorAll('.hblock');
   for (var bi = 0; bi < hblocks.length; bi++) {
     var hb = hblocks[bi], hero = hb.getAttribute('data-hero');
-    var hh = null;
-    for (var hi = 0; hi < heroes.length; hi++) if (heroes[hi].hero === hero) { hh = heroes[hi]; break; }
-    if (!hh) continue;
-    var st = stateAt(hh.arr, t);
+    var arr = DATA.series[hero];
+    if (!arr || !arr.length) continue;
+    var st = stateAt(arr, t);
     var s = hb.querySelector('.hstats');
-    if (s) s.innerHTML = Math.round(st[3]) + '/' + st[4] + '<span class="mp">' + Math.round(st[5]) + '</span>';
+    if (s) s.innerHTML = Math.round(st[3]) + '/' + st[4] +
+      '<span class="mp">' + Math.round(st[5]) + '</span>';
   }
   // skill/item cooldown chips: locked (unlearned/unowned) / cooldown / ready
   var chips = document.querySelectorAll('.chip');
