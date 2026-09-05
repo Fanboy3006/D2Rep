@@ -673,8 +673,14 @@ var cdmap = DATA.sk || {};   // hero -> { ab:{ability:{learned,cds}}, items:{sho
 var SMOKEICO = "__SMOKEICO__";
 function drawSmoke(t) {
   var smoke = DATA.smoke || {}, counts = smoke.counts || {}, tb = smoke.team_buy || {};
-  var teamOf = {}; DATA.players.forEach(function (p) { teamOf[p.hero] = p.team; });
-  var nameOf = {}; DATA.players.forEach(function (p) { nameOf[p.hero] = (p.name || p.hero); });
+  function heroName(h) {
+    var s = String(h).replace('npc_dota_hero_', '');
+    return s.split('_').map(function (w) { return w.charAt(0).toUpperCase() + w.slice(1); }).join(' ');
+  }
+  function heroIco(h) {
+    var el = document.querySelector('.hm[data-hero="' + h + '"] .ico');
+    return el ? el.getAttribute('src') : '';
+  }
   for (var team = 2; team <= 3; team++) {
     var hold = '';
     for (var i = 0; i < DATA.players.length; i++) {
@@ -683,8 +689,8 @@ function drawSmoke(t) {
       var arr = counts[p.hero], c = 0;
       if (arr) { for (var j = arr.length - 1; j >= 0; j--) { if (arr[j][0] <= t) { c = arr[j][1]; break; } } }
       if (c > 0) {
-        hold += '<span class="sbitem"><img class="sbico" src="data:image/png;base64,' + SMOKEICO +
-                '">' + String(nameOf[p.hero]).slice(0, 12) + '×' + c + '</span>';
+        hold += '<span class="sbitem"><img class="sbico" src="' + heroIco(p.hero) + '">' +
+                heroName(p.hero) + '×' + c + '</span>';
       }
     }
     var shop = (tb[team] === undefined || tb[team] === -1 || t < tb[team]) ? '🛒商店有' : '';
