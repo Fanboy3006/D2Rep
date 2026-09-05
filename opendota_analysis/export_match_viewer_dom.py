@@ -345,8 +345,9 @@ def main():
         mf0 = (100.0 * a0[5] / a0[6]) if a0[6] else 0
         hero_markup.append(
             '<div class="hm" data-hero="%s" style="left:%.3f%%;top:%.3f%%">'
+            '<span class="bars">'
             '<span class="hbar"><i style="width:%.1f%%"></i></span>'
-            '<span class="mbar"><i style="width:%.1f%%"></i></span>%s'
+            '<span class="mbar"><i style="width:%.1f%%"></i></span></span>%s'
             '<span class="hnm">%s</span></div>' % (
                 p["hero"], left, top, hf0, mf0, ico, nm))
     tower_markup = []
@@ -502,14 +503,18 @@ TEMPLATE = r"""<!doctype html>
  .tw.dead{background:#4c525e}
  .tw.dead::after{content:"✕";color:#111;font-size:9px;position:absolute;
      left:50%;top:50%;transform:translate(-50%,-50%)}
- .hm{position:absolute;transform:translate(-50%,-50%);text-align:center;width:52px}
- .hm .ico{width:46px;height:26px;display:block;border:2px solid #555;border-radius:4px}
- .hm .hnm{display:block;font-size:10px;color:#fff;text-shadow:0 0 2px #000;white-space:nowrap;
-          overflow:hidden;text-overflow:ellipsis;width:64px;margin:1px auto 0}
- .hm .hbar,.hm .mbar{display:block;height:5px;background:#1a1e26;margin:1px auto;width:52px;
-     border-radius:3px;overflow:hidden;border:1px solid #00000066}
+ .hm{position:absolute;transform:translate(-50%,-50%);text-align:center;width:52px;z-index:4}
+ .hm .ico{width:46px;height:26px;display:block;border:2px solid #555;border-radius:4px;
+          position:relative;z-index:1}
+ .hm .bars{position:absolute;left:50%;top:-6px;transform:translate(-50%,-100%);z-index:3;
+           width:56px}
+ .hm .hbar,.hm .mbar{display:block;height:7px;background:#0b0e14;margin:1px auto;width:56px;
+     border-radius:4px;overflow:hidden;border:1px solid #000}
  .hm .hbar i{display:block;height:100%;background:linear-gradient(90deg,#27ae60,#5fe08a)}
  .hm .mbar i{display:block;height:100%;background:linear-gradient(90deg,#2980b9,#5bc0ff)}
+ .hm .hnm{display:block;font-size:10px;color:#fff;text-shadow:0 0 2px #000;white-space:nowrap;
+          overflow:hidden;text-overflow:ellipsis;width:64px;margin:1px auto 0;position:relative;
+          z-index:2}
  .panel{width:260px;flex:none;padding:10px;border-left:1px solid #262b36}
  .panel.tgl{display:flex;gap:12px;align-items:center;font-size:12px;margin-bottom:8px}
  .panel input[type=checkbox]{accent-color:#4da3ff}
