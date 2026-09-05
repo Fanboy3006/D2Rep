@@ -28,6 +28,7 @@ import ssl
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 from opendota_analysis import map_annotations as mann  # noqa: E402
+from opendota_analysis import map_icons as mico  # noqa: E402
 
 ICON_CACHE = os.path.join(HERE, "assets", "hero_icons")
 ICON_URLS = [
@@ -340,16 +341,22 @@ def load_payload(target, step=1):
     return match_id, payload, icons
 
 
-# AUTHORITATIVE world square span: from the two dota_minimap_boundary entities
-# (+/-9472, +/-9472) in the real map (maps/dota_737.vpk -> default_ents.vents).
-# Matches the 7.37 official overview base image used below.
-WORLD = 18944.0
+# AUTHORITATIVE world->board calibration: fountain-anchored isotropic LSQ
+# solved on the decoded 7.37 overview (see map_annotations.CALIB_* and
+# .tmp/solve_calib.py). Constants are pixel positions on a 1024 board;
+# pct() converts to board percentages (0-100).
+from opendota_analysis import map_annotations as mann  # noqa: E402
+CALIB_K = mann.CALIB_K
+CALIB_OFFX = mann.CALIB_OFFX
+CALIB_REF_Y = mann.CALIB_REF_Y
+BOARD = 1024.0
 
 
 def pct(x, y):
-    """world -> percentage inside the square board."""
-    half = WORLD / 2
-    return (x + half) / WORLD * 100, (half - y) / WORLD * 100
+    """world -> percentage inside the square board (authoritative mapping)."""
+    px = CALIB_OFFX + CALIB_K * x
+    py = CALIB_REF_Y - CALIB_K * y
+    return px / BOARD * 100, py / BOARD * 100
 
 
 def main():
@@ -402,19 +409,24 @@ def main():
     tower_markup = []
     for tw in payload["towers"]:
         left, top = pct(tw["x"], tw["y"])
+        dead = tw["d"] is not None and tw["d"] <= t0
+        side = "radiant" if tw["team"] == 2 else "dire"
+        ico = mico.to_data_uri(mico.svg_tower(side, dead=dead))
         tower_markup.append(
-            '<div class="tw t%d%s" style="left:%.3f%%;top:%.3f%%"></div>' % (
-                2 if tw["team"] == 2 else 3, " dead" if tw["d"] is not None and tw["d"] <= t0 else "",
-                left, top))
+            '<div class="tw" style="left:%.3f%%;top:%.3f%%">'
+            '<img src="%s" alt=""></div>' % (left, top, ico))
     camp_markup = []
     for c in payload["camps"]:
         left, top = pct(c[0], c[1])
-        camp_markup.append('<div class="camp ct%d" style="left:%.3f%%;top:%.3f%%"></div>'
-                           % (c[2], left, top))
+        ct = int(c[2])
+        ico = mico.to_data_uri(mico.svg_camp(ct))
+        camp_markup.append('<div class="camp" style="left:%.3f%%;top:%.3f%%">'
+                           '<img src="%s" alt=""></div>' % (left, top, ico))
     if payload.get("roshan"):
         left, top = pct(payload["roshan"][0], payload["roshan"][1])
-        camp_markup.append('<div class="camp rosh" style="left:%.3f%%;top:%.3f%%"></div>'
-                           % (left, top))
+        ico = mico.to_data_uri(mico.svg_roshan())
+        camp_markup.append('<div class="camp" style="left:%.3f%%;top:%.3f%%">'
+                           '<img src="%s" alt=""></div>' % (left, top, ico))
 
     # ---- skill-cooldown chips per hero ----
     import re
@@ -485,6 +497,12 @@ def main():
             .replace("__CAMPS__", "\n".join(camp_markup))
             .replace("__MATCH__", match_id)
             .replace("__T0__", str(int(t0)))
+            .replace("__CALIB_K__", repr(CALIB_K))
+            .replace("__CALIB_OFFX__", repr(CALIB_OFFX))
+            .replace("__CALIB_REF_Y__", repr(CALIB_REF_Y))
+            .replace("__BOARD__", repr(int(BOARD)))
+            .replace("__OBSICO__", mico.ICONS["ward_obs"])
+            .replace("__SENTRYICO__", mico.ICONS["ward_sentry"])
             .replace("__BANDL__", band_l)
             .replace("__BANDR__", band_r))
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
@@ -521,7 +539,7 @@ TEMPLATE = r"""<!doctype html>
  .smokebar .sbico{width:20px;height:20px;border-radius:4px}
  .smokebar .sbshop{color:#7fd8ff;margin-left:4px}
  .smokebar .sbnone{color:#555}
- .ward{position:absolute;width:9px;height:9px;border-radius:50%;transform:translate(-50%,-50%);
+ .ward{position:absolute;width:16px;height:16px;transform:translate(-50%,-50%);border:none;z-index:2;pointer-events:none}
        border:1px solid #0b0d12;z-index:2}
  .ward.sentry{border-radius:1px;transform:translate(-50%,-50%) rotate(45deg)}
  .stage{display:flex;flex-direction:row;align-items:flex-start;gap:6px;padding:4px}
@@ -558,9 +576,10 @@ TEMPLATE = r"""<!doctype html>
         margin:4px auto;background:#0a0c10;overflow:hidden}
  .board img{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;display:block}
  .mk{position:absolute;transform:translate(-50%,-50%)}
- .camp{width:10px;height:10px;position:absolute;transform:translate(-50%,-50%);opacity:.95}
- .ct3{background:#e8b64c;transform:translate(-50%,-50%) rotate(45deg)}
- .ct2{background:#aab6c8;clip-path:polygon(50% 0,100% 100%,0 100%)}
+ .camp,.tw{width:20px;height:20px;position:absolute;transform:translate(-50%,-50%);opacity:.96;pointer-events:none;z-index:2}
+.camp img,.tw img{width:100%;height:100%;display:block;object-fit:contain}
+ .t2,.t3{display:none}
+ .ct2,.ct1,.ct0{display:none}
  .ct1{background:#8394ac;clip-path:polygon(50% 0,100% 100%,0 100%);width:8px;height:8px}
  .ct0{background:#66778f;clip-path:polygon(50% 0,100% 100%,0 100%);width:7px;height:7px}
  .rosh{border:2px solid #e0655f;border-radius:50%;width:14px;height:14px;background:none}
@@ -671,7 +690,9 @@ var heroes = [];
   window.__data = DATA;
   var H = 2 * 0; // world half for % calc below
 })();
-var WORLD = 18944, half = WORLD / 2;
+var WORLD = 18944, half = WORLD / 2;   // kept for back-compat; pct() uses CALIB below
+var CALIB_K = __CALIB_K__, CALIB_OFFX = __CALIB_OFFX__, CALIB_REF_Y = __CALIB_REF_Y__, BOARD = __BOARD__;
+var OBSICO = "__OBSICO__", SENTRYICO = "__SENTRYICO__";
 var cdmap = DATA.sk || {};   // hero -> { ab:{ability:{learned,cds}}, items:{short:{known,cds}} }
 var SMOKEICO = "__SMOKEICO__";
 function drawSmoke(t) {
@@ -701,7 +722,7 @@ function drawSmoke(t) {
     document.getElementById('sbshop' + team).innerHTML = shop;
   }
 }
-function pct(x, y) { return [(x + half) / WORLD * 100, (half - y) / WORLD * 100]; }
+function pct(x, y) { return [(CALIB_OFFX + CALIB_K * x) / BOARD * 100, (CALIB_REF_Y - CALIB_K * y) / BOARD * 100]; }
 function stateAt(arr, t) {
   var lo = 0, hi = arr.length - 1;
   if (t <= arr[0][0]) return arr[0];
@@ -731,10 +752,8 @@ function draw() {
       wd = DATA.wards[i];
       if (t >= wd[4] && (wd[5] === 0 || t < wd[5])) {
         xy = pct(wd[0], wd[1]);
-        var col = wd[2] === 2 ? '#46d160' : '#ff5f57';
-        var cls = 'ward' + (wd[3] === 'sentry' ? ' sentry' : '');
-        h += '<span class="' + cls + '" style="left:' + xy[0] + '%;top:' + xy[1] +
-             '%;background:' + col + '"></span>';
+        var ico = wd[3] === 'sentry' ? SENTRYICO : OBSICO;
+        h += '<img class="ward" style="left:' + xy[0] + '%;top:' + xy[1] + '%;" src="' + ico + '">';
       }
     }
     wl.innerHTML = h;

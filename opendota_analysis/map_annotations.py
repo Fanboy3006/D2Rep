@@ -15,9 +15,32 @@ at (+/-9472, +/-9472) and `worldspawn._dotatilegrid_fogbounds_*` (also +/-
 9472). So WORLD_SPAN = 2*9472 = 18944.
 """
 
-# Playable square half-extent in world units (authoritative).
+# Playable square half-extent in world units (authoritative, from the two
+# dota_minimap_boundary entities at (+/-9472,+/-9472)).
 WORLD_SPAN = 18944.0
 WORLD_HALF = WORLD_SPAN / 2.0
+
+# -------- authoritative world->base-image pixel calibration --------
+# Solved by isotropic least-squares over the two fountain anchors (radiant
+# fountain world (-7456,-6938) -> px (141.5,843.5); dire fountain world
+# (7408,6848) -> px (872.75,170)), measured on the decoded 7.37 overview.
+# Max anchor residual 1.27 px. centre_px is the pixel of world (0,0); K is
+# px per world unit (isotropic). See .tmp/solve_calib.py for the derivation.
+CALIB_K = 0.049038          # px per world unit
+CALIB_OFFX = 508.3019       # pixel-x of world X=0
+CALIB_REF_Y = 504.5433      # pixel-y of world Y=0  (py = ref_y - K*Y)
+
+
+def world_to_px(x, y, size):
+    """Map a world (x, y) to a pixel (px, py) on a `size`x`size` base image.
+
+    Uses the fountain-anchored isotropic calibration (authoritative):
+        px = CALIB_OFFX + CALIB_K * x
+        py = CALIB_REF_Y - CALIB_K * y
+    Valid for the 1024x1024 overview; for other sizes the caller should scale
+    accordingly (the constants are for a 1024 image).
+    """
+    return CALIB_OFFX + CALIB_K * x, CALIB_REF_Y - CALIB_K * y
 
 # (x, y, neutralType, pullType, triggerName) — neutralType 0..3, the two
 # type==3 camps are the ANCIENT camps (one per side). Coordinates are the

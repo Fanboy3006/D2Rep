@@ -48,15 +48,21 @@ def load_map(path=None):
 
 
 def map_to_px(x, y, size):
-    """Convert world (x, y) to pixel (px, py) in an image of side `size`."""
-    half = WORLD_SPAN / 2.0
-    px = (x + half) / WORLD_SPAN * size
-    py = (half - y) / WORLD_SPAN * size
+    """Convert world (x, y) to pixel (px, py) in an image of side `size`.
+
+    Uses the authoritative fountain-anchored isotropic calibration (see
+    map_annotations.CALIB_*), scaled to the requested image size (constants are
+    calibrated on the 1024x1024 overview)."""
+    from opendota_analysis import map_annotations as mann
+    s = size / 1024.0
+    px = (mann.CALIB_OFFX + mann.CALIB_K * x) * s
+    py = (mann.CALIB_REF_Y - mann.CALIB_K * y) * s
     return px, py
 
 
 def px_to_world(px, py, size):
-    half = WORLD_SPAN / 2.0
-    x = px / size * WORLD_SPAN - half
-    y = half - py / size * WORLD_SPAN
+    from opendota_analysis import map_annotations as mann
+    s = size / 1024.0
+    x = ((px / s) - mann.CALIB_OFFX) / mann.CALIB_K
+    y = (mann.CALIB_REF_Y - (py / s)) / mann.CALIB_K
     return x, y

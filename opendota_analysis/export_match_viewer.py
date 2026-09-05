@@ -231,6 +231,9 @@ def export(target, out=None, map_path=None, step=1, no_icons=False, quiet=False)
             .replace("__MAP_B64__", b64)
             .replace("__MAP_B64_LITE__", b64_lite)
             .replace("__VER__", VER)
+            .replace("__CALIB_K__", repr(mann.CALIB_K))
+            .replace("__CALIB_OFFX__", repr(mann.CALIB_OFFX))
+            .replace("__CALIB_REF_Y__", repr(mann.CALIB_REF_Y))
             .replace("__match__", match_id))
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
@@ -380,6 +383,7 @@ const MAPB64 = "data:image/png;base64,__MAP_B64__";
 const MAPB64LITE = "data:image/png;base64,__MAP_B64_LITE__";
 const useLite = (document.documentElement.clientWidth || 0) < 720;
 const WORLD = 18944;                       // world units across map (authoritative, map_background.py)
+const CALIB_K = __CALIB_K__, CALIB_OFFX = __CALIB_OFFX__, CALIB_REF_Y = __CALIB_REF_Y__;
 const TEAMC = {2:'#46d160', 3:'#ff5f57'};
 
 function showErr(m) {
@@ -455,11 +459,11 @@ function layout() {
     view.fit = 0;
   }
 }
-// world -> screen (map square of width 2*half centred at ox,oy)
+// world -> screen (authoritative fountain-calibrated map pixels)
 function w2s(wx, wy) {
   const m = (2 * view.half) / 1024;                 // screen px per 1024-map-px
-  const px = (wx + WORLD / 2) / WORLD * 1024;       // 0..1024 map px
-  const py = (WORLD / 2 - wy) / WORLD * 1024;
+  const px = CALIB_OFFX + CALIB_K * wx;             // map px (0..1024)
+  const py = CALIB_REF_Y - CALIB_K * wy;
   return [view.ox + (px - 512) * m, view.oy + (py - 512) * m];
 }
 
