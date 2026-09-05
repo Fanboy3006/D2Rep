@@ -22,7 +22,7 @@
 
 use source2_demo::prelude::*;
 use source2_demo::proto::DotaCombatlogTypes;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::model::{
     self, hero_class_to_npc, team_text, EventRow, PlayerIdentityRow, SnapshotRow, DIRE_SLOT_BASE,
@@ -552,24 +552,30 @@ impl BuildingExtractor {
 // ability cooldown extractor (技能冷却追踪)
 // ---------------------------------------------------------------------------
 
-/// One ability-cooldown transition (enter/leave cooldown) of one hero ability.
+/// One ability/item cooldown (or known/learn) transition of one hero.
 struct AbilityEvent {
     t: i64,
-    pid: u32,         // m_iPlayerID (2 x header index)
-    ability: String,  // e.g. "CDOTA_Ability_Invoker_ForgeSpirit"
-    start: bool,
-    remaining: f32,   // cooldown seconds left at the transition (len at start)
+    pid: u32,             // m_iPlayerID / m_iPlayerOwnerID (2 x header index)
+    key: String,          // ability class, or "ITEM:<item short name>"
+    kind: &'static str,   // "ability" | "item"
+    phase: &'static str,  // "known" | "learn" | "cd_start" | "cd_end"
+    remaining: f32,
 }
 
 /// Ability extractor: per whole second, for every hero entity read its
-/// `m_vecAbilities.*` ability handles, look up each ability entity's current
-/// `m_fCooldown` (seconds remaining) and emit `ability_cd_start` /
-/// `ability_cd_end` on cooldown transitions. Passive/innate abilities never
-/// leave cooldown (m_fCooldown stays 0) so they are naturally filtered out.
-/// Sampled on the parity-proof whole-second gate like heroes/buildings.
+/// `m_vecAbilities.*` ability handles, read each ability's `m_fCooldown`
+/// (seconds remaining) and `m_iLevel`; emits ability_known / ability_learn /
+/// ability_cd_start / ability_cd_end. Also tracks active items (BKB /
+/// Refresher) via their `m_iPlayerOwnerID` + `m_fCooldown` as item_known /
+/// item_cd_start / item_cd_end. Passives never leave cooldown (m_fCooldown 0)
+/// so they are naturally filtered; unlearned abilities (m_iLevel 0) are still
+/// reported via ability_known so the viewer can grey them out.
 struct AbilityExtractor {
-    /// (hero pid, ability class) -> when its current cooldown started
+    /// (hero pid, key) -> when its current cooldown started
     active: HashMap<(u32, String), i64>,
+    known: HashSet<(u32, String)>,
+    learned: HashSet<(u32, String)>,
+    item_known: HashSet<(u32, String)>,
     events: Vec<AbilityEvent>,
     last_sec: i64,
 }
@@ -578,6 +584,9 @@ impl Default for AbilityExtractor {
     fn default() -> Self {
         AbilityExtractor {
             active: HashMap::new(),
+            known: HashSet::new(),
+            learned: HashSet::new(),
+            item_known: HashSet::new(),
             events: Vec::new(),
             last_sec: i64::MIN,
         }
@@ -595,17 +604,18 @@ impl AbilityExtractor {
             return Ok(());
         }
         self.last_sec = t;
-        // pass 1: ability handle -> (class, remaining seconds)
-        let mut abilities: HashMap<u32, (String, f32)> = HashMap::new();
+        // pass 1: ability handle -> (class, cd, level)
+        let mut abilities: HashMap<u32, (String, f32, i32)> = HashMap::new();
         for e in ctx.entities().iter() {
             let cls = e.class().name();
             if !cls.starts_with("CDOTA_Ability_") || cls.contains("Courier") {
                 continue;
             }
             let cd = try_property!(e, f32, "m_fCooldown").unwrap_or(0.0);
-            abilities.insert(e.handle(), (cls.to_string(), cd));
+            let lvl = try_property!(e, i32, "m_iLevel").unwrap_or(0);
+            abilities.insert(e.handle(), (cls.to_string(), cd, lvl));
         }
-        // pass 2: per hero, iterate its ability handles and track transitions
+        // pass 2: per hero, iterate its ability handles; known/learn/cd events
         for e in ctx.entities().iter() {
             let cls = e.class().name();
             if !cls.starts_with("CDOTA_Unit_Hero_") {
@@ -615,58 +625,111 @@ impl AbilityExtractor {
                 Some(p) => p,
                 None => continue,
             };
-            let mut ability_handles: Vec<u32> = Vec::new();
+            let mut handles: Vec<u32> = Vec::new();
             for f in e.fields() {
                 if f.name.starts_with("m_vecAbilities.") {
                     if let Some(v) = f.value {
                         if let source2_demo::FieldValue::Unsigned32(h) = v {
-                            ability_handles.push(*h);
+                            handles.push(*h);
                         }
                     }
                 }
             }
-            for h in ability_handles {
-                let Some((ab_cls, cd)) = abilities.get(&h) else { continue };
+            for h in handles {
+                let Some((ab_cls, cd, lvl)) = abilities.get(&h) else { continue };
                 let key = (pid, ab_cls.clone());
+                if self.known.insert(key.clone()) {
+                    self.events.push(AbilityEvent {
+                        t, pid, key: ab_cls.clone(), kind: "ability",
+                        phase: "known", remaining: 0.0,
+                    });
+                }
+                if *lvl > 0 && self.learned.insert(key.clone()) {
+                    self.events.push(AbilityEvent {
+                        t, pid, key: ab_cls.clone(), kind: "ability",
+                        phase: "learn", remaining: 0.0,
+                    });
+                }
                 if cd > &0.0 {
                     if !self.active.contains_key(&key) {
                         self.events.push(AbilityEvent {
-                            t,
-                            pid,
-                            ability: ab_cls.clone(),
-                            start: true,
-                            remaining: *cd,
+                            t, pid, key: ab_cls.clone(), kind: "ability",
+                            phase: "cd_start", remaining: *cd,
                         });
                         self.active.insert(key, t);
                     }
-                } else if let Some(start) = self.active.remove(&key) {
+                } else if let Some(_start) = self.active.remove(&key) {
                     self.events.push(AbilityEvent {
-                        t,
-                        pid,
-                        ability: ab_cls.clone(),
-                        start: false,
-                        remaining: 0.0,
+                        t, pid, key: ab_cls.clone(), kind: "ability",
+                        phase: "cd_end", remaining: 0.0,
                     });
-                    let _ = start;
                 }
+            }
+        }
+        // pass 3: active items (BKB / Refresher) tracked by owner player id
+        for e in ctx.entities().iter() {
+            let cls = e.class().name();
+            let Some(short) = cls.strip_prefix("CDOTA_Item_") else { continue };
+            if short.contains("Recipe_") || !ITEM_TRACK.contains(&short) {
+                continue;
+            }
+            let pid = match try_property!(e, u32, "m_iPlayerOwnerID") {
+                Some(p) => p,
+                None => continue,
+            };
+            let cd = try_property!(e, f32, "m_fCooldown").unwrap_or(0.0);
+            let key = (pid, format!("ITEM:{}", short));
+            if self.item_known.insert(key.clone()) {
+                self.events.push(AbilityEvent {
+                    t, pid, key: format!("ITEM:{}", short), kind: "item",
+                    phase: "known", remaining: 0.0,
+                });
+            }
+            if cd > 0.0 {
+                if !self.active.contains_key(&key) {
+                    self.events.push(AbilityEvent {
+                        t, pid, key: format!("ITEM:{}", short), kind: "item",
+                        phase: "cd_start", remaining: cd,
+                    });
+                    self.active.insert(key, t);
+                }
+            } else if let Some(_start) = self.active.remove(&key) {
+                self.events.push(AbilityEvent {
+                    t, pid, key: format!("ITEM:{}", short), kind: "item",
+                    phase: "cd_end", remaining: 0.0,
+                });
             }
         }
         Ok(())
     }
 }
 
-/// Assemble `game_events` rows for ability cooldown transitions (resolving the
-/// hero npc via the header players: pid = 2 x header index).
+// active items we track cooldowns for (short class name after CDOTA_Item_)
+const ITEM_TRACK: &[&str] = &["Black_King_Bar", "Refresher_Orb"];
+
+/// Assemble `game_events` rows for ability/item knowledge, learning and
+/// cooldown transitions (resolving hero npc via header players: pid=2 x index).
 fn build_ability_event_rows(events: &[AbilityEvent], players: &[HeaderPlayer]) -> Vec<EventRow> {
     let mut rows = Vec::new();
     let mut seq: HashMap<(&'static str, String, i64), i64> = HashMap::new();
+    fn etype(kind: &str, phase: &str) -> &'static str {
+        match (kind, phase) {
+            ("ability", "known") => "ability_known",
+            ("ability", "learn") => "ability_learn",
+            ("ability", "cd_start") => "ability_cd_start",
+            ("ability", "cd_end") => "ability_cd_end",
+            ("item", "known") => "item_known",
+            ("item", "cd_start") => "item_cd_start",
+            ("item", "cd_end") => "item_cd_end",
+            _ => "ability_cd_start",
+        }
+    }
     for ev in events {
-        let hero = (ev.pid as usize / 2)
-            .checked_sub(0)
-            .and_then(|i| players.get(i))
+        let hero = players
+            .get(ev.pid as usize / 2)
             .and_then(|p| p.hero_npc.clone())
             .unwrap_or_default();
-        let etype: &'static str = if ev.start { "ability_cd_start" } else { "ability_cd_end" };
+        let etype = etype(ev.kind, ev.phase);
         let key = (etype, hero.clone(), ev.t);
         let n = seq.entry(key).or_insert(0);
         let event_seq = *n;
@@ -675,12 +738,14 @@ fn build_ability_event_rows(events: &[AbilityEvent], players: &[HeaderPlayer]) -
             game_time_sec: ev.t,
             event_type: etype,
             actor_id: if hero.is_empty() { None } else { Some(hero.clone()) },
-            target_id: Some(ev.ability.clone()),
+            target_id: Some(ev.key.clone()),
             x: None,
             y: None,
             properties: serde_json::json!({
                 "hero": hero,
-                "ability": ev.ability,
+                "key": ev.key,
+                "kind": ev.kind,
+                "phase": ev.phase,
                 "remaining": ev.remaining,
             }),
             event_seq,
