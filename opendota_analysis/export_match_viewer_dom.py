@@ -403,8 +403,10 @@ def main():
                if hero in icons else '')
         name_html = (player_link('https://www.opendota.com/players/%d' % acc, disp) if acc > 0
                      else '<span>%s</span>' % disp)
-        block = ('<div class="hblock"><div class="hhead">%s<span class="skname">%s</span></div>'
-                 '<div class="chips">%s</div></div>' % (hid, name_html, "".join(h_chips)))
+        block = ('<div class="hblock" data-hero="%s"><div class="hhead">%s<span class="skname">%s</span>'
+                 '<span class="hstats"></span></div>'
+                 '<div class="chips">%s</div></div>'
+                 % (p["hero"], hid, name_html, "".join(h_chips)))
         bands[p["team"] if p["team"] in (2, 3) else 2].append(block)
     band_l = ('<div class="band left"><div class="bh">天辉</div>' + "".join(bands[2]) + '</div>')
     band_r = ('<div class="band right"><div class="bh">夜魇</div>' + "".join(bands[3]) + '</div>')
@@ -441,7 +443,8 @@ TEMPLATE = r"""<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dota2 复盘(通用版) · __MATCH__</title>
 <style>
- body{margin:0;background:#101216;color:#dfe3ea;font-family:system-ui,sans-serif}
+ body{margin:0;background:#101216;color:#dfe3ea;font-family:system-ui,sans-serif;
+      padding-bottom:52px}
  .top{display:flex;align-items:center;gap:10px;padding:8px 12px;background:#171a21;
       border-bottom:1px solid #262b36;flex-wrap:wrap}
  .top h1{font-size:15px;margin:0;font-weight:600}
@@ -460,6 +463,8 @@ TEMPLATE = r"""<!doctype html>
  .hhead .skname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
  .hhead .skname a{color:#cfe3ff;text-decoration:none}
  .hhead .skname a:hover{text-decoration:underline}
+ .hstats{margin-left:auto;font-size:10px;color:#9fe3a6;font-variant-numeric:tabular-nums;flex:none}
+ .hstats .mp{color:#7fc4f0;margin-left:6px}
  .chips{display:flex;gap:5px;flex-wrap:wrap}
  .chip{display:inline-flex;align-items:center;gap:4px;padding:2px 5px;
        border-radius:6px;background:#1f2a3a;color:#cfe3ff;font-size:11px;
@@ -473,7 +478,8 @@ TEMPLATE = r"""<!doctype html>
  .chip.cd .cico{filter:grayscale(1);opacity:.45}
  .chip.cd .ctxt{display:none}
  .board{position:relative;flex:1 1 auto;min-width:0;aspect-ratio:1/1;
-        max-width:min(96vw,96vh);margin:4px auto;background:#0a0c10;overflow:hidden}
+        max-width:min(96vw,calc(100vh - 130px));max-height:calc(100vh - 130px);
+        margin:4px auto;background:#0a0c10;overflow:hidden}
  .board img{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;display:block}
  .mk{position:absolute;transform:translate(-50%,-50%)}
  .camp{width:10px;height:10px;position:absolute;transform:translate(-50%,-50%);opacity:.95}
@@ -499,8 +505,9 @@ TEMPLATE = r"""<!doctype html>
  .panel{width:260px;flex:none;padding:10px;border-left:1px solid #262b36}
  .panel.tgl{display:flex;gap:12px;align-items:center;font-size:12px;margin-bottom:8px}
  .panel input[type=checkbox]{accent-color:#4da3ff}
- .ctrl{display:flex;align-items:center;gap:10px;padding:6px 12px;background:#171a21;
-       border-top:1px solid #262b36}
+ .ctrl{position:fixed;left:0;right:0;bottom:0;z-index:20;display:flex;align-items:center;
+       gap:10px;padding:6px 12px;padding-bottom:calc(6px + env(safe-area-inset-bottom,0px));
+       background:#171a21;border-top:1px solid #262b36}
  .ctrl #time{min-width:92px;text-align:center;font-variant-numeric:tabular-nums;font-size:13px}
  .ctrl input[type=range]{flex:1;accent-color:#4da3ff}
  .ctrl button{width:36px;height:28px;background:#1b1f28;color:#dfe3ea;border:1px solid #2c3240;
@@ -605,6 +612,17 @@ function draw() {
     var tw = DATA.towers[j], els = document.querySelectorAll('.tw');
     if (els[j]) els[j].className = 'tw t' + (tw.team === 2 ? 2 : 3) +
       (tw.d != null && t >= tw.d ? ' dead' : '');
+  }
+  // per-hero side stats: current HP / mana
+  var hblocks = document.querySelectorAll('.hblock');
+  for (var bi = 0; bi < hblocks.length; bi++) {
+    var hb = hblocks[bi], hero = hb.getAttribute('data-hero');
+    var hh = null;
+    for (var hi = 0; hi < heroes.length; hi++) if (heroes[hi].hero === hero) { hh = heroes[hi]; break; }
+    if (!hh) continue;
+    var st = stateAt(hh.arr, t);
+    var s = hb.querySelector('.hstats');
+    if (s) s.innerHTML = Math.round(st[3]) + '/' + st[4] + '<span class="mp">' + Math.round(st[5]) + '</span>';
   }
   // skill/item cooldown chips: locked (unlearned/unowned) / cooldown / ready
   var chips = document.querySelectorAll('.chip');
