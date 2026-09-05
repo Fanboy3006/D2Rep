@@ -344,11 +344,11 @@ def main():
         hf0 = (100.0 * a0[3] / a0[4]) if a0[4] else 0
         mf0 = (100.0 * a0[5] / a0[6]) if a0[6] else 0
         hero_markup.append(
-            '<div class="hm" data-hero="%s" style="left:%.3f%%;top:%.3f%%">%s'
+            '<div class="hm" data-hero="%s" style="left:%.3f%%;top:%.3f%%">'
             '<span class="hbar"><i style="width:%.1f%%"></i></span>'
-            '<span class="mbar"><i style="width:%.1f%%"></i></span>'
+            '<span class="mbar"><i style="width:%.1f%%"></i></span>%s'
             '<span class="hnm">%s</span></div>' % (
-                p["hero"], left, top, ico, hf0, mf0, nm))
+                p["hero"], left, top, hf0, mf0, ico, nm))
     tower_markup = []
     for tw in payload["towers"]:
         left, top = pct(tw["x"], tw["y"])
