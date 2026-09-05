@@ -10,8 +10,9 @@ copied to any machine - no Dota 2 install or VPK tooling needed to use it.
 
 Mapping convention (verified against replay position data, see make_overlay):
   * world coordinates x (east+) and y (north+, dire side is +y) span roughly
-    [-S/2, S/2] with S = WORLD_SPAN (default 19134 for the 7.33+ map, matching
-    the replay corpus analysed here; the Dota world bounds are symmetric).
+    [-S/2, S/2] with S = WORLD_SPAN (default 18944 for the 7.33+/7.37 map,
+    matching the real map's authoritative dota_minimap_boundary; the Dota world
+    bounds are symmetric).
   * image row 0 = top = north (+y), so:
         px = (x + S/2) / S * size
         py = (S/2 - y) / S * size
@@ -29,8 +30,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_MAP = os.path.join(HERE, "assets", "dota_map_1024.png")
 
 # World span across the full map image (units of world coordinate).
-# 7.33+ map: 19134 (used by replay-map projects for the post-7.33 layout).
-WORLD_SPAN = 19134.0
+# AUTHORITATIVE 7.37+ map: 18944 = 2*9472, taken from the real map file
+# (maps/dota_737.vpk -> default_ents.vents: two dota_minimap_boundary entities
+# at (+/-9472,+/-9472) and worldspawn._dotatilegrid_fogbounds_*). Matches the
+# decoded official overview base image (assets/dota_map_1024.png).
+WORLD_SPAN = 18944.0
 
 
 def set_world_span(span):

@@ -340,7 +340,10 @@ def load_payload(target, step=1):
     return match_id, payload, icons
 
 
-WORLD = 19134.0
+# AUTHORITATIVE world square span: from the two dota_minimap_boundary entities
+# (+/-9472, +/-9472) in the real map (maps/dota_737.vpk -> default_ents.vents).
+# Matches the 7.37 official overview base image used below.
+WORLD = 18944.0
 
 
 def pct(x, y):
@@ -668,7 +671,7 @@ var heroes = [];
   window.__data = DATA;
   var H = 2 * 0; // world half for % calc below
 })();
-var WORLD = 19134, half = WORLD / 2;
+var WORLD = 18944, half = WORLD / 2;
 var cdmap = DATA.sk || {};   // hero -> { ab:{ability:{learned,cds}}, items:{short:{known,cds}} }
 var SMOKEICO = "__SMOKEICO__";
 function drawSmoke(t) {

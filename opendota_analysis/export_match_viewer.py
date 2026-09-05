@@ -379,7 +379,7 @@ const ICONS = __ICONS_JSON__;
 const MAPB64 = "data:image/png;base64,__MAP_B64__";
 const MAPB64LITE = "data:image/png;base64,__MAP_B64_LITE__";
 const useLite = (document.documentElement.clientWidth || 0) < 720;
-const WORLD = 19134;                       // world units across map (map_background.py)
+const WORLD = 18944;                       // world units across map (authoritative, map_background.py)
 const TEAMC = {2:'#46d160', 3:'#ff5f57'};
 
 function showErr(m) {
