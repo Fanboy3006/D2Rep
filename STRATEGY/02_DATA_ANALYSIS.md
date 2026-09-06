@@ -29,3 +29,11 @@
 ## 已知产物（`analysis/`）
 - `run_analysis.py`、`ward_analysis.py`
 - `output/`、`output_public/`：逐场 + pooled heatmap CSV、购买统计 CSV 等。
+
+## 经验教训（2026-09-05 记录）
+1. **HTML viewer 的数据常嵌在 `<tbody><tr data-team="...">` 里，不是 JS 数组**。不要去找 `var rows=...` 或 `application/json`（往往抓不到）。
+   - 正确做法：用正则抓 `<tr data-team="...">(.*?)</tr>`，再对每个 `<td class="...">` 取文本（`re.sub(r'<[^>]+>','',td)`）。
+   - 注意 `<small>`/`<br>` 里的场次、选手ID等会被当成纯文本，需按需剔除。
+2. **PowerShell 里读 UTF-8 中文 html 会乱码**，但文件本身是 UTF-8。分析时用 Python 以 `encoding='utf-8'` 读取（`errors='replace'`），不要用 `Get-Content`。
+3. **`-c` 内联 Python 在 PowerShell 里引号/正则极易转义失败**（`"`、`\s`、`(?:)` 等）。遇到就写成独立 `.py` 脚本文件（`.tmp\xxx.py`），再 `python .tmp\xxx.py`，不要硬拼 `python -c "...";`。
+4. **`str.Substring` 在 PowerShell 里若越界会直接抛异常**（不是返回空）——本地 debug 时用 `$_.Value.Substring(0, 80)` 前先确认长度，或改用 Python。
