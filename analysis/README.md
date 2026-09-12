@@ -28,11 +28,22 @@ python analysis/ward_analysis.py 8592126358.db 8979891001.db [--team 2|3|all]
 ## Q7 全盘复现交互 UI（回放浏览器）· 第一步（MVP）
 
 - **脚本**：`python analysis/q7_replay.py <match_id>`（切片 + 自检）→ `python analysis/build_q7_html.py <match_id>`（单文件 HTML）→ `node analysis/q7_viewer_itest.js <match_id>`（交互回归）。
-- **时间口径**：显示钟 `disp = t_cle − horn_cle`（0:00 = 号角）；结束 = 远古被摧毁。
-  `entity_snapshots` 是**回放钟**，用"暂停时实体静止"的物理证据把 `Δcle` 按活跃秒摊分折算（`q7_replay.build_clock`）。
-- **经济两套源并列显示**（净值 `m_iNetWorth` / combat-log 累计金币），默认主显净值；差异与原因见 `Q7_SUBMISSION.md` §2.4。
-- **已知上游缺陷（分析层已绕过，未改解析器）**：`combat_log.gold.value` 的 int32 下溢（`gold_reason=1`）；
-  `assist_players` 含击杀者本人且值为头部索引 0..9；`raw_json` 实为 11 键子集，非"全字段保真"。
+- **共享时基**：`analysis/timebase.py`（Q5B/Q6/Q7 共用的单一真相源）—— 号角 / 比赛结束 / **暂停感知**的
+  `t_tick→t_cle` 折算 / `gold.value` 的 int32 下溢还原。自检 `python analysis/timebase.py <match_id>`。
+- **时间口径**：显示钟 `disp = t_cle − horn_cle`（0:00 = 号角）；结束 = 远古被摧毁（不用 `MAX(t_cle)`）。
+  `entity_snapshots` 是**回放钟**，用"暂停时实体静止"的物理证据把 `Δcle` 按活跃秒摊分折算。
+- **经济两套源并列显示**（净值 `m_iNetWorth` / combat-log 累计金币），**owner 定案：主显净值差**；差异与原因见 `Q7_SUBMISSION.md` §2.4。
+- **改动量实测（别夸大）**：`python analysis/q7_clock_check.py --scan 45` → 窗口内旧/新 |Δ显示秒| 中位 0.03~0.07s、
+  最大 ≤9.6s、>30s 的 0 场；`python analysis/q5_clock_check.py --sample 40` → Q5B 逐支眼改动 **0/4591**。
+- **已知上游数据事实（分析层已绕过，未改解析器）**：
+  1. `combat_log.gold.value` 的 int32 下溢：`gold_reason=1`（死亡扣钱）的负数被按 uint32 落库。
+     40 场抽样 2153/2153 行命中；**只有 gold 有这个问题**（healing/xp/damage/modifier/item 无一行溢出）。
+  2. `assist_players` 的值是**头部玩家索引 0..9**（不是 player_slot），且**含击杀者本人**。
+  3. `raw_json` 实测只有 11 个键，**不是** `DEM_FORMAT.md` §4.3 说的"全字段保真"。
+  4. **两套库并存且内容不同**：`dems/db/`（971 场，Q5 版散装 extractor：`gold` / `ability_cd_*` /
+     `item_cd_*` / `ability_known` / `purchase` / `neutral_kill` / `ward_use` / `smoke_count` / `game_state`）
+     vs `dems/db_full/`（970 场，combat_log 重写版：叙事全进 `combat_log`，`game_events` 只剩
+     building/ward 的空间层）。**Q1 读 `dems/db/`，Q5B/Q6/Q7 读 `dems/db_full/`** —— 跨任务比较时要注意。
 
 ## Q1 地图经济价值分区（现行；旧"野区经济 proxy"已归档到 `legacy/`）
 

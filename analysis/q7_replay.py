@@ -38,12 +38,18 @@ import sqlite3
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import timebase as tb   # noqa: E402  数据层共享时基（号角/结束/暂停感知折算 + gold int32 还原）
+
 DBFULL = os.path.join(ROOT, "dems", "db_full")
 OUTDIR = os.path.join(ROOT, "analysis", "output_q7")
 STATS_DB = os.path.join(ROOT, "stats.db")
 
 WORLD_HALF = 8600.0          # 地图世界半径（与地图层标定一致）
 CREEP_PREFIX = "npc_dota_creep_"
+
+# gold.value 的 int32 下溢还原：统一走 timebase（单一真相源）
+i32 = tb.gold_i32
 
 
 # ────────────────────────────── 工具 ──────────────────────────────
@@ -135,116 +141,6 @@ def load_snapshots(con):
     return pos, nw, hpmax
 
 
-def activity_map(pos, nw):
-    """每秒是否「游戏在跑（未暂停）」：任一英雄位移>0.5 / hp 变化，或任一玩家净值变化。"""
-    act = {}
-    secs = sorted(set(pos) | set(nw))
-    prev_p, prev_n = None, None
-    for t in secs:
-        a = 0
-        cur_p = pos.get(t)
-        if cur_p and prev_p:
-            for e, v in cur_p.items():
-                p = prev_p.get(e)
-                if p and (abs(p[0] - v[0]) > 0.5 or abs(p[1] - v[1]) > 0.5 or p[2] != v[2]):
-                    a = 1
-                    break
-        if not a:
-            cur_n = nw.get(t)
-            if cur_n and prev_n:
-                for e, v in cur_n.items():
-                    if e in prev_n and prev_n[e] != v:
-                        a = 1
-                        break
-        act[t] = a
-        if cur_p:
-            prev_p = cur_p
-        if nw.get(t):
-            prev_n = nw[t]
-    return act
-
-
-def build_clock(con, pos, nw):
-    """重建 (t_tick → t_cle) 映射，返回 {int_sec: t_cle} + 元信息。
-
-    做法：把 combat_log 里所有 (t_tick, t_cle) 当锚点；相邻锚点之间的 Δcle 是"真实游戏
-    时间流逝"，按两锚点之间各秒的**活跃度**配额分配（活跃秒≈未暂停秒）。锚点端点精确，
-    段内按物理证据摊——比二分/线性都更贴真实暂停结构。
-    """
-    anchors = []
-    for r in con.execute(
-        "SELECT t_tick, t_cle FROM combat_log WHERE t_tick IS NOT NULL AND t_cle IS NOT NULL ORDER BY t_tick, event_seq"
-    ):
-        tt, cle = float(r["t_tick"]), float(r["t_cle"])
-        if not anchors or tt > anchors[-1][0] + 1e-9:
-            anchors.append((tt, cle))
-        else:
-            anchors[-1] = (anchors[-1][0], max(anchors[-1][1], cle))
-    if not anchors:
-        raise SystemExit("combat_log 没有可用锚点，无法重建时钟")
-
-    act = activity_map(pos, nw)
-    cle_at = {}
-    pause_total = 0.0
-    active_total = 0
-    seg_pauses = []
-    for i in range(1, len(anchors)):
-        a_tt, a_cle = anchors[i - 1]
-        b_tt, b_cle = anchors[i]
-        need = b_cle - a_cle
-        if need < 0:
-            need = 0.0
-        lo, hi = int(a_tt) + 1, int(b_tt) + 1
-        span = list(range(max(lo, 0), max(hi, 0) + 1))
-        if not span:
-            continue
-        w = [act.get(s, 0) for s in span]
-        tot = sum(w)
-        if tot <= 0:
-            # 段内没探到任何活动（例如全段静止的暂停）→ 用整段均分兜底，避免信息丢失
-            w = [1] * len(span)
-            tot = len(span)
-        if len(span) - tot > 0:
-            gap = len(span) - need
-            if gap > 1.0:
-                pause_total += gap
-                seg_pauses.append([span[0], span[-1], round(gap, 1)])
-        active_total += tot
-        acc = 0.0
-        for s, wi in zip(span, w):
-            acc += wi
-            cle_at[s] = a_cle + need * (acc / tot if tot else 1.0)
-
-    # 锚点之前的区间按首个锚点的同一"文件偏移"外推（Δ_file 恒定，无暂停）
-    first_tt, first_cle = anchors[0]
-    delta = first_cle - first_tt
-    return cle_at, {
-        "anchors": len(anchors),
-        "first_anchor": [first_tt, first_cle],
-        "last_anchor": list(anchors[-1]),
-        "delta_file": round(delta, 3),
-        "pause_sec_total": round(pause_total, 1),
-        "pause_segments": seg_pauses[:40],
-        "active_sec": active_total,
-        "clock_min": min(cle_at) if cle_at else None,
-        "clock_max": max(cle_at) if cle_at else None,
-    }
-
-
-def cle_of(cle_at, tt, delta_file):
-    """回放钟秒 → 游戏钟（t_cle）。整数秒查表；表外回退 Δ_file 外推。"""
-    if tt is None:
-        return None
-    t = int(tt)
-    if t in cle_at:
-        return cle_at[t]
-    if cle_at:
-        ks = [k for k in (t, t - 1, t + 1, t - 2, t + 2) if k in cle_at]
-        if ks:
-            return cle_at[min(ks, key=lambda k: abs(k - t))]
-    return tt + delta_file
-
-
 # ──────────────────────── 2. 单场切片 ────────────────────────
 def parse_match(db, match_id, league):
     con = sqlite3.connect(db)
@@ -287,13 +183,15 @@ def parse_match(db, match_id, league):
             end_cle, end_src = float(r["m"]), "fallback_max_combat"
     end_disp = end_cle - horn_cle
 
-    # --- 时钟重建 ---
+    # --- 时钟重建（暂停感知，统一走数据层共享实现 timebase.Clock）---
     pos_tt, nw_tt, hpmax = load_snapshots(con)
-    cle_at, clock_meta = build_clock(con, pos_tt, nw_tt)
-    delta_file = clock_meta["delta_file"]
+    CLK = tb.Clock(con, match_id)
+    clock_meta = dict(CLK.meta)
+    clock_meta["pause_segments"] = clock_meta.get("pause_blocks", [])   # 兼容旧字段名（viewer 用）
+    delta_file = CLK.delta_file
 
     def disp_of_tt(tt):
-        return cle_of(cle_at, tt, delta_file) - horn_cle
+        return CLK.disp(tt)
 
     # --- 时间轴范围 ---
     hero_first_disp = None

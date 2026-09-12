@@ -27,6 +27,13 @@ import os
 import sqlite3
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import timebase as tb   # noqa: E402  数据层共享时基（号角/结束/暂停感知的 t_tick→t_cle）
+
+# ── 时基口径 A/B 开关（临时，用于量测"暂停感知折算"的改动量；默认走新口径）──────────
+#   Q5_LEGACY_CLOCK=1 → 用旧的"二分取 ≥tt 的最小 combat 记录"（会把整段暂停压到同一秒）
+LEGACY_CLOCK = os.environ.get("Q5_LEGACY_CLOCK") == "1"
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TRUE_SIGHT_R = 1050.0   # 真视覆盖判定半径(单位): 假眼被反时 1050 内无真眼 -> 不归属(宝石/其他反的)
 MAP_HALF = 8600.0   # 覆盖实测眼位坐标 ±8469 (spec 9472 仅 ±4736, 会裁边)
@@ -93,11 +100,11 @@ def match_team_names(con, mid):
 
 def game_start(con, mid):
     """0:00(号角) = GAME_IN_PROGRESS(combat-log gamestate value=5) 的 t_cle(游戏时钟)。
-    新架构: read from combat_log(通用表)。也是 game_start_raw(那刻 t_tick)分开。"""
-    # 优先: combat_log 里 gamestate value=5 的 t_cle
-    r = con.execute("SELECT t_cle, t_tick FROM combat_log WHERE match_id=? AND type_category='gamestate' AND value=5 LIMIT 1", (mid,)).fetchone()
-    if r:
-        return float(r["t_cle"])
+    新架构: read from combat_log(通用表)。也是 game_start_raw(那刻 t_tick)分开。
+    2026 订正: 优先走数据层共享实现 timebase.horn_cle（单一真相源）。"""
+    v = tb.horn_cle(con, mid)
+    if v is not None:
+        return v
     # fallback: 旧 building_spawn+90 启发式
     bs = con.execute("SELECT min(game_time_sec) FROM game_events WHERE match_id=? AND event_type='building_spawn'", (mid,)).fetchone()[0]
     if bs is None:
@@ -323,23 +330,39 @@ def parse_match(con, mid, censor_at_end=True):
 
     # ── t_tick → 游戏时钟(t_cle) 换算表 ─────────────────────────────────
     # 【根因】ward_placed 实体自带的 t_cle 字段恒比 combat_log 体系早 540s(全表 t_cle-t_tick=-531.53),
-    #        而 combat_log 的 t_cle 才是 Dota 游戏时钟(且 t_cle-t_tick=+8.73 号角后恒定).
+    #        而 combat_log 的 t_cle 才是 Dota 游戏时钟。
     #        因此放置时刻绝不能 fallback 到实体自带 t_cle; 必须由实体 t_tick(与 combat 同轴)
-    #        经 combat_log 的 (t_tick->t_cle) 映射还原. 这里一次性建表供二分.
-    tt2cle = []
-    for r in con.execute("SELECT t_tick, t_cle FROM combat_log WHERE match_id=? AND t_tick IS NOT NULL "
-                         "ORDER BY t_tick", (mid,)):
-        tt2cle.append((r["t_tick"], r["t_cle"]))
-    tt_axis = [x[0] for x in tt2cle]
-    def cle_for_tt(tt):
-        """按 combat_log 轴, 求 t_tick=tt 附近最近的游戏时钟(t_cle). t_cle 随 t_tick 单调不减(暂停时冻结=平)."""
-        import bisect
-        if not tt2cle or tt is None:
-            return None
-        i = bisect.bisect_left(tt_axis, tt)
-        # 相邻两个 combat 记录(≤前/≥后): 取 t_cle 更接近且 >= 侧优先? 直接取二分左侧(>=tt 的最小), 失效回退前一个.
-        idx = i if i < len(tt2cle) else len(tt2cle) - 1
-        return tt2cle[idx][1]
+    #        经 combat_log 的 (t_tick->t_cle) 映射还原.
+    # 【2026 订正 · 暂停感知】旧实现"二分取 ≥tt 的最小 combat 记录"在**战斗日志稀疏段**会跳错
+    #        (暂停时游戏钟冻结而回放钟照走, t_cle-t_tick 会跳变: 实测 8830423116 由 +540.27 变 +8.72;
+    #         暂停期间 combat_log 仍会零星收到条目, 所以它不是整段崩, 而是"落到下一条记录"的局部误差)。
+    #        现改用 `timebase.Clock`: 锚点端点精确 + 段内按"暂停时实体静止"的物理证据摊分。
+    #        ⚠️ 实测改动量(勿夸大): 45 场抽样「游戏窗口内」旧 vs 新 |Δ显示秒| 中位 0.03~0.07s、
+    #           最大 ≤9.6s、>30s 的 0 场(`q7_clock_check.py --scan`);
+    #           对 Q5B 逐支眼输出的改动 = **0/4591**(41 场, `q5_clock_check.py --sample 40`)——
+    #           因为本函数只在 fallback 路径被调用, 而实测 100% 的眼都能匹配到 combat `use` 事件
+    #           (`use` 自带 t_cle, 不需要折算)。所以这是**潜在缺陷的加固**, 不是产出数字的变动。
+    if LEGACY_CLOCK:
+        tt2cle = []
+        for r in con.execute("SELECT t_tick, t_cle FROM combat_log WHERE match_id=? AND t_tick IS NOT NULL "
+                             "ORDER BY t_tick", (mid,)):
+            tt2cle.append((r["t_tick"], r["t_cle"]))
+        tt_axis = [x[0] for x in tt2cle]
+
+        def cle_for_tt(tt):
+            """[LEGACY] 二分取 >=tt 的最小 combat 记录的 t_cle（暂停段会被压到同一秒）。"""
+            import bisect
+            if not tt2cle or tt is None:
+                return None
+            i = bisect.bisect_left(tt_axis, tt)
+            idx = i if i < len(tt2cle) else len(tt2cle) - 1
+            return tt2cle[idx][1]
+    else:
+        CLK = tb.Clock(con, mid)
+
+        def cle_for_tt(tt):
+            """[NEW] 暂停感知的 t_tick→t_cle（timebase.Clock.cl）。"""
+            return None if tt is None else CLK.cl(tt)
 
     # 5) 组装眼 records: 实体为主 + 销毁"一一对应"匹配
     #   【根因修正-销毁】原实现"出生窗内最早的 death 归本眼"会让相邻同队同型眼**互相抢死亡**

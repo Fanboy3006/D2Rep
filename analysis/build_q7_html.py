@@ -206,8 +206,8 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
 <div id="top">
   <div class="stat clock"><div class="k">当前时刻</div><div class="v" id="vClock">0:00</div>
     <div class="s" id="vPhase">—</div></div>
-  <div class="stat"><div class="k">经济差（净值 · m_iNetWorth）</div><div class="v" id="vNw">—</div>
-    <div class="s">天辉 − 夜魇 · 标准"经济差"口径</div></div>
+  <div class="stat"><div class="k">经济差（净值 · m_iNetWorth）★主显</div><div class="v" id="vNw">—</div>
+    <div class="s">天辉 − 夜魇 · 标准"经济差"口径（<b>owner 2026 定案主显此列</b>）</div></div>
   <div class="stat"><div class="k">经济差（combat-log 累加）</div><div class="v" id="vCg">—</div>
     <div class="s">= 累计获取金币差（含消耗品支出，非净值）</div></div>
   <div class="stat"><div class="k">经验差（combat-log 累加）</div><div class="v" id="vCx">—</div>
@@ -301,7 +301,8 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
       本页新增了「暂停检测」：暂停时场上实体逐秒完全静止，据此把每对锚点间的真实游戏时间按活跃秒摊分，
       本场暂停 @@PAUSE@@s 被正确定位（否则整段暂停会被压到同一秒，出门期位置全错）。</p>
     <p><b>③ 两个"经济差"是两套源，别混</b>：
-      <span class="dr">净值差（m_iNetWorth）</span>= 标准经济差（现金+装备，非 combat log，项目内对账 OpenDota 0.000%）；
+      <span class="dr">净值差（m_iNetWorth）</span>= 标准经济差（现金+装备，非 combat log，项目内对账 OpenDota 0.000%）
+      —— <b>已由 owner 定案为本页主显口径</b>；
       <span class="dr">combat-log 累加</span>= 累计<b>获取</b>金币差（已按 <code>gold_reason=1</code> 扣死亡损失；
       但买装备/消耗品不减 → 与净值差会随比赛拉大，实测本场末秒两者差 <b id="gapEnd">—</b>）。
       页面同时给出两者，切换按钮只改"哪条驱动火花线"。</p>
