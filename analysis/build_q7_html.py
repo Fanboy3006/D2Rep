@@ -3,6 +3,7 @@
 """build_q7_html.py — Q7「全盘复现交互 UI（回放浏览器）」· 单文件 HTML 生成器。
 
 输入：analysis/output_q7/q7_<match_id>.json（q7_replay.py 产物）
+      analysis/output_q7/q7_winprob.json（q7_winprob.py 产物；状态胜率模型，可选）
 产出：analysis/output_review/q7_replay_<match_id>.html（自包含，双击即开）
 
 页面骨架与交互复用 Q5B/Q6 范式（STRATEGY/INTERACTIVE_MAP_PATTERN.md）：
@@ -10,26 +11,47 @@
   · 底图 = analysis/output_review/_q5_map_annot.png（沿用原底图 + 官方标定常量）
   · 已继承的前端坑（§9）：capValue 的 DOM 字符串陷阱、onmousemove 的 px 作用域、draw() 重入锁
 
-第一步（MVP）范围：地图 + 缩放/平移 + 双方 10 英雄头像 + 双时间轴 + 顶部经济/经验差
-                 + 地图上英雄逐秒位置 + 右侧 10 英雄 KDA/正反补表。
-**未做（第二步）**：左侧点英雄后的 ±10s combat log 四 toggle、技能 CD（含 BKB/刷新球/TP）、胜率。
+第一步（MVP）：地图 + 缩放/平移 + 双方 10 英雄头像 + 双时间轴 + 顶部经济/经验差 + 逐秒位置 + KDA/正反补表。
+第二步（本版）：① 点英雄 → 右栏改该英雄 **±10s combat log**（4 toggle：给出/收到 modifier、造成/收到伤害）
+              ② 下方 **技能 CD**（三态：冷却中灰+剩余秒 / 未学未拥有 / 就绪；重点追踪 BKB / 刷新球 / TP）
+              ③ 顶部 **状态胜率**（派生模型，绝不偷看结果）
 """
 
 import argparse
 import base64
+import io
 import json
 import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 Q7DIR = os.path.join(ROOT, "analysis", "output_q7")
 REVIEW = os.path.join(ROOT, "analysis", "output_review")
+AB_ICON_DIR = os.path.join(ROOT, "opendota_analysis", "assets", "ability_icons")
 ICON_DIR = os.path.join(ROOT, "opendota_analysis", "assets", "hero_icons")
 MAP_PNG = os.path.join(REVIEW, "_q5_map_annot.png")
+WINPROB = os.path.join(Q7DIR, "q7_winprob.json")
 
 
 def b64(path):
     with open(path, "rb") as f:
         return base64.b64encode(f.read()).decode("ascii")
+
+
+def b64_png_opt(path, colors=64, size=None):
+    """PNG → 64 色量化（体积约 1/3），把技能/道具/英雄图标塞进单文件；失败则原样内嵌。"""
+    try:
+        from PIL import Image
+        im = Image.open(path).convert("RGBA")
+        if size and (im.width > size or im.height > size):
+            im.thumbnail((size, size), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.convert("P", palette=Image.ADAPTIVE, colors=colors).save(buf, "PNG", optimize=True)
+        data = buf.getvalue()
+        if len(data) >= os.path.getsize(path):
+            data = open(path, "rb").read()
+        return base64.b64encode(data).decode("ascii")
+    except Exception:
+        return b64(path)
 
 
 def clean(s):
@@ -51,7 +73,26 @@ def build(mid, outdir):
         p["name"] = clean(p["name"])
         fp = os.path.join(ICON_DIR, p["short"] + ".png")
         if os.path.exists(fp):
-            icons[p["short"]] = "data:image/png;base64," + b64(fp)
+            icons[p["short"]] = "data:image/png;base64," + b64_png_opt(fp, 64, 64)
+
+    # ---- 技能/道具图标（只内嵌本场 CD 数据里真正用到的，64 色量化）----
+    cd = dat.get("cd") or {}
+    ab_icons = {}
+    for k, info in (cd.get("keys") or {}).items():
+        base = info.get("icon")
+        if not base or base in ab_icons:
+            continue
+        fp = os.path.join(AB_ICON_DIR, base + ".png")
+        if os.path.exists(fp):
+            ab_icons[base] = "data:image/png;base64," + b64_png_opt(fp, 64)
+
+    # ---- 状态胜率模型（q7_winprob.py 产物；缺失则页面显示"未拟合"）----
+    wp = None
+    if os.path.exists(WINPROB):
+        try:
+            wp = json.load(open(WINPROB, encoding="utf-8"))
+        except Exception:
+            wp = None
 
     m = dat["meta"]
     payload = {
@@ -70,8 +111,14 @@ def build(mid, outdir):
         "events": dat["events"],
         "buildings": dat.get("buildings", []),
         "kda": dat["kda"],
+        "detail": dat.get("detail", {}),
+        "dnames": dat.get("detail_names", []),
+        "cd": cd,
+        "tp": dat.get("tp", {}),
+        "wp": wp,
         "meta": m,
         "icons": icons,
+        "abicons": ab_icons,
     }
     blob = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).replace("</", "<\\/")
     map_b64 = b64(MAP_PNG)
@@ -189,6 +236,39 @@ tr.selrow{background:#e3b34122;outline:1px solid var(--gold)}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px}
 .dr{color:var(--rad)}.dd{color:var(--dire)}
 .todo{border:1px dashed #d29922;border-radius:6px;padding:6px 8px;color:#d29922;font-size:11px;line-height:1.6;margin-top:8px}
+/* ---------- 第二步：±10s 明细 + 技能 CD ---------- */
+.tglrow{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0;font-size:12px}
+.tglrow .toggle{padding:3px 8px;font-size:11px}
+.dsum{background:#21262d;border:1px solid var(--bd);border-radius:6px;padding:6px 8px;font-size:12px;
+      line-height:1.7;margin:4px 0}
+.dsum b{color:#79c0ff}
+.dwrap{max-height:34vh;overflow:auto;border:1px solid var(--bd);border-radius:6px}
+#dtbl{margin:0;font-size:11.5px}
+#dtbl th{background:#21262d;font-size:11px}
+#dtbl td{padding:2px 5px;border-bottom:1px solid #1c2128}
+.chip{display:inline-block;padding:0 5px;border-radius:8px;font-size:10px;line-height:15px;white-space:nowrap}
+.c0{background:#2d4f6b;color:#bcd9f2}.c1{background:#4a3a5c;color:#dcccf0}
+.c2{background:#5c2f2f;color:#f5c6c6}.c3{background:#5c4a1f;color:#f0dda6}
+.rownow{background:#e3b34122;outline:1px solid #e3b34155}
+.rowpast{color:#c9d1d9}.rowfut{color:#7d8590}
+.dfold{color:#8b949e}
+.nm{font-family:ui-monospace,Consolas,monospace}
+.cdhead{font-size:12px;color:#79c0ff;margin:10px 0 4px;font-weight:700}
+#cdboard{display:flex;flex-wrap:wrap;gap:6px}
+.cd{width:60px;text-align:center;font-size:9.5px;color:#c9d1d9;position:relative}
+.cd .box{width:48px;height:48px;margin:0 auto;border-radius:6px;border:2px solid #444;overflow:hidden;
+         position:relative;background:#15181d;display:flex;align-items:center;justify-content:center}
+.cd .box img{width:100%;height:100%;object-fit:cover;display:block}
+.cd .box .fb{font-size:9px;padding:2px;line-height:1.1;color:#9aa4af;word-break:break-all}
+.cd .rem{position:absolute;inset:0;background:rgba(0,0,0,.62);color:#fff;font-size:15px;font-weight:700;
+         display:flex;align-items:center;justify-content:center;font-variant-numeric:tabular-nums}
+.cd.lock .box{filter:grayscale(1) brightness(.45);border-color:#333}
+.cd.lock .box::after{content:"🔒";position:absolute;right:1px;bottom:0;font-size:10px}
+.cd.cool .box{border-color:#484f58}
+.cd.ready .box{border-color:#3fb950}
+.cd.track .box{border-color:#e3b341;border-width:3px}
+.cd .cap{margin-top:1px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.cd .st{color:#8b949e}
 .kv{font-size:12px;color:var(--dim);line-height:1.8}
 .kv b{color:var(--fg)}
 details{margin-top:8px;font-size:12px;color:var(--dim)}
@@ -212,8 +292,8 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
     <div class="s">= 累计获取金币差（含消耗品支出，非净值）</div></div>
   <div class="stat"><div class="k">经验差（combat-log 累加）</div><div class="v" id="vCx">—</div>
     <div class="s">天辉 − 夜魇 · 无独立源可校验</div></div>
-  <div class="stat"><div class="k">胜率</div><div class="v zero">未做</div>
-    <div class="s">第二步：状态胜率模型（绝不偷看结果）</div></div>
+  <div class="stat"><div class="k">胜率（状态胜率 · 派生模型）</div><div class="v" id="vWp">—</div>
+    <div class="s" id="vWpNote">未拟合</div></div>
   <div id="sparkwrap">
     <canvas id="spark" width="1200" height="78"></canvas>
     <div class="sparkhint"><span>全场走势（点/拖此条可直接定位）</span>
@@ -281,36 +361,74 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
 </div>
 
 <div class="right panel">
-  <div class="kv" id="selinfo"><b>明细表</b>（默认：双方 10 英雄 KDA + 正反补）</div>
-  <div style="max-height:62vh;overflow:auto">
-  <table id="tbl"><thead><tr>
-    <th>英雄</th><th>队</th><th>K</th><th>D</th><th>A</th><th>正补</th><th>反补</th>
-    <th>净值@t</th><th>累计金币@t</th><th>经验@t</th><th>HP</th>
-  </tr></thead><tbody></tbody></table>
+  <div id="paneList">
+    <div class="kv" id="selinfo"><b>明细表</b>（默认：双方 10 英雄 KDA + 正反补）</div>
+    <div style="max-height:56vh;overflow:auto">
+    <table id="tbl"><thead><tr>
+      <th>英雄</th><th>队</th><th>K</th><th>D</th><th>A</th><th>正补</th><th>反补</th>
+      <th>净值@t</th><th>累计金币@t</th><th>经验@t</th><th>HP</th>
+    </tr></thead><tbody></tbody></table>
+    </div>
+    <div class="tip"><b>点任意英雄</b>（表格行 / 头像 / 地图上的标记）→ 本栏切到该英雄的
+      <b>±10s combat log</b>（4 个 toggle）+ <b>技能 CD</b>。</div>
   </div>
-  <div class="todo">第二步（本页未做）：<b>点某英雄</b> → 右栏改为该英雄 <b>±10s 的 combat log</b>
-    （4 个 toggle：给出的 modifier / 收到的 modifier / 造成伤害 / 收到伤害）+ 下方<b>技能 CD</b>
-    （三态：冷却中灰+剩余秒 / 未学未拥有 / 就绪；重点追踪 <b>BKB / 刷新球 / TP</b>）。<br>
-    本页点英雄 = 选中 + 地图聚焦，是第二步的入口。</div>
+
+  <div id="paneHero" style="display:none">
+    <div class="kv" id="herotop">—</div>
+    <div class="tglrow">
+      <button class="btn" onclick="clearSel()">↩ 返回 10 英雄表</button>
+      <span class="sep"></span>
+      <label class="toggle"><input type="checkbox" id="tc0" checked onchange="renderDetail()">给出的 modifier</label>
+      <label class="toggle"><input type="checkbox" id="tc1" checked onchange="renderDetail()">收到的 modifier</label>
+      <label class="toggle"><input type="checkbox" id="tc2" checked onchange="renderDetail()">造成伤害</label>
+      <label class="toggle"><input type="checkbox" id="tc3" checked onchange="renderDetail()">收到伤害</label>
+      <label class="toggle"><input type="checkbox" id="tfold" checked onchange="renderDetail()">折叠连续同项</label>
+      <label class="toggle"><input type="checkbox" id="tcdall" onchange="renderCD()">显示天赋/空槽</label>
+    </div>
+    <div class="dsum" id="dsum">—</div>
+    <div class="dwrap"><table id="dtbl"><thead><tr>
+      <th>时刻</th><th>类别</th><th>名称</th><th>对象</th><th>数值</th>
+    </tr></thead><tbody></tbody></table></div>
+
+    <div class="cdhead">技能冷却（三态：冷却中=灰+剩余秒 ｜ 未学未拥有=锁 ｜ 就绪）</div>
+    <div id="cdboard"></div>
+    <div class="tip" id="cdnote"></div>
+  </div>
+
+  <div class="todo" id="todobox">本版已实现：① ±10s combat log 四 toggle ② 技能 CD（三态 + BKB/刷新球/TP）
+    ③ 状态胜率。<b>仍未做</b>：眼位/烟雾图层、多场切换、移动端 lite 版。</div>
 
   <details open><summary>口径与已知边界（坦诚说明 · 请务必先读）</summary>
     <p><b>① 时间口径</b>：0:00 = 号角（<code>combat_log gamestate value=5</code> 的 <code>t_cle</code>）；
-      出门 = −1:30（实测初始金 600 事件恰在 −0:90）。所有展示时刻都是这条轴。</p>
-    <p><b>② combat_log 的 t_cle = 游戏钟</b>（暂停冻结）→ 事件类直接可用。
-      <code>entity_snapshots</code> 的时间轴是<b>回放钟</b>（<code>tick/30</code>）→ 必须折算。
-      本页新增了「暂停检测」：暂停时场上实体逐秒完全静止，据此把每对锚点间的真实游戏时间按活跃秒摊分，
-      本场暂停 @@PAUSE@@s 被正确定位（否则整段暂停会被压到同一秒，出门期位置全错）。</p>
-    <p><b>③ 两个"经济差"是两套源，别混</b>：
+      出门 = −1:30（实测初始金 600 事件恰在 −1:29.9）。所有展示时刻都是这条轴。
+      <code>entity_snapshots</code> / <code>dems/db</code> 的 CD 事件是<b>回放钟</b>（<code>tick/30</code>）→
+      经 <code>analysis/timebase.py</code> 的暂停感知折算（本场暂停 @@PAUSE@@s）。</p>
+    <p><b>② ±10s 明细</b>全部来自 <code>combat_log</code>（4 类：<code>modifier</code> 按 attacker/target 分给出/收到、
+      <code>damage</code> 同理）。窗口 = <b>当前播放时刻 ±10s</b>（owner 默认）。逐条内嵌、无采样丢失；
+      "折叠连续同项"只是在显示层把同名称/同类别/同数值且时间相邻(≤1.2s)的条目并成一行（括号里是区间精确条数）。</p>
+    <p><b>③ 技能 CD</b>来自 <code>dems/db/&lt;league&gt;/&lt;match&gt;.db</code> 的
+      <code>ability_cd_start/end</code> + <code>ability_known/learn</code> + <code>item_cd_*</code> + <code>item_known</code>
+      （combat_log 版库里没有这些：CD 是<b>实体派生</b>、不是 combat 条目）。
+      <b>不需要任何冷却常量表</b> —— <code>properties.remaining</code> 就是实体 <code>m_fCooldown</code> 的
+      <b>实际剩余冷却秒</b>（含等级/天赋/减CD），区间 = <code>[cd_start, cd_end]</code>（有 end 用真实 end）。
+      <b>TP</b> 是充能制、库内无 CD/充能事件 → 只显示"使用时刻 + 次数"（如实标注，不硬造三态）。</p>
+    <p><b>④ 胜率是派生模型，不是 combat log</b>：<code>P(天辉胜 | 净值差, 经验差, t)</code> 逻辑回归，
+      在 <b id="wpN">—</b> 场上拟合，<b>按 match 划分训练/测试</b>防泄漏；特征只用 t 时刻可观测的量，
+      <b>绝不使用最终结果</b>。标签 = 远古被摧毁（badguys_fort 死→天辉胜）。验证：<b id="wpAuc">—</b>。
+      它是"历史上处于这种局面的队最终赢了多少"的统计映射，<b>不是这场比赛的预测</b>。
+      模型形态 = <b>分时间桶的逻辑回归 + 桶间系数线性插值</b>（对 t 连续）；分桶 AUC 见上。
+      ⚠️ 经济差与经验差<b>实测正相关 r=0.52</b> → <b>单个系数的符号不具解释意义</b>，
+      模型只在两者联合的实测分布上有意义（页面喂的就是实测值）。</p>
+    <p><b>⑤ 两个"经济差"是两套源，别混</b>：
       <span class="dr">净值差（m_iNetWorth）</span>= 标准经济差（现金+装备，非 combat log，项目内对账 OpenDota 0.000%）
       —— <b>已由 owner 定案为本页主显口径</b>；
       <span class="dr">combat-log 累加</span>= 累计<b>获取</b>金币差（已按 <code>gold_reason=1</code> 扣死亡损失；
       但买装备/消耗品不减 → 与净值差会随比赛拉大，实测本场末秒两者差 <b id="gapEnd">—</b>）。
-      页面同时给出两者，切换按钮只改"哪条驱动火花线"。</p>
-    <p><b>④ 经验差</b>只有 combat-log 一条源（库内无经验快照）→ 无法交叉校验，仅作参考。</p>
-    <p><b>⑤ 正反补</b>= <code>death</code> 条目里 attacker 为英雄、target 为线上兵；敌方兵=正补、己方兵=反补。
-      助手同理杀者：<code>assist_players</code> 里的值是<b>头部玩家索引</b>且<b>含击杀者本人</b>（已剔除）。</p>
-    <p><b>⑥ 位置</b>是解析层 1Hz 采样（偶有缺秒）→ 页面按"沿用上一秒"补齐（无位置则该英雄不画）。</p>
-    <p><b>⑦ 未做</b>：±10s combat log 明细、技能 CD、胜率、眼位/烟雾图层。</p>
+      胜率模型用的是<b>净值差</b>口径。</p>
+    <p><b>⑥ 经验差</b>只有 combat-log 一条源（库内无经验快照）→ 无法交叉校验，仅作参考。</p>
+    <p><b>⑦ 正反补</b>= <code>death</code> 条目里 attacker 为英雄、target 为线上兵；敌方兵=正补、己方兵=反补。
+      <code>assist_players</code> 的值是<b>头部玩家索引</b>且<b>含击杀者本人</b>（已剔除）。</p>
+    <p><b>⑧ 位置</b>是解析层 1Hz 采样（偶有缺秒）→ 页面按"沿用上一秒"补齐（无位置则该英雄不画）。</p>
   </details>
 </div>
 </div>
@@ -324,7 +442,47 @@ const T0 = DATA.t0, T1 = DATA.t1, D = DATA.D;
 const PL = DATA.players, ICONS = DATA.icons, META = DATA.meta;
 const POS = DATA.pos, HPM = DATA.hpm || {}, NW = DATA.nw, CG = DATA.cg, CX = DATA.cx, DIFF = DATA.diff;
 const KILLSX = DATA.kills, BLD = DATA.buildings, KDA = DATA.kda;
+const DET = DATA.detail || {}, DNAMES = DATA.dnames || [];
+const CD = DATA.cd || null, TPUT = DATA.tp || {}, WP = DATA.wp || null, ABICONS = DATA.abicons || {};
+const CATNAME = ["给出的 modifier", "收到的 modifier", "造成伤害", "收到伤害"];
+const MINKIND = ["Add", "Remove", "Stack", ""];
+const DMGKIND = ["", "暴击", "魔法伤害", "吸收"];
 const MAP_HALF = 8600;
+/* 明细按「与上一条的秒差」编码 → 惰性展开成绝对秒（仅该英雄首次被选中时算一次） */
+const DETABS = {};
+function detAbs(i) {
+  const npc = PL[i].npc;
+  if (DETABS[npc]) return DETABS[npc];
+  const rows = DET[npc] || [];
+  const out = new Array(rows.length);
+  let t = 0;
+  for (let k = 0; k < rows.length; k++) { t += rows[k][0]; out[k] = t; }
+  DETABS[npc] = out;
+  return out;
+}
+/* ── 状态胜率（派生模型；系数来自 analysis/q7_winprob.py）──
+   模型 = 分时间桶的逻辑回归 + 桶间对系数线性插值（对 t 连续）。
+   ⚠️ 经济差与经验差实测正相关 r=0.52 → 单个系数的符号不具解释意义，只在联合分布上有效。 */
+function winCoefAt(t) {
+  const C = WP.centers, K = WP.coefs;
+  if (t <= C[0]) return K[0];
+  if (t >= C[C.length - 1]) return K[K.length - 1];
+  for (let i = 0; i < C.length - 1; i++) {
+    if (t >= C[i] && t <= C[i + 1]) {
+      const f = (t - C[i]) / (C[i + 1] - C[i]), a = K[i], b = K[i + 1];
+      return [a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1]), a[2] + f * (b[2] - a[2])];
+    }
+  }
+  return K[K.length - 1];
+}
+function winProb(t, gd, xd) {
+  if (!WP || !WP.centers || gd === null || xd === null || t === null) return null;
+  const w = winCoefAt(t);
+  const z = w[0] + w[1] * (gd / 1000) + w[2] * (xd / 1000);
+  return 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, z))));
+}
+function fmtPct(v) { return (v === null || v === undefined) ? "—" : (100 * v).toFixed(1) + "%"; }
+
 
 /* ═══════════════ 地图坐标（沿用 Q5B 官方标定） ═══════════════ */
 const CSX = 1024;
@@ -646,16 +804,172 @@ function selectHero(i) {
   Array.prototype.forEach.call(document.querySelectorAll("#tbl tbody tr"), function (tr) {
     tr.classList.toggle("selrow", +tr.getAttribute("data-i") === selIdx);
   });
-  const si = document.getElementById("selinfo");
-  if (selIdx < 0) { si.innerHTML = "<b>明细表</b>（默认：双方 10 英雄 KDA + 正反补）"; }
-  else {
-    const p = PL[selIdx], k = KDA[p.npc];
-    si.innerHTML = '已选中 <b class="' + (p.team === 2 ? "dr" : "dd") + '">' + p.short.replace(/_/g, " ") + "</b>"
-      + "（" + (p.team === 2 ? "天辉" : "夜魇") + " · " + p.name + " · steam " + p.steam + "）"
-      + " ｜ KDA <b>" + k.k + "/" + k.d + "/" + k.a + "</b> ｜ 正/反补 <b>" + k.lh + "/" + k.dn + "</b>"
-      + '<br><span style="color:#d29922">第二步入口：此处将改为该英雄 ±10s combat log（4 toggle）+ 技能 CD。</span>';
-  }
+  document.getElementById("paneList").style.display = (selIdx < 0) ? "" : "none";
+  document.getElementById("paneHero").style.display = (selIdx < 0) ? "none" : "";
+  if (selIdx >= 0) { detAbs(selIdx); renderHeroHead(); renderDetail(); renderCD(); }
   draw();
+}
+
+/* ═══════════════ 英雄 ±10s combat log 明细 ═══════════════ */
+function renderHeroHead() {
+  if (selIdx < 0) return;
+  const p = PL[selIdx], k = KDA[p.npc];
+  const q = posAt(p.npc, tCur);
+  const pinfo = CD ? ((CD.track || []).map(function (kk) {
+    const e = (CD.it[p.npc] || []).filter(function (x) { return x[0] === kk; })[0];
+    const st = !e ? "未拥有" : (cdState(e[3] || [], tCur) !== null
+      ? "冷却 " + Math.ceil(cdState(e[3] || [], tCur)) + "s" : "就绪");
+    return (CD.keys[kk] || {}).name + " " + st;
+  }).join(" ｜ ")) : "";
+  document.getElementById("herotop").innerHTML =
+    '<b style="color:' + (p.team === 2 ? "#4aa564" : "#d24b4b") + '">' + p.short.replace(/_/g, " ")
+    + "</b>（" + (p.team === 2 ? "天辉" : "夜魇") + " · " + esc(p.name) + " · steam " + p.steam + "）"
+    + ' ｜ KDA <b>' + k.k + "/" + k.d + "/" + k.a + "</b> ｜ 正/反补 <b>" + k.lh + "/" + k.dn + "</b>"
+    + " ｜ 净值 <b>" + (valAt(NW, p.npc, tCur) === null ? "—" : Math.round(valAt(NW, p.npc, tCur)).toLocaleString("en-US")) + "</b>"
+    + (q ? (" ｜ HP <b>" + (q.hp > 0 ? q.hp + " / " + (hpMaxAt(p.npc, tCur) || "?") : "阵亡") + "</b>") : " ｜ 未出场")
+    + (pinfo ? '<br>关键道具：' + pinfo : "");
+}
+
+let lastDetail = null;   // 最近一次渲染的 ±10s 窗口（供回归测试/排查）
+function foldKey(r) { return r[1] + "|" + r[2] + "|" + r[3]; }
+function renderDetail() {
+  if (selIdx < 0) return;
+  const p = PL[selIdx];
+  const abs = detAbs(selIdx), rows = DET[p.npc] || [];
+  const lo = tCur - 10, hi = tCur + 10;
+  const on = [0, 1, 2, 3].map(function (c) { return document.getElementById("tc" + c).checked; });
+  const fold = document.getElementById("tfold").checked;
+  // 二分找窗口起点
+  let a = 0, b = abs.length;
+  while (a < b) { const m = (a + b) >> 1; if (abs[m] < lo) a = m + 1; else b = m; }
+  const picked = [];
+  for (let k = a; k < abs.length && abs[k] <= hi; k++) {
+    const r = rows[k];
+    const cat = r[1] >> 2, kind = r[1] & 3;
+    if (!on[cat]) continue;
+    picked.push({ t: abs[k], cat: cat, kind: kind, nm: DNAMES[r[2]] || "?", oid: r[3],
+                  val: r[4] || 0 });
+  }
+  let seq = picked;
+  if (fold) {
+    seq = [];
+    for (let k = 0; k < picked.length; k++) {
+      const r = picked[k], last = seq[seq.length - 1];
+      if (last && last.cat === r.cat && last.kind === r.kind && last.nm === r.nm &&
+          last.val === r.val && last.oid === r.oid && r.t - last.tEnd <= 1.2) {
+        last.tEnd = r.t; last.n += 1; continue;
+      }
+      seq.push({ t: r.t, tEnd: r.t, n: 1, cat: r.cat, kind: r.kind, nm: r.nm, oid: r.oid, val: r.val });
+    }
+  }
+  const cnt = [0, 0, 0, 0];
+  picked.forEach(function (r) { cnt[r.cat]++; });
+  lastDetail = { lo: lo, hi: hi, t: tCur, n: picked.length, shown: seq.length, cnt: cnt,
+                 tMin: picked.length ? picked[0].t : null,
+                 tMax: picked.length ? picked[picked.length - 1].t : null };
+  document.getElementById("dsum").innerHTML =
+    "<b>" + p.short.replace(/_/g, " ") + "</b>（" + (p.team === 2 ? "天辉" : "夜魇") + " · " + p.name + "）"
+    + " ｜ 窗口 <b>" + fmt(tCur, true) + " ± 10s</b>（" + fmt(lo) + " → " + fmt(hi) + "）"
+    + " ｜ 命中 <b>" + picked.length + "</b> 条"
+    + (fold && seq.length !== picked.length ? "（折叠后 " + seq.length + " 行）" : "")
+    + "<br>四类条数：" + CATNAME.map(function (c, i) { return c + " <b>" + cnt[i] + "</b>"; }).join(" ｜ ");
+  const tb = document.querySelector("#dtbl tbody");
+  const lim = 400;
+  let html = "";
+  for (let k = 0; k < seq.length && k < lim; k++) {
+    const r = seq[k];
+    const now = (r.t <= tCur + 1 && r.tEnd >= tCur - 1) ? "rownow" : (r.tEnd < tCur ? "rowpast" : "rowfut");
+    const other = (r.oid >= 0 ? (DNAMES[r.oid] || "") : "").replace(/^npc_dota_hero_/, "").replace(/^npc_dota_/, "");
+    const kk = r.cat < 2 ? (MINKIND[r.kind] || "") : (DMGKIND[r.kind] || "");
+    const ttxt = (r.n > 1 && r.tEnd > r.t) ? (fmt(r.t) + "–" + fmt(r.tEnd)) : fmt(r.t);
+    html += '<tr class="' + now + '"><td>' + ttxt
+      + '</td><td><span class="chip c' + r.cat + '">' + CATNAME[r.cat].slice(0, 2) + "</span></td>"
+      + '<td class="nm">' + esc(r.nm) + (kk ? ' <span class="dfold">[' + kk + ']</span>' : "")
+      + (r.n > 1 ? ' <b class="dfold">×' + r.n + "</b>" : "") + "</td>"
+      + "<td>" + esc(other) + "</td>"
+      + "<td>" + (r.cat >= 2 ? r.val : "—") + "</td></tr>";
+  }
+  if (!seq.length) html = '<tr><td colspan="5">该窗口内没有命中（可能该英雄此时不在场/无事件，或 4 个 toggle 都被关掉了）</td></tr>';
+  if (seq.length > lim) html += '<tr><td colspan="5">… 仅列出前 ' + lim + " 行（共 " + seq.length + "）</td></tr>";
+  tb.innerHTML = html;
+}
+function esc(s) {
+  return String(s === undefined || s === null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/* ═══════════════ 技能 CD（三态） ═══════════════ */
+function cdState(ivs, t) {
+  for (let i = 0; i < ivs.length; i++) {
+    if (t >= ivs[i][0] && t <= ivs[i][1]) return Math.max(0, ivs[i][1] - t);
+  }
+  return null;
+}
+function cdChip(key, name, icon, known, ivs, isItem, tracked) {
+  const state = cdState(ivs, tCur);
+  const locked = (known === null || known === undefined || tCur < known);
+  const cls = locked ? "lock" : (state === null ? "ready" : "cool");
+  let box;
+  if (icon && ABICONS[icon]) box = '<img src="' + ABICONS[icon] + '" alt="">';
+  else box = '<span class="fb">' + esc(name) + "</span>";
+  let st;
+  if (locked) st = "未" + (isItem ? "拥有" : "学");
+  else if (state !== null) st = "冷却 " + state.toFixed(0) + "s";
+  else st = "就绪";
+  return '<div class="cd ' + cls + (tracked ? " track" : "") + '" title="' + esc(key) + " ｜ " + esc(name) + '">'
+    + '<div class="box">' + box + (state !== null && !locked ? '<div class="rem">' + Math.ceil(state) + "</div>" : "")
+    + '</div><div class="cap">' + esc(name.length > 14 ? name.slice(0, 13) + String.fromCharCode(8230) : name) + '</div><div class="st">' + st + "</div></div>";
+}
+function renderCD() {
+  if (selIdx < 0) return;
+  const p = PL[selIdx], npc = p.npc;
+  const board = document.getElementById("cdboard"), note = document.getElementById("cdnote");
+  if (!CD) {
+    board.innerHTML = '<div class="tip">本场没有技能/道具 CD 数据（<code>dems/db/&lt;league&gt;/&lt;match&gt;.db</code> 缺失）'
+      + " → <b>如实回退</b>，不硬造三态。</div>";
+    note.textContent = "";
+    return;
+  }
+  const abs = [];
+  (CD.ab[npc] || []).forEach(function (e) { abs.push({ key: e[0], known: (e[2] !== null ? e[2] : e[1]), ivs: e[3] || [], item: false }); });
+  (CD.it[npc] || []).forEach(function (e) { abs.push({ key: e[0], known: e[1], ivs: e[3] || [], item: true }); });
+  // 关键道具（BKB/刷新球）即使未拥有也显示（locked）——owner 点名追踪
+  (CD.track || []).forEach(function (k) {
+    if (abs.some(function (x) { return x.key === k; })) return;
+    abs.push({ key: k, known: null, ivs: [], item: true, tracked: true });
+  });
+  abs.sort(function (a, b) {
+    const ta = (CD.track || []).indexOf(a.key) >= 0 ? 0 : (a.item ? 1 : 2);
+    const tb = (CD.track || []).indexOf(b.key) >= 0 ? 0 : (b.item ? 1 : 2);
+    if (ta !== tb) return ta - tb;
+    return (a.known === null ? 1e9 : a.known) - (b.known === null ? 1e9 : b.known);
+  });
+  const showAll = document.getElementById("tcdall").checked;
+  let hidden = 0;
+  let html = "";
+  abs.forEach(function (x) {
+    const info = CD.keys[x.key] || { name: x.key, icon: null };
+    const tracked = (CD.track || []).indexOf(x.key) >= 0 || x.tracked;
+    if (!showAll && !tracked && (info.cls === "talent" || info.cls === "empty")) { hidden++; return; }
+    html += cdChip(x.key, info.name, info.icon, x.known, x.ivs, x.item || info.kind === "item", tracked);
+  });
+  // TP：充能制，库内无 CD/充能事件 → 只报使用记录（不硬造三态）
+  const tp = TPUT[npc] || [];
+  const lastTp = tp.length ? tp[tp.length - 1] : null;
+  const stTp = lastTp === null ? "无使用记录" : ("最近 " + fmt(lastTp) + "（" + Math.round(tCur - lastTp) + "s 前）");
+  html += '<div class="cd track" title="Town Portal Scroll（充能制；库内无 CD/充能事件）">'
+    + '<div class="box"><span class="fb">TP</span></div><div class="cap">TP 卷轴</div>'
+    + '<div class="st">' + tp.length + " 次</div></div>";
+  board.innerHTML = html;
+  note.innerHTML = "数据源 <code>" + esc(CD.src) + "</code>（<b>" + esc(CD.time_axis || "") + "</b>）："
+    + "<code>ability_cd_start/end</code> + <code>ability_known/learn</code> + <code>item_cd_start/end</code> + <code>item_known</code>。"
+    + "冷却区间 = <code>[cd_start, cd_end]</code>（有真实 end 用 end，否则 <code>start + properties.remaining</code>）——"
+    + "<b>remaining 是实体 m_fCooldown 的实际剩余秒（含等级/天赋/减CD），所以本页不需要任何冷却常量表</b>。"
+    + "金框 = owner 点名追踪的关键道具。<b>TP 是充能制</b>：库内没有 TP 的 CD/充能事件，"
+    + "故只显示使用时刻与次数（当前英雄：" + stTp + "），<b>不伪造三态</b>。"
+    + "未学/未拥有的技能与道具显示为锁定态（灰 + 🔒）。";
+    + (hidden > 0 ? "已隐藏 <b>" + hidden + "</b> 项天赋/空槽占位（勾『显示天赋/空槽』可展开）。" : "")
+    + " 名称形如 <code>Xxx_Yyy</code> 的是 <b>Devour 等吃来的中立生物技能</b>（前缀即来源单位），不是 bug。";
 }
 function clearSel() { if (selIdx >= 0) selectHero(selIdx); }
 function buildTable() {
@@ -694,6 +1008,19 @@ function refresh(t) {
   };
   put("vNw", nw); put("vCg", cg); put("vCx", cx);
 
+  // 状态胜率（派生模型：净值差 + 经验差 + 时刻）
+  const pw = winProb(t, nw, cx);
+  const wpEl = document.getElementById("vWp");
+  if (pw === null) {
+    wpEl.textContent = "—";
+    wpEl.className = "v zero";
+    document.getElementById("vWpNote").textContent = WP ? "该时刻无数据" : "模型未拟合（先跑 q7_winprob.py）";
+  } else {
+    wpEl.textContent = fmtPct(pw);
+    wpEl.className = "v " + (pw > 0.52 ? "rad" : (pw < 0.48 ? "dir" : "zero"));
+    document.getElementById("vWpNote").textContent = "天辉胜率（给定 t 时刻的经济/经验差）";
+  }
+
   for (let i = 0; i < PL.length; i++) {
     const p = PL[i], k = KDA[p.npc];
     setCell("c-k-" + i, k.k); setCell("c-d-" + i, k.d); setCell("c-a-" + i, k.a);
@@ -730,6 +1057,7 @@ function refresh(t) {
     + "（" + Math.round(tBig) + "s / " + T1 + "s）";
   document.getElementById("smalllabel").textContent = "小条偏移 = " + (sVal > 0 ? "+" : "") + sVal
     + "s → 实际时刻 " + fmt(tCur, true) + (Math.abs(sVal) < 0.01 ? "（已归零）" : "");
+  if (selIdx >= 0) { renderHeroHead(); renderDetail(); renderCD(); }
   paintSpark();
   draw();
 }
@@ -898,6 +1226,18 @@ document.getElementById("showName").onchange = draw;
   const g = document.getElementById("gapEnd");
   const a = DIFF.nw[D - 1], b = DIFF.cg[D - 1];
   if (g && a !== null && b !== null) g.textContent = Math.abs(a - b).toLocaleString("en-US") + "（净值 " + fmtNum(a) + " vs 累计 " + fmtNum(b) + "）";
+  if (WP) {
+    document.getElementById("wpN").textContent = WP.n_match + " 场 / " + WP.n_train + " 训练样本";
+    document.getElementById("wpAuc").textContent =
+      "测试集 AUC " + (WP.auc_test === null ? "—" : WP.auc_test.toFixed(3)) + "（训练 " +
+      (WP.auc_train === null ? "—" : WP.auc_train.toFixed(3)) + "，Brier " + WP.brier_test.toFixed(3) + "）"
+      + "；分桶 AUC " + (WP.buckets || []).map(function (b) {
+        return (b.lo / 60) + "-" + (b.hi ? (b.hi / 60) : "+") + "分 " + (b.auc_test === null ? "—" : b.auc_test.toFixed(2));
+      }).join(" / ");
+  } else {
+    document.getElementById("wpN").textContent = "未拟合";
+    document.getElementById("wpAuc").textContent = "先跑 python analysis/q7_winprob.py";
+  }
   buildAvatars(); buildTable(); buildMarks();
   commit(0);          // 默认停在 0:00（号角）；往前拖 = 出门期（-1:30 起）
 })();

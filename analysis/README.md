@@ -23,18 +23,28 @@ python analysis/ward_analysis.py 8592126358.db 8979891001.db [--team 2|3|all]
 | `Q1 地图经济价值分区`（q1_value_zones.py）【现行】 | `entity_snapshots`(hero 位置 + networth) + `game_events`.gold + `player_identity` | 描述性版：地图 250 网格(80×80)，每格 × (全场/0-10/10-20/20+) 三指标(个人GPM / 整体GPM / 相对GPM)，每指标/窗口独立色阶上限 + 滑块 + 分区标注。复核页 `q1_value_zones_viewer.html`；明细 `q1_zone_detail.db`(逐格×窗口×match)。见 `DATA_DICT.md` |
 | `Q2 全队伍经济→胜率`（build_all_teams_q2.py） | `stats.db` + OpenDota + 净值 | 全队伍 10分钟经济→胜率 & 10→20滚雪球(含分类率/±差/来源联赛)。复核页 `q2_all_teams_viewer.html` |
 | `Q3 英雄相对贡献`（q3_rel_measure.py）/`Q3a/Q3b`（q3_outcome_economy.py） | `entity_snapshots`.networth + `stats.db` | Q3a-REL 英雄对队伍净值/滚雪球相对贡献(复核页 `q3_rel_viewer.html`)；Q3a 绝对刷钱 + Q3b 英雄×10min状态→胜率(CSV，控版/leave-one-out 未做) |
-| **`Q7 全盘复现交互 UI（回放浏览器）`**（q7_replay.py + build_q7_html.py）【现行·第一步已交付】 | 单场库 4 表（`combat_log` / `entity_snapshots` / `game_events` / `player_identity`）+ `stats.db`(队名/时长对账) | **单场**回放浏览器：左地图(缩放/平移)+10 英雄逐秒位置+轨迹、地图下双方 10 头像(真血条)、双时间轴(全场 + ±60s)、顶部两套经济差+经验差+全场火花线、右表 10 英雄 KDA+正反补+当前净值/金币/经验/HP。复核页 `q7_replay_<match>.html`；口径与边界见 `Q7_SUBMISSION.md`；交互回归 `q7_viewer_itest.js` |
+| **`Q7 全盘复现交互 UI（回放浏览器）`**（q7_replay.py + build_q7_html.py + q7_winprob.py）【现行·两步已交付】 | 单场库 4 表（`combat_log` / `entity_snapshots` / `game_events` / `player_identity`）+ **`dems/db/`（技能/道具 CD）** + `stats.db`(队名/时长对账) | **单场**回放浏览器：左地图(缩放/平移)+10 英雄逐秒位置+轨迹、地图下双方 10 头像(真血条)、双时间轴(全场 + ±60s)、顶部两套经济差+经验差+**状态胜率**+全场火花线、右表 10 英雄 KDA+正反补；**点英雄 → 该英雄 ±10s combat log（4 toggle）+ 技能 CD 三态（BKB/刷新球/TP）**。复核页 `q7_replay_<match>.html`；口径与边界见 `Q7_SUBMISSION.md`；交互回归 `q7_viewer_itest.js`；胜率模型 `q7_winprob.py` |
 
-## Q7 全盘复现交互 UI（回放浏览器）· 第一步（MVP）
+## Q7 全盘复现交互 UI（回放浏览器）· 两步已交付
 
-- **脚本**：`python analysis/q7_replay.py <match_id>`（切片 + 自检）→ `python analysis/build_q7_html.py <match_id>`（单文件 HTML）→ `node analysis/q7_viewer_itest.js <match_id>`（交互回归）。
-- **共享时基**：`analysis/timebase.py`（Q5B/Q6/Q7 共用的单一真相源）—— 号角 / 比赛结束 / **暂停感知**的
+- **脚本链**：
+  `python analysis/q7_winprob.py`（状态胜率：970 场拟合 + 按 match 留出验证；`--refit-only` 用样本缓存重拟合）
+  → `python analysis/q7_replay.py <match_id>`（切片 + 自检）
+  → `python analysis/build_q7_html.py <match_id>`（单文件 HTML）
+  → `node analysis/q7_viewer_itest.js <match_id>`（交互回归，含内嵌 JS 语法预检）
+  → `node analysis/q7_viewer_itest.js <mid> "dump=<idx>@<秒>"`（把右栏面板渲染成文本，**不用浏览器就能核对内容**）
+- **共享时基**：`analysis/timebase.py`（Q5B/Q6/Q7 单一真相源）—— 号角 / 比赛结束 / **暂停感知**的
   `t_tick→t_cle` 折算 / `gold.value` 的 int32 下溢还原。自检 `python analysis/timebase.py <match_id>`。
 - **时间口径**：显示钟 `disp = t_cle − horn_cle`（0:00 = 号角）；结束 = 远古被摧毁（不用 `MAX(t_cle)`）。
-  `entity_snapshots` 是**回放钟**，用"暂停时实体静止"的物理证据把 `Δcle` 按活跃秒摊分折算。
-- **经济两套源并列显示**（净值 `m_iNetWorth` / combat-log 累计金币），**owner 定案：主显净值差**；差异与原因见 `Q7_SUBMISSION.md` §2.4。
+  `entity_snapshots` 与 `dems/db` 的 CD 事件都是**回放钟**，经 `timebase.Clock` 折算。
+- **经济两套源并列显示**（净值 `m_iNetWorth` / combat-log 累计金币），**owner 定案主显净值差**；胜率模型也用净值差。
+- **技能 CD 不需要常量表**：`dems/db` 的 `ability_cd_start/end` 已带**真实剩余冷却秒**（实体 `m_fCooldown`，
+  含等级/天赋/减CD）。`db_full` 里没有（COMBAT_LOG_REWRITE 删了散装 extractor，CD 不是 combat 条目）→ **两库按 match_id join**。
+- **状态胜率**：分时间桶逻辑回归 + 桶间系数线性插值，970 场 / 按 match 切分 → **测试 AUC 0.830**（30-40 分钟桶 0.910），
+  特征只用 t 时刻可观测的净值差+经验差+时刻，标签用"远古被摧毁"判定，**无泄漏**。
 - **改动量实测（别夸大）**：`python analysis/q7_clock_check.py --scan 45` → 窗口内旧/新 |Δ显示秒| 中位 0.03~0.07s、
-  最大 ≤9.6s、>30s 的 0 场；`python analysis/q5_clock_check.py --sample 40` → Q5B 逐支眼改动 **0/4591**。
+  最大 ≤9.6s、>30s 的 0 场；`python analysis/q5_clock_check.py --sample 40` → Q5B 逐支眼改动 **0/4591**；
+  换时基后全量重跑 Q5B 并与发布版比对 → **SHA256 相同**。
 - **已知上游数据事实（分析层已绕过，未改解析器）**：
   1. `combat_log.gold.value` 的 int32 下溢：`gold_reason=1`（死亡扣钱）的负数被按 uint32 落库。
      40 场抽样 2153/2153 行命中；**只有 gold 有这个问题**（healing/xp/damage/modifier/item 无一行溢出）。

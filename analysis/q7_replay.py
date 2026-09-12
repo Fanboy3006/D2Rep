@@ -42,8 +42,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import timebase as tb   # noqa: E402  数据层共享时基（号角/结束/暂停感知折算 + gold int32 还原）
 
 DBFULL = os.path.join(ROOT, "dems", "db_full")
+DBOLD = os.path.join(ROOT, "dems", "db")          # Q5 版散装 extractor（技能/道具 CD 在这里）
 OUTDIR = os.path.join(ROOT, "analysis", "output_q7")
 STATS_DB = os.path.join(ROOT, "stats.db")
+ICON_DIR = os.path.join(ROOT, "opendota_analysis", "assets", "ability_icons")
+SKILLICON_OUT = os.path.join(ROOT, "analysis", "output_q7", "icons")
 
 WORLD_HALF = 8600.0          # 地图世界半径（与地图层标定一致）
 CREEP_PREFIX = "npc_dota_creep_"
@@ -70,6 +73,12 @@ def find_db(match_id):
     p = hits[0]
     league = os.path.basename(os.path.dirname(p))
     return p, league
+
+
+def find_old_db(match_id):
+    """Q5 版库（dems/db/）——技能/道具 CD 数据只在这里。缺失返回 None（不硬造）。"""
+    hits = glob.glob(os.path.join(DBOLD, "*", "%s.db" % match_id))
+    return hits[0] if hits else None
 
 
 def team_name(match_id, team_id):
@@ -223,9 +232,9 @@ def parse_match(db, match_id, league):
             pos[npc]["x"][k] = round(x, 1)
             pos[npc]["y"][k] = round(y, 1)
             pos[npc]["hp"][k] = hp
-        for npc, hm in hpmax.get(tt, {}).items():
-            if npc in hpm:
-                hpm[npc][k] = hm
+        for npc, m in hpmax.items():          # hpmax: npc -> {tt: hp_max}
+            if npc in hpm and tt in m:
+                hpm[npc][k] = m[tt]
 
     # --- m_iNetWorth（旁注校验源）---
     key2npc = {}
@@ -358,6 +367,21 @@ def parse_match(db, match_id, league):
             buildings.append([round(x, 1), round(y, 1), team, kind or "building",
                               int(round(disp_of_tt(tt)))])
 
+    # 2e. 该英雄 ±10s 的 combat log 明细（4 类）+ 关键道具 TP 使用时刻
+    #     载荷优化：把「同英雄 · 同类别 · 同 kind · 同名称 · 同数值 · 同对手 · 时间相邻(≤1.2s)」
+    #     的连续条目**折叠成一个区间**（保留条数 n 与首末时刻）——逐条渲染 12.9 万行既没人看、
+    #     单文件也装不下；折叠后显示内容等价（区间 + ×N + 首末时刻）。
+    detail, names = build_combat_detail(con, players, horn_cle, t0, t1)
+    tpu = {p["npc"]: [] for p in players}
+    for r in con.execute(
+        "SELECT t_cle, attacker FROM combat_log WHERE type_category='item' AND inflictor='item_tpscroll'"
+    ):
+        npc = r["attacker"]
+        if npc in tpu:
+            k = idx(float(r["t_cle"]) - horn_cle)
+            if k is not None:
+                tpu[npc].append(int(round(float(r["t_cle"]) - horn_cle)))
+
     con.close()
 
     # --- 队伍合计/差值（两套源）---
@@ -377,8 +401,11 @@ def parse_match(db, match_id, league):
         return [r[k] - d[k] for k in range(D)]
 
     meta = match_meta(match_id)
+    old_db = find_old_db(match_id)
+    cd = load_cd(old_db, match_id, CLK, players, t0, t1)
     meta.update({
         "db": os.path.relpath(db, ROOT).replace("\\", "/"),
+        "db_old": (os.path.relpath(old_db, ROOT).replace("\\", "/") if old_db else None),
         "league_id": int(league) if str(league).isdigit() else league,
         "horn_cle": round(horn_cle, 3),
         "horn_tt": round(horn_tt, 3),
@@ -405,9 +432,244 @@ def parse_match(db, match_id, league):
         "kills": kills,
         "events": events,
         "buildings": buildings,
+        "detail": detail,
+        "detail_names": names,
+        "cd": cd,
+        "tp": tpu,
         "kda": kda,
         "meta": meta,
     }
+
+
+# ──────────────────────── 2b. combat log 明细（±10s 面板用） ────────────────────────
+#   4 类：给出的 modifier / 收到的 modifier / 造成伤害 / 收到伤害（Q7_REPLAY_UI.md §4.2）
+#   折叠规则见 parse_match 里的注释；`n` = 该区间内的原始条目数（不隐藏任何条目，只是合并显示）
+MOD_KIND = {"DotaCombatlogModifierAdd": 0, "DotaCombatlogModifierRemove": 1,
+            "DotaCombatlogModifierStackEvent": 2}
+DMG_KIND = {"DotaCombatlogDamage": 0, "DotaCombatlogCriticalDamage": 1,
+            "DotaCombatlogManaDamage": 2, "DotaCombatlogSpellAbsorb": 3}
+RUN_GAP = 1.2      # 相邻条目间隔 ≤ 该秒数 → 视为同一"连续区间"
+
+
+def build_combat_detail(con, players, horn_cle, t0, t1):
+    """返回 (detail, names)：
+    detail[npc] = [[dt, cat, kind, name_idx, val, other_idx], ...]
+      dt  = 该条与**上一条**的显示秒差（≥0）—— UI 累加成绝对时刻；省掉 4 位绝对秒，载荷减半
+      cat = 0 给出的 modifier ｜ 1 收到的 modifier ｜ 2 造成伤害 ｜ 3 收到伤害
+      kind= modifier: 0 Add / 1 Remove / 2 Stack ；damage: 0 Damage / 1 Critical / 2 ManaDamage / 3 SpellAbsorb
+      other_idx = 对手/来源名索引（-1 = 无）
+    ★ 逐条保留（不预折叠）：折叠交给 UI 的"折叠连续同项"开关做，保证 ±10s 窗口内的计数是精确的。
+    names = 名称字典（modifier inflictor / damage inflictor / damage_source / 单位名）
+    """
+    hdr_of = {p["npc"]: p["i"] for p in players}
+    hero_set = set(hdr_of)
+    names, nidx = [], {}
+
+    def nid(s):
+        s = s or ""
+        if s not in nidx:
+            nidx[s] = len(names)
+            names.append(s)
+        return nidx[s]
+
+    raw = collections.defaultdict(list)
+    for r in con.execute(
+        "SELECT t_cle, type_category c, type, attacker, target, inflictor, damage_source, "
+        "COALESCE(value,0) v FROM combat_log "
+        "WHERE type_category IN ('modifier','damage') ORDER BY t_cle, event_seq"
+    ):
+        a, tg, c = r["attacker"], r["target"], r["c"]
+        if a in hero_set and c == "modifier":
+            cat, hero, other, nm = 0, a, tg, r["inflictor"]
+        elif tg in hero_set and c == "modifier":
+            cat, hero, other, nm = 1, tg, a, r["inflictor"]
+        elif a in hero_set:
+            cat, hero, other = 2, a, tg
+            nm = r["inflictor"] or r["damage_source"] or ""
+            if not nm or nm == a:
+                nm = "普通攻击"          # inflictor 缺省且来源=自己 → 右键平A
+        elif tg in hero_set:
+            cat, hero, other = 3, tg, a
+            nm = r["inflictor"] or r["damage_source"] or ""
+            if not nm or nm == a:
+                nm = "普通攻击"
+        else:
+            continue
+        kind = (MOD_KIND if c == "modifier" else DMG_KIND).get(r["type"], 0)
+        t = float(r["t_cle"]) - horn_cle
+        if t < t0 - 1 or t > t1 + 1:
+            continue
+        raw[hero].append((int(round(t)), cat, kind, nid(nm), int(r["v"] or 0),
+                          nid(other) if other else -1))
+
+    detail = {}
+    for npc, rows in raw.items():
+        rows.sort(key=lambda x: x[0])
+        out, prev = [], None
+        for t, cat, kind, nm, val, oid in rows:
+            dt = t - prev if prev is not None else t
+            code = cat * 4 + kind          # 合并 cat/kind 省一个字段
+            # 伤害类带数值；modifier 的 value 恒 0 → 省掉该字段（变长数组，JS 端 r[4]||0）
+            out.append([dt, code, nm, oid] if cat < 2 else [dt, code, nm, oid, val])
+            prev = t
+        detail[npc] = out
+    # 名称字典可读化：npc_dota_hero_x → x（其余 npc_dota_ 前缀去掉）
+    names = [n.replace("npc_dota_hero_", "").replace("npc_dota_", "") for n in names]
+    for p in players:
+        detail.setdefault(p["npc"], [])
+    return detail, names
+
+
+# ──────────────────────── 2c. 技能 / 道具 CD（读 dems/db，回放钟 → 显示钟） ────────────────────────
+#   数据源：`dems/db/<league>/<match>.db` 的 `game_events`（**回放钟**，见 DEM_FORMAT §5）。
+#   为什么不去 db_full 拿：COMBAT_LOG_REWRITE §5.5 删掉了散装 extractor，而 CD 是**实体派生**
+#   （读实体 `m_fCooldown`）不是 combat 条目 → db_full 里没有。
+#   ★ 关键利好：`properties.remaining` = **实际剩余冷却秒**（含等级/天赋/减CD），
+#     所以"技能 CD"**不需要任何常量表**（实测 BKB 70.5~95.0s / 刷新球 135~180s）。
+CD_PREFIX = "CDOTA_Ability_"
+ITEM_PREFIX = "ITEM:"
+KEY_ITEMS = ["ITEM:Black_King_Bar", "ITEM:RefresherOrb", "ITEM:TownPortalScroll"]
+
+
+def camel_to_snake(s):
+    import re
+    s = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", s)
+    s = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", s)
+    return s.lower()
+
+
+def pretty_ability(key, short):
+    """CDOTA_Ability_DoomBringer_ScorchedEarth → 'Scorched Earth'；
+    中立生物技能（Devour 吃来的，如 CDOTA_Ability_BlackDragon_Fireball）保留其来源前缀。"""
+    import re
+    tail = key[len(CD_PREFIX):] if key.startswith(CD_PREFIX) else key
+    hero_camel = "".join(w.capitalize() for w in short.split("_"))
+    if tail.startswith(hero_camel + "_"):
+        tail = tail[len(hero_camel) + 1:]
+    tail = tail.replace("_", " ")
+    tail = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", tail)
+    return re.sub(r"\s+", " ", tail).strip() or tail
+
+
+def pretty_item(key):
+    import re
+    tail = key[len(ITEM_PREFIX):] if key.startswith(ITEM_PREFIX) else key
+    tail = tail.replace("_", " ")
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", tail).strip()
+
+
+def ability_class(key):
+    """天赋 / 空槽 → UI 默认不显示（可在页面里打开"显示天赋/空槽"）。"""
+    k = key.split("_")[-1] if "_" in key else key
+    if key.startswith(CD_PREFIX) and ("Special_Bonus" in key or "_Bonus" in key or "Attribute" in key):
+        return "talent"
+    if "_Empty" in key or k in ("Empty1", "Empty2", "Empty3", "Empty4", "Empty5", "Empty6"):
+        return "empty"
+    return "ability"
+
+
+def load_cd(old_db, mid, clk, players, t0, t1):
+    """技能/道具冷却区间（显示钟）。找不到旧库/无数据 → 返回 None（**不硬造**）。"""
+    if not old_db or not os.path.exists(old_db):
+        return None
+    con = sqlite3.connect(old_db)
+    con.row_factory = sqlite3.Row
+    short_of = {p["npc"]: p["short"] for p in players}
+    starts = collections.defaultdict(list)     # (npc,key) -> [disp,...]
+    ends = collections.defaultdict(list)
+    known = {}
+    learns = {}
+    kinds = {}
+    for r in con.execute(
+        "SELECT game_time_sec t, event_type et, actor_id a, target_id k, properties p FROM game_events "
+        "WHERE event_type IN ('ability_cd_start','ability_cd_end','item_cd_start','item_cd_end',"
+        "'ability_known','ability_learn','item_known') ORDER BY game_time_sec"
+    ):
+        a, k = r["a"], r["k"]
+        if a not in short_of or not k:
+            continue
+        try:
+            props = json.loads(r["p"] or "{}")
+        except Exception:
+            props = {}
+        rem = props.get("remaining")
+        d = clk.disp(int(r["t"]))          # 回放钟 → 显示钟
+        et = r["et"]
+        if et in ("ability_cd_start", "item_cd_start"):
+            starts[(a, k)].append((d, float(rem or 0.0)))
+            kinds[k] = "item" if k.startswith(ITEM_PREFIX) else "ability"
+        elif et in ("ability_cd_end", "item_cd_end"):
+            ends[(a, k)].append(d)
+        elif et == "ability_known":
+            known.setdefault((a, k), d)
+        elif et == "item_known":
+            known.setdefault((a, k), d)
+        elif et == "ability_learn":
+            learns.setdefault((a, k), d)
+    con.close()
+
+    # starts / ends 一一配对（每个 end 配"最近一个尚未闭合的 start"）
+    seq = {}
+    for k in set(list(starts) + list(ends)):
+        ss = sorted(starts.get(k, []))
+        ee = sorted(ends.get(k, []))
+        ivs = []
+        for sd, rem in ss:
+            ivs.append({"s": sd, "e": sd + rem, "closed": False})
+        for ed in ee:
+            best, bd = None, 1e9
+            for it in ivs:
+                if it["closed"] or it["s"] > ed:
+                    continue
+                dd = abs(it["e"] - ed)
+                if dd < bd and dd <= 8.0:
+                    bd, best = dd, it
+            if best is not None:
+                best["e"] = ed
+                best["closed"] = True
+        seq[k] = [[int(round(i["s"])), max(int(round(i["e"])), int(round(i["s"])) + 1)]
+                  for i in ivs if i["e"] > i["s"] + 0.05]
+
+    keys = sorted({k for (a, k) in list(starts) + list(ends) + list(known) + list(learns)})
+    key_info = {}
+    for k in keys:
+        short = ""
+        for (a, kk) in list(known) + list(learns) + list(starts):
+            if kk == k:
+                short = short_of[a]
+                break
+        nm = pretty_item(k) if k.startswith(ITEM_PREFIX) else pretty_ability(k, short)
+        icon = None
+        if k.startswith(ITEM_PREFIX):
+            for cand in (camel_to_snake(k[len(ITEM_PREFIX):]), k[len(ITEM_PREFIX):].lower()):
+                if os.path.exists(os.path.join(ICON_DIR, "item_%s.png" % cand)):
+                    icon = "item_%s" % cand
+                    break
+        else:
+            cand = camel_to_snake(k[len(CD_PREFIX):])
+            if os.path.exists(os.path.join(ICON_DIR, "%s.png" % cand)):
+                icon = cand
+        key_info[k] = {"name": nm, "kind": "item" if k.startswith(ITEM_PREFIX) else "ability",
+                       "icon": icon, "cls": "item" if k.startswith(ITEM_PREFIX) else ability_class(k)}
+
+    ab, it = {}, {}
+    for p in players:
+        npc = p["npc"]
+        A, I = [], []
+        for k in keys:
+            if (npc, k) not in starts and (npc, k) not in known and (npc, k) not in learns:
+                continue
+            entry = [k, known.get((npc, k)), learns.get((npc, k)), seq.get((npc, k), [])]
+            if k.startswith(ITEM_PREFIX):
+                I.append(entry)
+            else:
+                A.append(entry)
+        ab[npc] = A
+        it[npc] = I
+    return {"keys": key_info, "ab": ab, "it": it,
+            "track": [k for k in KEY_ITEMS if k in key_info],
+            "src": os.path.relpath(old_db, ROOT).replace("\\", "/"),
+            "time_axis": "replay→display（经 timebase.Clock 折算）"}
 
 
 # ──────────────────────── 3. 自检 + 落盘 ────────────────────────
@@ -450,6 +712,23 @@ def selfcheck(dat):
     msgs.append("击杀事件 %d 条；建筑/肉山标记 %d 条" % (len(dat["kills"]), len(dat["events"])))
     bld = dat.get("buildings", [])
     msgs.append("建筑 %d 座（已摧毁 %d）" % (len(bld), sum(1 for b in bld if b[4] is not None)))
+    det = dat.get("detail", {})
+    nraw = sum(len(v) for v in det.values())
+    msgs.append("±10s 明细：逐条 %d 条（Δ编码）｜名称字典 %d ｜ JSON 内占比见文件大小"
+                % (nraw, len(dat.get("detail_names", []))))
+    cd = dat.get("cd")
+    if cd:
+        nab = sum(len(v) for v in cd["ab"].values())
+        nit = sum(len(v) for v in cd["it"].values())
+        nint = sum(len(e[3]) for v in cd["ab"].values() for e in v) + \
+               sum(len(e[3]) for v in cd["it"].values() for e in v)
+        msgs.append("技能/道具 CD：能力条目 %d ｜ 道具条目 %d ｜ 冷却区间 %d ｜ 源 %s"
+                    % (nab, nit, nint, cd["src"]))
+        msgs.append("关键道具追踪：%s" % ("、".join("%s(%s)" % (k, cd["keys"][k]["name"]) for k in cd["track"]) or "无"))
+        msgs.append("TP 使用次数（combat_log item use）：%s"
+                    % "，".join("%s=%d" % (p["short"], len(dat["tp"].get(p["npc"], []))) for p in dat["players"]))
+    else:
+        msgs.append("技能/道具 CD：**旧库 dems/db/ 无本场 → 不提供**（如实回退，不硬造）")
     # ★ 独立对账：stats.db（OpenDota）的 duration_sec vs 本脚本"远古被摧毁"推得的时长
     dur = m.get("stats_duration_sec")
     if dur:

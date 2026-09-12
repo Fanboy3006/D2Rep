@@ -1,10 +1,20 @@
 # Q7 · 全盘复现交互 UI（回放浏览器）—— 任务文档
 
-> 状态：**第一步（MVP）已交付并发布公网**（单场跑通：地图+缩放平移 / 双时间轴 / 10 英雄逐秒位置+头像 / 顶部经济差·经验差 / 右表 KDA+正反补）。
-> **第二步未做**：点英雄 → ±10s combat log 四 toggle、技能 CD（三态 + BKB/刷新球/TP）、胜率。
-> **本步交付回传**：`analysis/Q7_SUBMISSION.md`（口径说明 / 可复现脚本 / 验证记录 / 准确率边界 / 待拍板）。
-> 交付物：`analysis/output_review/q7_replay_8955197224.html`、`q7_replay_8830423116.html`（公网 `https://bigfatblackwhale.github.io/DSH-Dota2/q7_replay_<match>.html`）。
-
+> 状态：**第一步（MVP）+ 第二步（±10s combat log 四 toggle / 技能 CD / 状态胜率）均已交付并发布公网**。
+> **本任务回传**：`analysis/Q7_SUBMISSION.md`（口径说明 / 可复现脚本 / 验证记录 / 准确率边界 / 待拍板）。
+> 交付物：`analysis/output_review/q7_replay_8955197224.html`、`q7_replay_8830423116.html`
+> （公网 `https://bigfatblackwhale.github.io/DSH-Dota2/q7_replay_<match>.html`）。
+>
+> **第二步两个关键结论（与任务书 §5/§6/§10 相关，均已实测）**：
+> 1. **技能 CD 不需要"冷却时长常量表"** —— `dems/db/<league>/<match>.db` 的 `ability_cd_start/end` +
+>    `item_cd_start/end` 已带 `properties.remaining` = 实体 `m_fCooldown` 的**真实剩余冷却秒**
+>    （含等级/天赋/减CD；实测 BKB 70.5~95s、刷新球 135~180s）。
+>    `dems/db_full`（combat_log 版）里**没有**这些（CD 是实体派生、不是 combat 条目）→ **两库按 match_id join**。
+>    **TP** 是充能制、库内无 CD/充能事件 → 页面只报"使用时刻 + 次数"，**不伪造三态**。
+> 2. **胜率**按 §5.1"状态化、绝不偷看结果"实现：特征只用 t 时刻可观测的净值差+经验差+时刻，
+>    标签用"远古被摧毁"判定，**按 match 切分训练/测试**；970 场 → **测试 AUC 0.830**（Brier 0.169，
+>    分桶 AUC 0.69~0.91）。经济差与经验差实测正相关 r=0.52 → 单系数符号不具解释意义（已写进页面口径）。
+>
 > 定位：与 Q5B/Q6 的"统计热力图"是**不同产品**——这是一个**回放浏览器**（全盘复现）。
 > ⚠️ **开工前必须按 §1 通读项目文档**，先理解本项目的大方向与方法论，再动手。
 

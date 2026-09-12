@@ -18,6 +18,17 @@ if (!fs.existsSync(HTML)) { console.error("缺 " + HTML + "（先跑 build_q7_ht
 const raw = fs.readFileSync(HTML, "utf8");
 const src = raw.match(/<script>([\s\S]*?)<\/script>/)[1];
 
+/* ★ 先做语法检查：内嵌 JS 一旦有引号/括号写错，浏览器会整页白屏（本会话已踩过一次）。
+   用 vm.Script 在进程内编译（沙箱里 spawn 子进程 + 管道 stdio 会 EPERM，不能用 node --check）。 */
+{
+  try {
+    new (require("vm").Script)(src, { filename: "viewer-inline.js" });
+  } catch (e) {
+    console.error("内嵌 JS 语法错误（浏览器会白屏）：" + (e && e.message));
+    process.exit(1);
+  }
+}
+
 /* ── DOM / Canvas 桩 ── */
 const calls = { arc: 0, fillRect: 0, fillText: 0, drawImage: 0, stroke: 0 };
 const drawImgs = [];
@@ -93,6 +104,12 @@ const ok = (cond, msg) => { console.log((cond ? "  ok   " : "  FAIL ") + msg); i
 const g = (id) => mkEl(id);
 const fmtSec = (s) => (s < 0 ? "-" : "") + Math.floor(Math.abs(s) / 60) + ":" + String(Math.abs(Math.round(s)) % 60).padStart(2, "0");
 
+/* 桩不解析 HTML → 勾选框的初始 checked 必须照 HTML 属性同步，否则默认态与浏览器不一致 */
+["showBld", "showRoute", "showName", "tc0", "tc1", "tc2", "tc3", "tfold", "tcdall"].forEach((id) => {
+  const m = raw.match(new RegExp('<input[^>]*id="' + id + '"[^>]*>'));
+  mkEl(id).checked = !!(m && /\bchecked\b/.test(m[0]));
+});
+
 /* 加载页面脚本 + 暴露内部量（页面脚本是 "use strict" → 声明不会泄漏，必须显式导出） */
 eval(src + `
 ;globalThis.__t = {
@@ -107,6 +124,12 @@ eval(src + `
   setSpeed: function(v){ setSpeed(v); }, resetZoom: function(){ resetZoom(); },
   setEntDiff: function(v){ setEntDiff(v); }, tick: function(ts){ tick(ts); },
   setView: function(vr){ viewRect = vr; }, clearSel: function(){ clearSel(); },
+  select: function(i){ selectHero(i); },
+  lastDetail: function(){ return lastDetail; },
+  winProb: winProb, fmtPct: fmtPct, cdState: cdState,
+  cdHTML: function(){ return String(document.getElementById("cdboard").innerHTML); },
+  renderDetail: function(){ renderDetail(); }, renderCD: function(){ renderCD(); },
+  det: DET, dnames: DNAMES, cd: CD, tput: TPUT, wp: WP,
   diffEnd: function(){ return [DIFF.nw[D-1], DIFF.cg[D-1], DIFF.cx[D-1]]; }
 };
 `);
@@ -274,10 +297,14 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
   }
   g("cv").onmousedown(evp(ann[0].x, ann[0].y, { button: 0, preventDefault() {} }));
   ok(S.getSel() >= 0, "点英雄标记 → 选中下标 " + S.getSel() + "（该处是 " + t0i + " 号）");
-  ok(String(g("selinfo").innerHTML).indexOf("第二步") >= 0, "选中后右栏提示『第二步入口』");
-  ok(g("selinfo").innerHTML.indexOf(PL[S.getSel()].short.replace(/_/g, " ")) >= 0, "右栏显示选中的英雄名");
+  ok(String(g("herotop").innerHTML).indexOf(PL[S.getSel()].short.replace(/_/g, " ")) >= 0,
+     "选中后右栏顶部显示该英雄（" + PL[S.getSel()].short + "）");
+  ok(g("paneHero").style.display === "" && g("paneList").style.display === "none",
+     "选中后右栏切到英雄面板（paneHero 显示 / paneList 隐藏）");
   g("cv").onmousedown(evp(ann[0].x, ann[0].y, { button: 0, preventDefault() {} }));
   ok(S.getSel() === -1, "再点同一英雄 → 取消选中");
+  ok(g("paneList").style.display === "" && g("paneHero").style.display === "none",
+     "取消选中 → 右栏切回 10 英雄表");
   // 空白处 mousedown 不选中、进入拖拽
   g("cv").onmousedown(evp(5, 5, { button: 0, preventDefault() {} }));
   ok(S.getSel() === -1, "点空白 → 不选中（进入拖拽）");
@@ -286,6 +313,102 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
   g("cv").onmousemove(evp(ann[1].x, ann[1].y));
   ok(String(g("mapInfo").textContent).length > 5 && String(g("mapInfo").textContent).indexOf("滚轮") < 0,
      "hover 英雄标记 → 状态行显示该英雄信息：" + String(g("mapInfo").textContent).slice(0, 60));
+}
+
+/* ══ 3b. 第二步：±10s combat log 四 toggle + 技能 CD + 状态胜率 ══ */
+{
+  // --- 数据自洽：明细是 Δ 编码的逐条数组；CD 数据存在 ---
+  const pl0 = PL[0];
+  ok(S.det && Object.keys(S.det).length === 10, "10 个英雄都有 ±10s 明细数组（" + Object.keys(S.det).length + "）");
+  let nAll = 0, okShape = true, lastDtNeg = 0;
+  Object.keys(S.det).forEach((k) => {
+    const a = S.det[k];
+    nAll += a.length;
+    for (let k = 0; k < a.length; k++) {
+      const r = a[k];
+      if (r.length < 4 || r.length > 5) okShape = false;
+      if (k > 0 && r[0] < 0) lastDtNeg++;      // 首条 dt = 绝对时刻（可为负，号角前）；其余是秒差
+      if (r[1] < 0 || r[1] > 15) okShape = false;
+    }
+  });
+  ok(okShape && lastDtNeg === 0, "明细字段形状合法（[Δdt, code, name, other(, val)]，Δdt≥0；共 " + nAll + " 条）");
+  ok(nAll > 50000, "逐条内嵌条数 " + nAll + "（无采样丢弃）");
+  ok(Array.isArray(S.dnames) && S.dnames.length > 50, "名称字典 " + S.dnames.length + " 项");
+  ok(!!S.cd && !!S.cd.keys && Object.keys(S.cd.keys).length > 10,
+     "技能/道具 CD 数据存在（键 " + (S.cd ? Object.keys(S.cd.keys).length : 0) + " 个，源 " + (S.cd ? S.cd.src : "-") + "）");
+  ok(!!S.wp, "状态胜率模型已内嵌（" + (S.wp ? (S.wp.n_match + " 场拟合") : "缺") + "）");
+
+  // --- 选一个"忙"的时刻，选中英雄，验证窗口严格 ±10s ---
+  g("big").value = 1500; g("big").oninput();
+  S.select(0);
+  ok(S.getSel() === 0, "选中 0 号英雄");
+  const ld = S.lastDetail();
+  ok(!!ld, "lastDetail 已记录");
+  ok(Math.abs(ld.lo - 1490) < 1e-6 && Math.abs(ld.hi - 1510) < 1e-6,
+     "明细窗口 = 当前时刻 ±10s（" + ld.lo + " → " + ld.hi + "）");
+  ok(ld.tMin === null || (ld.tMin >= ld.lo && ld.tMax <= ld.hi),
+     "窗口内所有条目都落在 [t−10, t+10]（" + ld.tMin + " → " + ld.tMax + "）");
+  ok(ld.n > 0, "该时刻窗口命中 " + ld.n + " 条（四类合计）");
+  ok(ld.cnt.length === 4 && ld.cnt.reduce((a, b) => a + b, 0) === ld.n,
+     "四类计数之和 == 命中条数（" + ld.cnt.join("/") + " == " + ld.n + "）");
+  ok(String(g("dsum").innerHTML).indexOf("窗口") >= 0 && String(g("dsum").innerHTML).indexOf("命中") >= 0,
+     "右栏汇总行显示窗口与命中数");
+  ok(String(g("#dtbl tbody").innerHTML).length > 0, "明细表渲染出行（tbody innerHTML 非空）");
+
+  // --- 4 个 toggle 真的过滤 ---
+  const before = S.lastDetail().n;
+  g("tc0").checked = false; S.renderDetail();
+  const after = S.lastDetail().n;
+  ok(S.lastDetail().cnt[0] === 0, "关掉『给出的 modifier』→ 该类计数归 0");
+  ok(after <= before, "关掉一类后命中数不增加（" + before + " → " + after + "）");
+  g("tc0").checked = true; S.renderDetail();
+  ok(S.lastDetail().cnt[0] > 0 && S.lastDetail().n === before, "重新打开 → 恢复原命中数 " + before);
+  // 折叠开关（不改变命中数，只减少显示行数）
+  const shownFold = S.lastDetail().shown;
+  g("tfold").checked = false; S.renderDetail();
+  ok(S.lastDetail().n === before, "关掉折叠 → 命中条数不变（" + S.lastDetail().n + "）");
+  ok(S.lastDetail().shown >= shownFold, "关掉折叠 → 显示行数不减少（" + shownFold + " → " + S.lastDetail().shown + "）");
+  g("tfold").checked = true; S.renderDetail();
+
+  // --- 窗口随时间移动 ---
+  g("big").value = 2000; g("big").oninput();
+  ok(Math.abs(S.lastDetail().lo - 1990) < 1e-6, "移动时间轴 → 窗口跟着移动（" + S.lastDetail().lo + "）");
+
+  // --- 技能 CD 三态 ---
+  const cdh = S.cdHTML();
+  ok(cdh.length > 100, "CD 面板已渲染（" + cdh.length + " 字符）");
+  ok(/Black King Bar/.test(cdh), "关键道具 BKB 出现在 CD 面板");
+  ok(/TP 卷轴/.test(cdh), "TP 卷轴出现在 CD 面板（充能制，只报使用记录）");
+  ok(/冷却 /.test(cdh) || /就绪/.test(cdh), "CD 面板出现 冷却/就绪 态");
+  ok(!/Empty1|Special Bonus/.test(cdh), "默认隐藏天赋/空槽占位（CD 面板不含 Empty1/Special Bonus）");
+  g("tcdall").checked = true; S.renderCD();
+  ok(/Empty1|Special Bonus/.test(S.cdHTML()), "勾『显示天赋/空槽』→ 全部展开");
+  g("tcdall").checked = false; S.renderCD();
+  const key0 = Object.keys(S.cd.keys)[0];
+  const ivs = [[1000, 1030]];
+  ok(S.cdState(ivs, 1010) !== null && Math.abs(S.cdState(ivs, 1010) - 20) < 1e-9,
+     "cdState：区间内返回剩余秒（1010 → " + S.cdState(ivs, 1010) + "）");
+  ok(S.cdState(ivs, 999) === null && S.cdState(ivs, 1031) === null, "cdState：区间外返回 null（就绪）");
+  const ivsAll = [];
+  Object.keys(S.cd.ab).forEach((npc) => S.cd.ab[npc].forEach((e) => (e[3] || []).forEach((iv) => ivsAll.push(iv))));
+  ok(ivsAll.length > 1000, "CD 区间总数 " + ivsAll.length);
+  ok(ivsAll.every((iv) => iv[1] > iv[0]), "所有 CD 区间 end > start");
+  const ivsTrack = [];
+  Object.keys(S.cd.it).forEach((npc) => S.cd.it[npc].forEach((e) => (e[3] || []).forEach((iv) => ivsTrack.push(iv))));
+  ok(ivsTrack.length > 0, "道具 CD 区间 " + ivsTrack.length + " 个（BKB/刷新球等）");
+  ok(Object.keys(S.tput).length === 10, "10 个英雄都有 TP 使用记录数组");
+
+  // --- 状态胜率：单调性 + 不偷看结果 ---
+  const w1 = S.winProb(2400, 20000, 20000), w2 = S.winProb(2400, 0, 0), w3 = S.winProb(2400, -20000, -20000);
+  ok(w1 > w2 && w2 > w3, "胜率随领先单调上升（" + S.fmtPct(w1) + " > " + S.fmtPct(w2) + " > " + S.fmtPct(w3) + "）");
+  ok(w2 > 0.3 && w2 < 0.7, "均势时胜率接近 50%（" + S.fmtPct(w2) + "）");
+  ok(S.winProb(600, 20000, 20000) < w1, "同样 20k 领先：10 分钟时胜率低于 40 分钟（" + S.fmtPct(S.winProb(600, 20000, 20000)) + " < " + S.fmtPct(w1) + "）");
+  ok(S.winProb(1200, null, 0) === null, "缺特征时返回 null（不猜）");
+  ok(S.wp.n_test > 0 && S.wp.auc_test > 0.5 && S.wp.auc_test < 1,
+     "模型有按 match 划分的测试集且 AUC 合理：" + S.wp.auc_test.toFixed(3) + "（测试样本 " + S.wp.n_test + "）");
+  ok(String(g("vWp").textContent).indexOf("%") > 0, "顶部胜率显示百分比：" + g("vWp").textContent);
+  S.clearSel();
+  ok(S.getSel() === -1 && g("paneList").style.display === "", "返回 10 英雄表");
 }
 
 /* ══ 4. 连续刷新：表格/顶部不出现 NaN/undefined ══ */
@@ -314,7 +437,7 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
   ok(bad === null, "扫描中无 NaN/undefined 单元格" + (bad ? "（" + bad + "）" : ""));
   // 开场 +2s（英雄已出门）必须有位置/血量
   g("big").value = T0 + 2; g("big").oninput();
-  ok(/^\d+$/.test(String(g("c-hp-0").textContent)), "开场+2s hp 单元格是数值（" + g("c-hp-0").textContent + "）");
+  ok(/^\d+( \/ \d+)?$/.test(String(g("c-hp-0").textContent)), "开场+2s hp 单元格是数值（" + g("c-hp-0").textContent + "）");
   ok(String(g("c-nw-0").textContent).indexOf(",") > 0 || +String(g("c-nw-0").textContent).replace(/,/g, "") > 0,
      "开场+2s 净值单元格有值（" + g("c-nw-0").textContent + "）");
 }
@@ -353,6 +476,29 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
 }
 
 /* ══ 7. 地图/图 onload 不抛异常 ══ */
+/* ══ 7. 可选：把右栏面板渲染成文本打印出来（人眼核对内容；不需要浏览器） ══
+   用法： node analysis/q7_viewer_itest.js <mid> dump=<hero_idx>@<显示秒>[,<idx>@<秒>...]
+   例：   node analysis/q7_viewer_itest.js 8955197224 dump=5@1500  */
+if (process.argv[3] && process.argv[3].indexOf("dump=") === 0) {
+  const spec = process.argv[3].slice(5);
+  spec.split(",").forEach(function (s) {
+    const m = s.split("@");
+    const i = parseInt(m[0], 10), t = parseFloat(m[1]);
+    S.commit(t); S.select(-1); S.select(i);
+    const strip = (h) => String(h).replace(/<[^>]*>/g, "\t").replace(/\t+/g, "  ").replace(/[ \t]+\n/g, "\n").trim();
+    console.log("\n" + "=".repeat(96));
+    console.log("英雄 #" + i + "（" + PL[i].short + "）@ " + fmtSec(t));
+    console.log("-- 头部 --\n" + strip(g("herotop").innerHTML));
+    console.log("-- 汇总 --\n" + strip(g("dsum").innerHTML));
+    console.log("-- ±10s 明细（前 25 行）--");
+    const rows = String(g("#dtbl tbody").innerHTML).split("</tr>").slice(0, 25);
+    rows.forEach(function (r) { const txt = strip(r); if (txt) console.log("   " + txt.replace(/\t/g, " | ")); });
+    console.log("-- 技能 CD --");
+    console.log("   " + strip(g("cdboard").innerHTML).replace(/\t/g, " | "));
+    console.log("-- 胜率 -- " + g("vWp").textContent + "（" + g("vWpNote").textContent + "）");
+  });
+}
+
 setTimeout(() => {
   ok(loadErrors.length === 0, "图/头像 onload 回调不抛异常" + (loadErrors.length ? "：" + loadErrors.join("; ") : ""));
   ok(calls.drawImage > 0, "渲染时确实绘制了底图/头像（drawImage " + calls.drawImage + " 次）");
