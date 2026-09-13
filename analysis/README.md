@@ -42,6 +42,15 @@ python analysis/ward_analysis.py 8592126358.db 8979891001.db [--team 2|3|all]
   含等级/天赋/减CD）。`db_full` 里没有（COMBAT_LOG_REWRITE 删了散装 extractor，CD 不是 combat 条目）→ **两库按 match_id join**。
 - **状态胜率**：分时间桶逻辑回归 + 桶间系数线性插值，970 场 / 按 match 切分 → **测试 AUC 0.830**（30-40 分钟桶 0.910），
   特征只用 t 时刻可观测的净值差+经验差+时刻，标签用"远古被摧毁"判定，**无泄漏**。
+- **眼位 / 烟雾图层**：眼位**直接调用 `q5_ward.parse_match`**（口径单一真相源，自动继承 Q5B §4 五条裁定：
+  实体类名判型 / use 为放置时刻 / 到期 `attacker==target` / 销毁一一对应 / 右删失）；
+  烟雾来自 `combat_log` 的 `item_smoke_of_deceit`（使用时刻）+ `modifier_smoke_of_deceit`（在烟雾中的区间）。
+- **多场切换**：`python analysis/build_q7_index.py` 生成 `q7_index.html`（**970 场**可搜可筛、按列排序、
+  勾选后一键生成整批构建命令）；`--batch league:19719|spread:8|hero:axe|ids:...|top:20`（加 `--full` 建完整版）；
+  `--publish` 复制到 publish_repo。索引的胜负/时长由 combat_log 推出：**415 场对账 OpenDota 时长中位差 0.0s、胜负 0 冲突**。
+- **lite 版**（`build_q7_html.py --lite --step 4`）：**0.3~0.5MB/场**（地图 448px、位置 4s / 经济 16s 抽稀、不含明细与技能图标；
+  地图/双时间轴/经济·经验差/胜率/KDA/眼位/烟雾/技能CD 全保留）→ 可批量铺开。
+  测试：`Q7_LITE=1 node analysis/q7_viewer_itest.js <mid>`。
 - **改动量实测（别夸大）**：`python analysis/q7_clock_check.py --scan 45` → 窗口内旧/新 |Δ显示秒| 中位 0.03~0.07s、
   最大 ≤9.6s、>30s 的 0 场；`python analysis/q5_clock_check.py --sample 40` → Q5B 逐支眼改动 **0/4591**；
   换时基后全量重跑 Q5B 并与发布版比对 → **SHA256 相同**。

@@ -151,7 +151,7 @@ def load_snapshots(con):
 
 
 # ──────────────────────── 2. 单场切片 ────────────────────────
-def parse_match(db, match_id, league):
+def parse_match(db, match_id, league, with_detail=True):
     con = sqlite3.connect(db)
     con.row_factory = sqlite3.Row
 
@@ -371,7 +371,10 @@ def parse_match(db, match_id, league):
     #     载荷优化：把「同英雄 · 同类别 · 同 kind · 同名称 · 同数值 · 同对手 · 时间相邻(≤1.2s)」
     #     的连续条目**折叠成一个区间**（保留条数 n 与首末时刻）——逐条渲染 12.9 万行既没人看、
     #     单文件也装不下；折叠后显示内容等价（区间 + ×N + 首末时刻）。
-    detail, names = build_combat_detail(con, players, horn_cle, t0, t1)
+    if with_detail:
+        detail, names = build_combat_detail(con, players, horn_cle, t0, t1)
+    else:
+        detail, names = {}, []
     tpu = {p["npc"]: [] for p in players}
     for r in con.execute(
         "SELECT t_cle, attacker FROM combat_log WHERE type_category='item' AND inflictor='item_tpscroll'"
@@ -381,6 +384,13 @@ def parse_match(db, match_id, league):
             k = idx(float(r["t_cle"]) - horn_cle)
             if k is not None:
                 tpu[npc].append(int(round(float(r["t_cle"]) - horn_cle)))
+
+    # 2f. 眼位（守卫）+ 烟雾：让"全盘复现"包含视野层
+    #   眼位口径**完全复用 Q5B**（analysis/q5_ward.py::parse_match —— 口径单一真相源）：
+    #     判型=实体类名；放置=combat item use（±35s PVS 容差）；到期=attacker==target；
+    #     销毁与眼"一一对应"；右删失=比赛结束时仍存活。返回的 place/destroy 是**游戏钟(cle)**。
+    wards = load_wards(con, match_id, horn_cle, t0, t1)
+    smoke, smoked = load_smoke(con, players, horn_cle, t0, t1, pos, t0)
 
     con.close()
 
@@ -436,6 +446,9 @@ def parse_match(db, match_id, league):
         "detail_names": names,
         "cd": cd,
         "tp": tpu,
+        "wards": wards,
+        "smoke": smoke,
+        "smoked": smoked,
         "kda": kda,
         "meta": meta,
     }
@@ -672,6 +685,96 @@ def load_cd(old_db, mid, clk, players, t0, t1):
             "time_axis": "replay→display（经 timebase.Clock 折算）"}
 
 
+# ──────────────────────── 2d. 眼位（守卫） / 烟雾 ────────────────────────
+WARD_REASONS = ["expired", "dewarded", "censored", "post_game", ""]
+
+
+def load_wards(con, mid, horn_cle, t0, t1):
+    """守卫（真/假眼）存活区间（显示钟）。**口径完全复用 Q5B**（q5_ward.parse_match）。
+
+    返回 [[x, y, team, kind, place_disp, destroy_disp, reason_idx, censored], ...]
+      kind: 0=observer(假眼,寿命360s) 1=sentry(真眼,寿命420s)
+      destroy_disp 可能因"比赛结束"被截断（censored=1）—— 与 Q5B 同口径。
+    拿不到 → 返回 []（不硬造）。
+    """
+    try:
+        import importlib
+        q5 = importlib.import_module("q5_ward")
+        obs, sen, _ = q5.parse_match(con, mid)
+    except Exception as e:
+        sys.stderr.write("  ⚠ 眼位解析失败(%s)：%s → 本场不提供眼位层\n" % (mid, e))
+        return []
+    out = []
+    for recs, kind in ((obs, 0), (sen, 1)):
+        for r in recs:
+            p, d = r.get("place"), r.get("destroy")
+            if p is None:
+                continue
+            pd = p - horn_cle
+            dd = (d - horn_cle) if d is not None else None
+            if dd is None or dd < t0 or pd > t1:
+                continue
+            rs = r.get("reason") or ""
+            out.append([round(r["x"], 1), round(r["y"], 1), int(r["team"]), kind,
+                        int(round(pd)), min(int(round(dd)), t1),
+                        WARD_REASONS.index(rs) if rs in WARD_REASONS else len(WARD_REASONS) - 1,
+                        1 if r.get("censored") else 0])
+    out.sort(key=lambda w: w[4])
+    return out
+
+
+def load_smoke(con, players, horn_cle, t0, t1, pos, t0i):
+    """烟雾：① 使用时刻（combat_log `item_smoke_of_deceit` 的 item use，取使用者当时位置）
+             ② 各英雄"处于烟雾中"的区间（`modifier_smoke_of_deceit` 的 Add/Remove 成对）。
+    返回 (smoke, smoked)：smoke=[[disp, hero_idx, x, y], ...]；smoked={npc: [[s,e],...]}
+    """
+    hdr = {p["npc"]: p["i"] for p in players}
+
+    def posat(npc, disp):
+        P = pos.get(npc)
+        if not P:
+            return (0.0, 0.0)
+        k = int(round(disp)) - t0i
+        for i in range(max(0, k), max(0, k) - 15, -1):
+            if i < len(P["x"]) and P["x"][i] is not None:
+                return (P["x"][i], P["y"][i])
+        return (0.0, 0.0)
+
+    smoke = []
+    for r in con.execute("SELECT t_cle, attacker FROM combat_log WHERE type_category='item' "
+                         "AND inflictor='item_smoke_of_deceit' ORDER BY t_cle"):
+        npc = r["attacker"]
+        if npc not in hdr:
+            continue
+        d = float(r["t_cle"]) - horn_cle
+        if d < t0 or d > t1:
+            continue
+        x, y = posat(npc, d)
+        smoke.append([int(round(d)), hdr[npc], round(x, 1), round(y, 1)])
+    # 烟雾 buff 区间（Add/Remove 成对，按英雄）
+    openv = {}
+    smoked = {p["npc"]: [] for p in players}
+    for r in con.execute("SELECT t_cle, type, target FROM combat_log WHERE type_category='modifier' "
+                         "AND inflictor='modifier_smoke_of_deceit' ORDER BY t_cle"):
+        npc = r["target"]
+        if npc not in smoked:
+            continue
+        d = int(round(float(r["t_cle"]) - horn_cle))
+        if r["type"] == "DotaCombatlogModifierAdd":
+            openv.setdefault(npc, []).append(d)
+        else:
+            if openv.get(npc):
+                s = openv[npc].pop()
+                if d > s:
+                    smoked[npc].append([s, d])
+    for npc, st in openv.items():
+        for s in st:
+            smoked[npc].append([s, min(t1, s + 45)])       # 烟雾最长 45s（未见 Remove）
+    for npc in smoked:
+        smoked[npc].sort()
+    return smoke, smoked
+
+
 # ──────────────────────── 3. 自检 + 落盘 ────────────────────────
 def selfcheck(dat):
     D, t0, t1 = dat["D"], dat["t0"], dat["t1"]
@@ -729,6 +832,19 @@ def selfcheck(dat):
                     % "，".join("%s=%d" % (p["short"], len(dat["tp"].get(p["npc"], []))) for p in dat["players"]))
     else:
         msgs.append("技能/道具 CD：**旧库 dems/db/ 无本场 → 不提供**（如实回退，不硬造）")
+    wd = dat.get("wards", [])
+    if wd:
+        no = sum(1 for w in wd if w[3] == 0)
+        ns = sum(1 for w in wd if w[3] == 1)
+        dew = sum(1 for w in wd if w[6] == 1)
+        cen = sum(1 for w in wd if w[7] == 1)
+        msgs.append("眼位（Q5B 同口径）：%d 支（假眼 %d / 真眼 %d）｜被反 %d ｜被比赛结束截断 %d"
+                    % (len(wd), no, ns, dew, cen))
+    else:
+        msgs.append("眼位：无（解析失败或本场无数据）")
+    msgs.append("烟雾：使用 %d 次 ｜ 英雄处于烟雾中的区间 %d 段"
+                % (len(dat.get("smoke", [])),
+                   sum(len(v) for v in (dat.get("smoked") or {}).values())))
     # ★ 独立对账：stats.db（OpenDota）的 duration_sec vs 本脚本"远古被摧毁"推得的时长
     dur = m.get("stats_duration_sec")
     if dur:
@@ -748,7 +864,9 @@ def fmt(sec):
 def main():
     ap = argparse.ArgumentParser(description="Q7 单场回放数据切片")
     ap.add_argument("match", help="match_id（如 8955197224）或 .db 路径")
-    ap.add_argument("--out", default=OUTDIR)
+    ap.add_argument("--out", default=None)
+    ap.add_argument("--lite", action="store_true",
+                    help="精简切片：跳过 ±10s combat log 明细（体积/耗时的大头），供 lite viewer / 批量构建")
     ap.add_argument("--no-write", action="store_true", help="只跑自检，不落盘")
     args = ap.parse_args()
 
@@ -761,14 +879,15 @@ def main():
         db, league = find_db(mid)
 
     print("DB :", os.path.relpath(db, ROOT))
-    dat = parse_match(db, mid, league)
+    dat = parse_match(db, mid, league, with_detail=(not args.lite))
     for line in selfcheck(dat):
         print("  " + line)
 
     if args.no_write:
         return
-    os.makedirs(args.out, exist_ok=True)
-    p = os.path.join(args.out, "q7_%s.json" % mid)
+    outdir = args.out or (os.path.join(OUTDIR, "lite") if args.lite else OUTDIR)
+    os.makedirs(outdir, exist_ok=True)
+    p = os.path.join(outdir, "q7_%s.json" % mid)
     with open(p, "w", encoding="utf-8") as f:
         json.dump(dat, f, ensure_ascii=False, separators=(",", ":"))
     print("wrote %s  size=%.2f MB" % (os.path.relpath(p, ROOT), os.path.getsize(p) / 1e6))

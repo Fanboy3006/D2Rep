@@ -13,7 +13,9 @@ const fs = require("fs");
 const path = require("path");
 
 const MID = process.argv[2] || "8955197224";
-const HTML = path.join(__dirname, "output_review", "q7_replay_" + MID + ".html");
+const LITE = process.env.Q7_LITE === "1";
+const HTML = path.join(__dirname, "output_review",
+                        "q7_replay_" + MID + (LITE ? "_lite" : "") + ".html");
 if (!fs.existsSync(HTML)) { console.error("缺 " + HTML + "（先跑 build_q7_html.py）"); process.exit(1); }
 const raw = fs.readFileSync(HTML, "utf8");
 const src = raw.match(/<script>([\s\S]*?)<\/script>/)[1];
@@ -105,7 +107,7 @@ const g = (id) => mkEl(id);
 const fmtSec = (s) => (s < 0 ? "-" : "") + Math.floor(Math.abs(s) / 60) + ":" + String(Math.abs(Math.round(s)) % 60).padStart(2, "0");
 
 /* 桩不解析 HTML → 勾选框的初始 checked 必须照 HTML 属性同步，否则默认态与浏览器不一致 */
-["showBld", "showRoute", "showName", "tc0", "tc1", "tc2", "tc3", "tfold", "tcdall"].forEach((id) => {
+["showBld", "showRoute", "showName", "showWard", "showSmoke", "tc0", "tc1", "tc2", "tc3", "tfold", "tcdall"].forEach((id) => {
   const m = raw.match(new RegExp('<input[^>]*id="' + id + '"[^>]*>'));
   mkEl(id).checked = !!(m && /\bchecked\b/.test(m[0]));
 });
@@ -124,17 +126,20 @@ eval(src + `
   setSpeed: function(v){ setSpeed(v); }, resetZoom: function(){ resetZoom(); },
   setEntDiff: function(v){ setEntDiff(v); }, tick: function(ts){ tick(ts); },
   setView: function(vr){ viewRect = vr; }, clearSel: function(){ clearSel(); },
+  draw: function(){ draw(); },
   select: function(i){ selectHero(i); },
   lastDetail: function(){ return lastDetail; },
   winProb: winProb, fmtPct: fmtPct, cdState: cdState,
   cdHTML: function(){ return String(document.getElementById("cdboard").innerHTML); },
   renderDetail: function(){ renderDetail(); }, renderCD: function(){ renderCD(); },
   det: DET, dnames: DNAMES, cd: CD, tput: TPUT, wp: WP,
+  wards: WARDS, smoke: SMOKE, smoked: SMOKED, wicons: WICONS,
+  wardsAliveAt: wardsAliveAt, isSmoked: isSmoked, markText: markText,
   diffEnd: function(){ return [DIFF.nw[D-1], DIFF.cg[D-1], DIFF.cx[D-1]]; }
 };
 `);
 
-console.log("[Q7 回放浏览器 · 交互回归] " + path.basename(HTML));
+console.log("[Q7 回放浏览器 · 交互回归] " + path.basename(HTML) + (LITE ? "  【lite】" : ""));
 const S = globalThis.__t;
 const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
 
@@ -143,18 +148,21 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
   ok(PL.length === 10, "玩家数 = 10（实际 " + PL.length + "）");
   ok(PL.filter((p) => p.team === 2).length === 5 && PL.filter((p) => p.team === 3).length === 5, "天辉/夜魇各 5 人");
   ok(Object.keys(S.ICONS).length === 10, "10 个英雄头像内嵌（实际 " + Object.keys(S.ICONS).length + "）");
+  const NGRID = S.DATA.DP || D;                      // lite 下逐秒数据被抽稀成 NGRID 格
   let lenOk = true, anyPos = true;
   PL.forEach((p) => {
     const P = S.POS[p.npc];
-    if (!P || P.x.length !== D || P.y.length !== D || P.hp.length !== D) lenOk = false;
+    if (!P || P.x.length !== NGRID || P.y.length !== NGRID || P.hp.length !== NGRID) lenOk = false;
     if (!P || !P.x.some((v) => v !== null)) anyPos = false;
   });
-  ok(lenOk, "每英雄 x/y/hp 数组长度 == D(" + D + ")");
+  ok(lenOk, "每英雄 x/y/hp 数组长度 == 网格长度(" + NGRID + (LITE ? "，lite 抽稀 " + S.DATA.step + "s" : " = D") + ")");
   ok(anyPos, "每英雄都至少有位置采样");
   let cov = 0;
   PL.forEach((p) => { cov += S.POS[p.npc].x.filter((v) => v !== null).length; });
-  ok(cov / 10 / D > 0.97, "位置覆盖率 " + (100 * cov / 10 / D).toFixed(2) + "% > 97%");
-  ok(S.DIFF.nw.length === D && S.DIFF.cg.length === D && S.DIFF.cx.length === D, "三条差值序列长度 == D");
+  ok(cov / 10 / NGRID > 0.97, "位置覆盖率 " + (100 * cov / 10 / NGRID).toFixed(2) + "% > 97%");
+  const NEG = S.DATA.DE || D;
+  ok(S.DIFF.nw.length === NEG && S.DIFF.cg.length === NEG && S.DIFF.cx.length === NEG,
+     "三条差值序列长度 == 经济网格长度(" + NEG + (LITE ? "，estep " + S.DATA.estep + "s" : " = D") + ")");
   // 击杀/助攻自洽：K/D 列之和 == 击杀事件里的 killer/victim 计数
   let kSum = 0, dSum = 0;
   PL.forEach((p) => { kSum += S.KDA[p.npc].k; dSum += S.KDA[p.npc].d; });
@@ -170,10 +178,12 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
   let tested = false;
   for (const p of PL) {
     const P = S.POS[p.npc];
-    for (let k = 13; k < D; k++) {
+    const st = S.DATA.step || 1;
+    for (let k = 13; k < P.x.length; k++) {
       if (P.x[k] === null && P.x[k - 1] !== null) {
-        const q = S.posAt(p.npc, T0 + k);
-        ok(q && q.x === P.x[k - 1] && q.stale === true, "缺秒沿用上一秒(" + p.short + " @" + (T0 + k) + "s → 用 " + (T0 + k - 1) + "s)");
+        const q = S.posAt(p.npc, T0 + k * st);
+        ok(q && q.x === P.x[k - 1] && q.stale === true,
+           "缺格沿用上一格(" + p.short + " @" + (T0 + k * st) + "s → 用 " + (T0 + (k - 1) * st) + "s)");
         tested = true; break;
       }
     }
@@ -284,24 +294,26 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
   g("big").value = 900; g("big").oninput();
   const ann = S.getAnn();
   const expectN = PL.filter((q) => S.posAt(q.npc, 900)).length;
-  ok(ann.length === expectN && ann.length >= 9,
-     "全图 + 900s：地图标记数 == 有位置的英雄数（" + ann.length + " == " + expectN + "）");
-  const t0i = ann[0].i;
+  const heroAnn = ann.filter((m) => m.kind === "hero");
+  ok(heroAnn.length === expectN && heroAnn.length >= 9,
+     "全图 + 900s：英雄标记数 == 有位置的英雄数（" + heroAnn.length + " == " + expectN
+     + "，另有眼位/烟雾标记 " + (ann.length - heroAnn.length) + " 个）");
+  const t0i = heroAnn[0].i;
   // ★ 几何闭环：地图标记像素坐标必须 == 官方标定式（与 PIL 预览/底图同一套常量）
   {
     const p = PL[t0i], q = S.posAt(p.npc, 900);
     const want = [508.3019 + 0.049038 * q.x, 504.5433 - 0.049038 * q.y];
-    ok(Math.abs(ann[0].x - want[0]) < 0.01 && Math.abs(ann[0].y - want[1]) < 0.01,
-       "标记像素坐标 == w2p(世界坐标)（" + ann[0].x.toFixed(1) + "," + ann[0].y.toFixed(1)
+    ok(Math.abs(heroAnn[0].x - want[0]) < 0.01 && Math.abs(heroAnn[0].y - want[1]) < 0.01,
+       "标记像素坐标 == w2p(世界坐标)（" + heroAnn[0].x.toFixed(1) + "," + heroAnn[0].y.toFixed(1)
        + " vs " + want[0].toFixed(1) + "," + want[1].toFixed(1) + "）");
   }
-  g("cv").onmousedown(evp(ann[0].x, ann[0].y, { button: 0, preventDefault() {} }));
+  g("cv").onmousedown(evp(heroAnn[0].x, heroAnn[0].y, { button: 0, preventDefault() {} }));
   ok(S.getSel() >= 0, "点英雄标记 → 选中下标 " + S.getSel() + "（该处是 " + t0i + " 号）");
   ok(String(g("herotop").innerHTML).indexOf(PL[S.getSel()].short.replace(/_/g, " ")) >= 0,
      "选中后右栏顶部显示该英雄（" + PL[S.getSel()].short + "）");
   ok(g("paneHero").style.display === "" && g("paneList").style.display === "none",
      "选中后右栏切到英雄面板（paneHero 显示 / paneList 隐藏）");
-  g("cv").onmousedown(evp(ann[0].x, ann[0].y, { button: 0, preventDefault() {} }));
+  g("cv").onmousedown(evp(heroAnn[0].x, heroAnn[0].y, { button: 0, preventDefault() {} }));
   ok(S.getSel() === -1, "再点同一英雄 → 取消选中");
   ok(g("paneList").style.display === "" && g("paneHero").style.display === "none",
      "取消选中 → 右栏切回 10 英雄表");
@@ -310,13 +322,55 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
   ok(S.getSel() === -1, "点空白 → 不选中（进入拖拽）");
   g("cv").onmouseup();
   // hover 文案
-  g("cv").onmousemove(evp(ann[1].x, ann[1].y));
+  g("cv").onmousemove(evp(heroAnn[1].x, heroAnn[1].y));
   ok(String(g("mapInfo").textContent).length > 5 && String(g("mapInfo").textContent).indexOf("滚轮") < 0,
      "hover 英雄标记 → 状态行显示该英雄信息：" + String(g("mapInfo").textContent).slice(0, 60));
 }
 
-/* ══ 3b. 第二步：±10s combat log 四 toggle + 技能 CD + 状态胜率 ══ */
+/* ══ 3a. 眼位 + 烟雾图层（复用 Q5B 口径） ══ */
 {
+  const W = S.wards || [];
+  ok(W.length > 50, "眼位数据内嵌：" + W.length + " 支");
+  const obs = W.filter((w) => w[3] === 0).length, sen = W.filter((w) => w[3] === 1).length;
+  ok(obs > 0 && sen > 0, "真假眼都有（假眼 " + obs + " / 真眼 " + sen + "）");
+  ok(W.every((w) => w[5] > w[4]), "每支眼 销毁 > 放置");
+  ok(W.every((w) => Math.abs(w[0]) <= 9000 && Math.abs(w[1]) <= 9000), "眼位坐标都在地图范围内");
+  const cen = W.filter((w) => w[7] === 1);
+  ok(cen.every((w) => w[6] === 2), "被截断的眼 reason 都是『被比赛结束截断』（" + cen.length + " 支）");
+  // 存活集合与逐秒判定
+  const t = 900;
+  const alive = S.wardsAliveAt(t);
+  ok(alive.length > 0, "t=900s 存活眼位 " + alive.length + " 支");
+  ok(alive.every((w) => t >= w[4] && t <= w[5]), "存活判定：place<=t<=destroy");
+  // 地图上确实画出来了（且带 kind 供 hover/锁定）
+  const wm = S.getAnn().filter((m) => m.kind === "ward");
+  ok(wm.length === alive.length, "地图上眼标记数 == 存活眼数（" + wm.length + " == " + alive.length + "）");
+  const mt = S.markText(wm[0]);
+  ok(/假眼|真眼/.test(mt) && /放置/.test(mt) && /销毁/.test(mt) && /存活/.test(mt),
+     "眼标记 hover 文案含 类型/放置/销毁/存活：" + mt.slice(0, 70));
+  // 关掉开关 → 不再画
+  g("showWard").checked = false; S.draw();
+  ok(S.getAnn().filter((m) => m.kind === "ward").length === 0, "关掉『眼位』→ 地图不再画眼");
+  ok(String(g("wardCount").textContent) === "", "关掉后计数清空");
+  g("showWard").checked = true; S.draw();
+  ok(S.getAnn().filter((m) => m.kind === "ward").length === alive.length, "重新打开 → 恢复");
+  ok(/存活 \d+ 支/.test(String(g("wardCount").textContent)), "地图栏显示存活计数：" + g("wardCount").textContent);
+  // 烟雾
+  const SM = S.smoke || [];
+  ok(Object.keys(S.smoked).length === 10, "10 个英雄都有『处于烟雾中』区间数组");
+  ok(SM.length > 0, "烟雾使用记录 " + SM.length + " 次");
+  const smk = SM[0];
+  S.commit(smk[0] + 3);
+  const smm = S.getAnn().filter((m) => m.kind === "smoke");
+  ok(smm.length > 0, "烟雾开启后 +3s 地图上出现烟雾标记（" + smm.length + " 个）");
+  ok(/烟雾/.test(S.markText(smm[0])), "烟雾标记 hover 文案：" + S.markText(smm[0]).slice(0, 60));
+  const anySmoked = Object.keys(S.smoked).some((k) => S.smoked[k].length > 0);
+  ok(anySmoked, "存在『英雄处于烟雾中』的区间");
+  S.commit(900);
+}
+
+/* ══ 3b. 第二步：±10s combat log 四 toggle + 技能 CD + 状态胜率 ══ */
+if (!LITE) {
   // --- 数据自洽：明细是 Δ 编码的逐条数组；CD 数据存在 ---
   const pl0 = PL[0];
   ok(S.det && Object.keys(S.det).length === 10, "10 个英雄都有 ±10s 明细数组（" + Object.keys(S.det).length + "）");
@@ -411,6 +465,30 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
   ok(S.getSel() === -1 && g("paneList").style.display === "", "返回 10 英雄表");
 }
 
+/* ══ 3c. lite 下仍须成立的核心：索引网格 + CD + 胜率 + 眼位 ══ */
+if (LITE) {
+  const step = S.DATA.step, estep = S.DATA.estep;
+  ok(step > 1, "lite 抽稀步长 = " + step + "s（经济 " + estep + "s）");
+  ok(S.POS[PL[0].npc].x.length === Math.ceil(D / step) ||
+     S.POS[PL[0].npc].x.length === Math.floor((D - 1) / step) + 1,
+     "位置数组长度按 step 抽稀（" + S.POS[PL[0].npc].x.length + " vs D/" + step + "）");
+  ok(S.DIFF.nw.length === Math.floor((D - 1) / estep) + 1,
+     "经济序列长度按 estep 抽稀（" + S.DIFF.nw.length + " vs D/" + estep + "）");
+  ok(Object.keys(S.det).length === 0, "lite 版不含 ±10s 明细（载荷 0 条）");
+  // 抽稀后索引仍要取到正确时刻的值：与"沿用上一格"一起验证
+  S.commit(1200);
+  ok(S.diffAt("nw", 1200) !== null && S.posAt(PL[0].npc, 1200) !== null,
+     "lite 下 t=1200s 仍能取到净值差/位置");
+  const a = S.diffAt("nw", 1200), b = S.diffAt("nw", 1200 + estep - 1);
+  ok(a !== null && b !== null, "esetp 网格内相邻时刻都能取到（" + a + " / " + b + "）");
+  ok(!!S.cd && Object.keys(S.cd.keys).length > 10, "lite 仍含技能 CD 数据");
+  ok(String(g("cdboard").innerHTML).indexOf("Black King Bar") >= 0 || /TP 卷轴/.test(S.cdHTML()),
+     "lite 的 CD 面板仍渲染（文字芯片）");
+  ok(S.winProb(2400, 20000, 20000) > S.winProb(2400, -20000, -20000), "lite 仍含胜率模型");
+  ok((S.wards || []).length > 50 && (S.smoke || []).length > 0, "lite 仍含眼位/烟雾图层");
+  ok(String(g("liteNote").style.display) === "", "lite 提示条已显示");
+}
+
 /* ══ 4. 连续刷新：表格/顶部不出现 NaN/undefined ══ */
 {
   const times = [];
@@ -436,10 +514,10 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
   ok(!threw, "全时间轴扫描（" + times.length + " 个时刻）不抛异常" + (threw ? "：" + threw.message : ""));
   ok(bad === null, "扫描中无 NaN/undefined 单元格" + (bad ? "（" + bad + "）" : ""));
   // 开场 +2s（英雄已出门）必须有位置/血量
-  g("big").value = T0 + 2; g("big").oninput();
-  ok(/^\d+( \/ \d+)?$/.test(String(g("c-hp-0").textContent)), "开场+2s hp 单元格是数值（" + g("c-hp-0").textContent + "）");
+  g("big").value = T0 + 4 * (S.DATA.step || 1); g("big").oninput();
+  ok(/^\d+( \/ \d+)?$/.test(String(g("c-hp-0").textContent)), "开场首个采样格 hp 是数值（" + g("c-hp-0").textContent + "）");
   ok(String(g("c-nw-0").textContent).indexOf(",") > 0 || +String(g("c-nw-0").textContent).replace(/,/g, "") > 0,
-     "开场+2s 净值单元格有值（" + g("c-nw-0").textContent + "）");
+     "开场首个采样格 净值有值（" + g("c-nw-0").textContent + "）");
 }
 
 /* ══ 5. 播放推进 ══ */

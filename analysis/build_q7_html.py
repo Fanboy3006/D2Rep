@@ -27,6 +27,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 Q7DIR = os.path.join(ROOT, "analysis", "output_q7")
 REVIEW = os.path.join(ROOT, "analysis", "output_review")
 AB_ICON_DIR = os.path.join(ROOT, "opendota_analysis", "assets", "ability_icons")
+WARD_ICON_DIR = os.path.join(ROOT, "opendota_analysis", "assets", "ward_icons")
 ICON_DIR = os.path.join(ROOT, "opendota_analysis", "assets", "hero_icons")
 MAP_PNG = os.path.join(REVIEW, "_q5_map_annot.png")
 WINPROB = os.path.join(Q7DIR, "q7_winprob.json")
@@ -60,10 +61,46 @@ def clean(s):
     return "".join(ch if (ch.isprintable() and ch != "\ufffd") else "?" for ch in str(s))
 
 
-def build(mid, outdir):
+def decimate_keep(a, step):
+    """按 step 抽稀：每个窗口取**最后一个非空值**（窗口全空则保留 None）。
+
+    比 a[::step] 稳：1Hz 采样偶有缺秒，正好抽到缺秒会让英雄在地图上"消失"几秒。
+    """
+    if step <= 1 or not a:
+        return a
+    out = []
+    for i in range(0, len(a), step):
+        v = None
+        for j in range(i, min(i + step, len(a))):
+            if a[j] is not None:
+                v = a[j]
+        out.append(v)
+    return out
+
+
+def decimate(a, step, fill=0):
+    """按 step 秒抽稀（取该窗口内最后一个非空值）。"""
+    if step <= 1 or not a:
+        return a
+    out = []
+    for i in range(0, len(a), step):
+        v = None
+        for j in range(i, min(i + step, len(a))):
+            if a[j] is not None:
+                v = a[j]
+        out.append(v if v is not None else fill)
+    return out
+
+
+def build(mid, outdir, lite=False, step=3):
     src = os.path.join(Q7DIR, "q7_%s.json" % mid)
+    if lite:
+        alt = os.path.join(Q7DIR, "lite", "q7_%s.json" % mid)
+        if os.path.exists(alt):
+            src = alt                      # lite 切片（不含明细）优先
     if not os.path.exists(src):
-        raise SystemExit("缺 %s（先跑 python analysis/q7_replay.py %s）" % (src, mid))
+        raise SystemExit("缺 %s（先跑 python analysis/q7_replay.py %s%s）"
+                         % (src, mid, " --lite" if lite else ""))
     with open(src, encoding="utf-8") as f:
         dat = json.load(f)
 
@@ -73,7 +110,8 @@ def build(mid, outdir):
         p["name"] = clean(p["name"])
         fp = os.path.join(ICON_DIR, p["short"] + ".png")
         if os.path.exists(fp):
-            icons[p["short"]] = "data:image/png;base64," + b64_png_opt(fp, 64, 64)
+            icons[p["short"]] = "data:image/png;base64," + b64_png_opt(fp, 48 if lite else 64,
+                                                                    48 if lite else 64)
 
     # ---- 技能/道具图标（只内嵌本场 CD 数据里真正用到的，64 色量化）----
     cd = dat.get("cd") or {}
@@ -86,6 +124,13 @@ def build(mid, outdir):
         if os.path.exists(fp):
             ab_icons[base] = "data:image/png;base64," + b64_png_opt(fp, 64)
 
+    # ---- 眼位图标（官方 observer / truesight，各 ~1.4KB）----
+    ward_icons = {}
+    for k, fn in (("obs", "ward_observer.png"), ("sen", "ward_sentry.png")):
+        fp = os.path.join(WARD_ICON_DIR, fn)
+        if os.path.exists(fp):
+            ward_icons[k] = "data:image/png;base64," + b64(fp)
+
     # ---- 状态胜率模型（q7_winprob.py 产物；缺失则页面显示"未拟合"）----
     wp = None
     if os.path.exists(WINPROB):
@@ -95,11 +140,34 @@ def build(mid, outdir):
             wp = None
 
     m = dat["meta"]
+    step = max(1, int(step)) if lite else 1
+    estep = max(step, int(round(15 / step)) * step) if lite else 1
+    if lite:
+        # 逐秒级数据按 step 抽稀；t0/D 不变，JS 端用 step 索引（kOf 内部除以 step）
+        for npc in list(dat["pos"].keys()):
+            for k in ("x", "y"):
+                dat["pos"][npc][k] = decimate_keep(dat["pos"][npc][k], step)
+            for k in ("hp",):
+                dat["pos"][npc][k] = dat["pos"][npc][k][::step]
+        for npc in list((dat.get("hpm") or {}).keys()):
+            dat["hpm"][npc] = dat["hpm"][npc][::step]
+        # 经济/经验序列另用更粗的 estep（曲线平滑；estep 取 step 的整数倍，索引才对得上）
+        estep = max(step, int(round(15 / step)) * step)
+        for key in ("nw", "cg", "cx"):
+            for npc in list(dat[key].keys()):
+                dat[key][npc] = decimate_keep(dat[key][npc], estep)
+        for key in ("nw", "cg", "cx"):
+            dat["diff"][key] = dat["diff"][key][::estep]
     payload = {
         "mid": dat["match_id"],
         "t0": dat["t0"],
         "t1": dat["t1"],
         "D": dat["D"],
+        "step": step,
+        "estep": estep,
+        "lite": bool(lite),
+        "DP": (len(dat["pos"][dat["players"][0]["npc"]]["x"]) if dat.get("pos") else dat["D"]),
+        "DE": (len(dat["diff"]["nw"]) if dat.get("diff") else dat["D"]),
         "players": dat["players"],
         "pos": dat["pos"],
         "hpm": dat.get("hpm", {}),
@@ -111,17 +179,21 @@ def build(mid, outdir):
         "events": dat["events"],
         "buildings": dat.get("buildings", []),
         "kda": dat["kda"],
-        "detail": dat.get("detail", {}),
-        "dnames": dat.get("detail_names", []),
+        "detail": ({} if lite else dat.get("detail", {})),
+        "dnames": ([] if lite else dat.get("detail_names", [])),
         "cd": cd,
         "tp": dat.get("tp", {}),
         "wp": wp,
+        "wards": dat.get("wards", []),
+        "smoke": dat.get("smoke", []),
+        "smoked": dat.get("smoked", {}),
         "meta": m,
         "icons": icons,
-        "abicons": ab_icons,
+        "abicons": ({} if lite else ab_icons),
+        "wicons": ward_icons,
     }
     blob = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).replace("</", "<\\/")
-    map_b64 = b64(MAP_PNG)
+    map_b64 = b64_png_opt(MAP_PNG, 64, (448 if lite else None)) if lite else b64(MAP_PNG)
 
     rname = m.get("radiant_team") or "天辉（stats.db 无队名）"
     dname = m.get("dire_team") or "夜魇（stats.db 无队名）"
@@ -149,7 +221,7 @@ def build(mid, outdir):
         html = html.replace(k, v)
 
     os.makedirs(outdir, exist_ok=True)
-    out = os.path.join(outdir, "q7_replay_%s.html" % mid)
+    out = os.path.join(outdir, "q7_replay_%s%s.html" % (mid, "_lite" if lite else ""))
     with open(out, "w", encoding="utf-8") as f:
         f.write(html)
     print("wrote %s  size=%.2f MB  (icons %d)" % (os.path.relpath(out, ROOT),
@@ -322,6 +394,9 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
       <label style="margin-left:auto"><input type="checkbox" id="showBld" checked> 建筑</label>
       <label><input type="checkbox" id="showRoute" checked> 轨迹(最近40s)</label>
       <label><input type="checkbox" id="showName" checked> 名字</label>
+      <label><input type="checkbox" id="showWard" checked> 眼位</label>
+      <label><input type="checkbox" id="showSmoke" checked> 烟雾</label>
+      <span id="wardCount" style="color:#8b949e"></span>
     </div>
   </div>
 
@@ -369,6 +444,9 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
       <th>净值@t</th><th>累计金币@t</th><th>经验@t</th><th>HP</th>
     </tr></thead><tbody></tbody></table>
     </div>
+    <div class="tip" id="liteNote" style="display:none"><b>这是 lite（精简）版</b>：为压体积，
+      逐秒数据抽稀到每 <b id="liteStep">3</b> 秒一格、<b>不含 ±10s combat log 明细与技能图标</b>；
+      地图/表格/胜率/眼位/烟雾/技能 CD 三态都保留。完整版见同目录 <code>q7_replay_&lt;match&gt;.html</code>。</div>
     <div class="tip"><b>点任意英雄</b>（表格行 / 头像 / 地图上的标记）→ 本栏切到该英雄的
       <b>±10s combat log</b>（4 个 toggle）+ <b>技能 CD</b>。</div>
   </div>
@@ -429,6 +507,13 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
     <p><b>⑦ 正反补</b>= <code>death</code> 条目里 attacker 为英雄、target 为线上兵；敌方兵=正补、己方兵=反补。
       <code>assist_players</code> 的值是<b>头部玩家索引</b>且<b>含击杀者本人</b>（已剔除）。</p>
     <p><b>⑧ 位置</b>是解析层 1Hz 采样（偶有缺秒）→ 页面按"沿用上一秒"补齐（无位置则该英雄不画）。</p>
+    <p><b>⑨ 眼位图层</b>：<b>完全复用 Q5B 的权威口径</b>（`analysis/q5_ward.py::parse_match` —— 同一份代码、
+      同一套裁定）：判型=实体类名、放置=combat item use（±35s PVS 容差）、到期=<code>attacker==target</code>、
+      销毁与眼"一一对应"、右删失=比赛结束时仍存活（标"截断"）。页面上只画<b>当前时刻存活</b>的眼；
+      点/悬停眼标记可看 放置→销毁、存活秒数、到期/被反/截断。真眼真视半径 1050（未画圈）。</p>
+    <p><b>⑩ 烟雾图层</b>：使用时刻来自 <code>combat_log</code> 的 <code>item_smoke_of_deceit</code>
+      （item use），紫圈=开启后 20s 内；英雄紫环=<code>modifier_smoke_of_deceit</code> 的 Add→Remove 区间
+      （未见 Remove 的按最长 45s 截断，如实标注）。</p>
   </details>
 </div>
 </div>
@@ -444,10 +529,31 @@ const POS = DATA.pos, HPM = DATA.hpm || {}, NW = DATA.nw, CG = DATA.cg, CX = DAT
 const KILLSX = DATA.kills, BLD = DATA.buildings, KDA = DATA.kda;
 const DET = DATA.detail || {}, DNAMES = DATA.dnames || [];
 const CD = DATA.cd || null, TPUT = DATA.tp || {}, WP = DATA.wp || null, ABICONS = DATA.abicons || {};
+const WARDS = DATA.wards || [], SMOKE = DATA.smoke || [], SMOKED = DATA.smoked || {}, WICONS = DATA.wicons || {};
+const WARDNAME = ["假眼 Observer（寿命 360s）", "真眼 Sentry（寿命 420s，真视 1050）"];
+const WREASON = ["自然到期", "被反/被摧毁", "被比赛结束截断", "赛后残留", "—"];
+/* 眼位：Q5B 同口径（q5_ward.parse_match）；w = [x,y,team,kind,place,destroy,reason,censored] */
+function wardsAliveAt(t) {
+  const out = [];
+  for (let i = 0; i < WARDS.length; i++) {
+    const w = WARDS[i];
+    if (t >= w[4] && t <= w[5]) out.push(w);
+  }
+  return out;
+}
+function isSmoked(npc, t) {
+  const a = SMOKED[npc];
+  if (!a) return false;
+  for (let i = 0; i < a.length; i++) { if (t >= a[i][0] && t <= a[i][1]) return true; }
+  return false;
+}
 const CATNAME = ["给出的 modifier", "收到的 modifier", "造成伤害", "收到伤害"];
 const MINKIND = ["Add", "Remove", "Stack", ""];
 const DMGKIND = ["", "暴击", "魔法伤害", "吸收"];
 const MAP_HALF = 8600;
+const STEP = DATA.step || 1;                      // lite 版逐秒数据被抽稀到每 STEP 秒一格
+const HOLD = Math.max(1, Math.round(12 / STEP));  // "沿用上一秒"的窗口（按格数换算）
+const ROUTE = Math.max(2, Math.round(40 / STEP));
 /* 明细按「与上一条的秒差」编码 → 惰性展开成绝对秒（仅该英雄首次被选中时算一次） */
 const DETABS = {};
 function detAbs(i) {
@@ -528,7 +634,12 @@ let _drawing = false;
 let _lastFrame = -1;
 
 /* ═══════════════ 取值工具 ═══════════════ */
-function kOf(t) { const k = Math.round(t) - T0; return (k >= 0 && k < D) ? k : null; }
+const DP = DATA.DP || D, DEE = DATA.DE || D;
+function kOf(t) { const k = Math.round((t - T0) / STEP); return (k >= 0 && k < DP) ? k : null; }
+/* 经济/经验序列用 estep 抽稀 → 独立索引（DIFF/NW/CG/CX 三个都是 estep 网格） */
+const ESTEP = DATA.estep || 1;
+const EMAX = DATA.DE || (Math.floor((D - 1) / ESTEP) + 1);
+function kOfE(t) { const k = Math.round((t - T0) / ESTEP); return (k >= 0 && k < EMAX) ? k : null; }
 function fmt(sec, sign) {
   if (sec === null || sec === undefined || isNaN(sec)) return "—";
   const v = Math.round(sec), s = Math.abs(v);
@@ -545,9 +656,14 @@ function fmtNum(v) {
 function posAt(npc, t) {
   const k = kOf(t); if (k === null) return null;
   const P = POS[npc]; if (!P) return null;
-  if (P.x[k] !== null) return { x: P.x[k], y: P.y[k], hp: P.hp[k], t: Math.round(t) };
-  for (let i = k - 1; i >= 0 && i > k - 12; i--) {
-    if (P.x[i] !== null) return { x: P.x[i], y: P.y[i], hp: P.hp[i], t: T0 + i, stale: true };
+  const n = Math.min(P.x.length, P.y.length, P.hp.length, DP);
+  if (k < n && P.x[k] != null) {
+    return { x: P.x[k], y: P.y[k], hp: P.hp[k], t: T0 + k * STEP };
+  }
+  for (let i = Math.min(k - 1, n - 1); i >= 0 && i > k - HOLD; i--) {
+    if (P.x[i] != null) {
+      return { x: P.x[i], y: P.y[i], hp: P.hp[i], t: T0 + i * STEP, stale: true };
+    }
   }
   return null;
 }
@@ -555,21 +671,25 @@ function posAt(npc, t) {
 function hpMaxAt(npc, t) {
   const k = kOf(t), a = HPM[npc];
   if (k === null || !a) return null;
-  if (a[k] !== null && a[k] !== undefined) return a[k];
-  for (let i = k - 1; i >= 0 && i > k - 30; i--) if (a[i] !== null && a[i] !== undefined) return a[i];
+  if (k < a.length && a[k] != null) return a[k];
+  for (let i = Math.min(k - 1, a.length - 1); i >= 0 && i > k - Math.max(1, Math.round(30 / STEP)); i--) {
+    if (a[i] != null) return a[i];
+  }
   return null;
 }
 function valAt(series, npc, t) {
-  const k = kOf(t); if (k === null) return null;
+  const k = kOfE(t); if (k === null) return null;
   const a = series[npc]; if (!a) return null;
-  if (a[k] !== null && a[k] !== undefined) return a[k];
-  for (let i = k - 1; i >= 0 && i > k - 15; i--) if (a[i] !== null && a[i] !== undefined) return a[i];
+  if (k < a.length && a[k] != null) return a[k];
+  for (let i = Math.min(k - 1, a.length - 1); i >= 0 && i > k - Math.max(1, Math.round(15 / ESTEP)); i--) {
+    if (a[i] != null) return a[i];
+  }
   return null;
 }
 function diffAt(key, t) {
-  const k = kOf(t); if (k === null) return null;
+  const k = kOfE(t); if (k === null) return null;
   const a = DIFF[key]; if (!a) return null;
-  return (a[k] === null || a[k] === undefined) ? null : a[k];
+  return (k < a.length && a[k] != null) ? a[k] : null;
 }
 function isDead(i, t) {
   const p = PL[i], q = posAt(p.npc, t);
@@ -584,7 +704,30 @@ bgimg.onload = function () { bgReady = true; draw(); };
 bgimg.src = MAPIMG;
 const imgs = {};
 Object.keys(ICONS).forEach(function (k) { const im = new Image(); im.src = ICONS[k]; imgs[k] = im; });
+const wimgs = {};
+Object.keys(WICONS).forEach(function (k) { const im = new Image(); im.src = WICONS[k]; wimgs[k] = im; });
 
+function markText(m) {
+  if (m.kind === "ward") {
+    const w = m.w;
+    return WARDNAME[w[3]] + " ｜ " + (w[2] === 2 ? "天辉" : "夜魇")
+      + " ｜ (" + Math.round(w[0]) + "," + Math.round(w[1]) + ")"
+      + " ｜ 放置 " + fmt(w[4]) + " → 销毁 " + fmt(w[5])
+      + "（存活 " + (w[5] - w[4]) + "s）｜ " + WREASON[w[6]]
+      + (w[7] ? "【截断：比赛结束时仍存活】" : "");
+  }
+  if (m.kind === "smoke") {
+    const sm = m.sm;
+    return "烟雾（" + PL[sm[1]].short.replace(/_/g, " ") + "）" + " ｜ 开启 " + fmt(sm[0])
+      + " ｜ 距现在 " + Math.round(tCur - sm[0]) + "s ｜ (" + Math.round(sm[2]) + "," + Math.round(sm[3]) + ")"
+      + " ｜ 英雄受烟雾 buff 的区间见紫环";
+  }
+  const p = PL[m.i], q = posAt(p.npc, tCur);
+  return p.short.replace(/_/g, " ") + " ｜ " + (p.team === 2 ? "天辉" : "夜魇")
+    + " ｜ 坐标(" + Math.round(m.wx) + "," + Math.round(m.wy) + ")"
+    + (q && q.stale ? " ｜ ⚠位置沿用 " + fmt(q.t) : "")
+    + (isSmoked(p.npc, tCur) ? " ｜ 处于烟雾中" : "");
+}
 function teamColor(t) { return t === 2 ? "#4aa564" : "#d24b4b"; }
 
 function render() {
@@ -622,6 +765,51 @@ function render() {
     });
   }
 
+  // 眼位（存活中的守卫）—— 与 Q5B 同一套口径与图标
+  if (document.getElementById("showWard").checked) {
+    const alive = wardsAliveAt(tCur);
+    alive.forEach(function (w) {
+      const c = w2pView(w[0], w[1]);
+      if (c[0] < -30 || c[0] > CSX + 30 || c[1] < -30 || c[1] > CSX + 30) return;
+      const s = (viewRect ? 15 : 10);
+      const im = wimgs[w[3] === 1 ? "sen" : "obs"];
+      ctx.globalAlpha = 0.95;
+      if (im && im.complete && im.naturalWidth) {
+        ctx.drawImage(im, c[0] - s / 2, c[1] - s / 2, s, s);
+      } else {   // 兜底：假眼=圆、真眼=菱形，颜色按队
+        ctx.fillStyle = teamColor(w[2]);
+        ctx.beginPath();
+        if (w[3] === 1) { ctx.moveTo(c[0], c[1] - s / 2); ctx.lineTo(c[0] + s / 2, c[1]); ctx.lineTo(c[0], c[1] + s / 2); ctx.lineTo(c[0] - s / 2, c[1]); ctx.closePath(); }
+        else { ctx.arc(c[0], c[1], s / 2, 0, Math.PI * 2); }
+        ctx.fill(); ctx.strokeStyle = "#fff"; ctx.lineWidth = 1; ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      annMarks.push({ x: c[0], y: c[1], r: s / 2 + 3, kind: "ward", w: w });
+    });
+    const wbox = document.getElementById("wardCount");
+    if (wbox) wbox.textContent = "（存活 " + alive.length + " 支 / 全场 " + WARDS.length + "）";
+  } else {
+    const wbox = document.getElementById("wardCount");
+    if (wbox) wbox.textContent = "";
+  }
+
+  // 烟雾使用（激活后 20s 内高亮）—— combat_log item_smoke_of_deceit
+  if (document.getElementById("showSmoke").checked) {
+    SMOKE.forEach(function (sm) {
+      const dt = tCur - sm[0];
+      if (dt < 0 || dt > 20) return;
+      const c = w2pView(sm[2], sm[3]);
+      if (c[0] < -30 || c[0] > CSX + 30 || c[1] < -30 || c[1] > CSX + 30) return;
+      const r = (viewRect ? 17 : 12);
+      ctx.globalAlpha = Math.max(0.15, 0.7 - dt / 30);
+      ctx.fillStyle = "#a371f7";
+      ctx.beginPath(); ctx.arc(c[0], c[1], r, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = "#d2a8ff"; ctx.lineWidth = 2; ctx.stroke();
+      annMarks.push({ x: c[0], y: c[1], r: r + 3, kind: "smoke", sm: sm });
+    });
+  }
+
   // 最近击杀的"骷髅"标记（±4s 内）
   KILLSX.forEach(function (k) {
     if (Math.abs(k[0] - tCur) > 4) return;
@@ -640,7 +828,7 @@ function render() {
       if (!P) continue;
       ctx.beginPath(); let started = false;
       const kEnd = kOf(tCur); if (kEnd === null) continue;
-      for (let k = Math.max(0, kEnd - 40); k <= kEnd; k++) {
+      for (let k = Math.max(0, kEnd - ROUTE); k <= kEnd; k++) {
         if (P.x[k] === null) continue;
         const c = w2pView(P.x[k], P.y[k]);
         if (!started) { ctx.moveTo(c[0], c[1]); started = true; } else ctx.lineTo(c[0], c[1]);
@@ -700,7 +888,11 @@ function render() {
       ctx.fillStyle = dead ? "#999" : "#fff";
       ctx.fillText(label, c[0], c[1] + R + 12);
     }
-    annMarks.push({ x: c[0], y: c[1], r: R + 3, i: i, wx: q.x, wy: q.y });
+    if (isSmoked(p.npc, tCur)) {       // 处于烟雾中：紫色外环
+      ctx.beginPath(); ctx.arc(c[0], c[1], R + 7, 0, Math.PI * 2);
+      ctx.strokeStyle = "#a371f7"; ctx.lineWidth = 2.5; ctx.stroke();
+    }
+    annMarks.push({ x: c[0], y: c[1], r: R + 3, kind: "hero", i: i, wx: q.x, wy: q.y });
   });
 
   // 比例尺
@@ -741,7 +933,8 @@ cv.onmousedown = function (e) {
   const px = evPx(e)[0], py = evPx(e)[1];       // ★ px/py 必须在 if(drag) 之外声明（Q5B §9.2 坑）
   let hit = null, best = 1e9;
   annMarks.forEach(function (m) { const d = Math.hypot(px - m.x, py - m.y); if (d < m.r + 4 && d < best) { hit = m; best = d; } });
-  if (hit) { selectHero(hit.i); return; }
+  if (hit && hit.kind === "hero") { selectHero(hit.i); return; }
+  if (hit) { pinnedMark = hit; draw(); return; }
   drag = { sx: px, sy: py, vr: viewRect ? viewRect.slice() : FULL.slice() };
   cv.style.cursor = "grabbing";
 };
@@ -755,10 +948,13 @@ cv.onmousemove = function (e) {
   }
   let hit = null, best = 1e9;
   annMarks.forEach(function (m) { const d = Math.hypot(px - m.x, py - m.y); if (d < m.r + 4 && d < best) { hit = m; best = d; } });
-  let txt = "滚轮缩放 · 拖拽平移 · 点英雄标记选中";
-  if (hit) { const p = PL[hit.i], q = posAt(p.npc, tCur);
-    txt = p.short.replace(/_/g, " ") + " ｜ " + (p.team === 2 ? "天辉" : "夜魇") + " ｜ 坐标(" + Math.round(hit.wx) + "," + Math.round(hit.wy) + ")"
-      + (q && q.stale ? " ｜ ⚠位置沿用 " + fmt(q.t) : ""); }
+  let txt = "滚轮缩放 · 拖拽平移 · 点英雄标记选中 · 点眼/烟雾标记锁定";
+  if (hit) {
+    txt = markText(hit);
+  } else if (pinnedMark) {
+    txt = markText(pinnedMark);
+  }
+  if (drag) txt = "拖拽平移中…";
   if (document.getElementById("mapInfo").textContent !== txt) document.getElementById("mapInfo").textContent = txt;
 };
 cv.onmouseup = function () { if (drag) { drag = null; cv.style.cursor = "grab"; } };
@@ -1073,9 +1269,10 @@ function sparkSeries() {
 function sparkXY(W, H) {
   const a = sparkSeries();
   let mx = 1;
-  for (let k = 0; k < D; k++) { const v = Math.abs(a[k] || 0); if (v > mx) mx = v; }
+  const SPL = a.length;
+  for (let k = 0; k < SPL; k++) { const v = Math.abs(a[k] || 0); if (v > mx) mx = v; }
   sparkMax = mx;
-  return { a: a, mx: mx, X: function (k) { return k / (D - 1) * W; }, Y: function (v) { return H / 2 - (v / mx) * (H / 2 - 8); } };
+  return { a: a, mx: mx, n: SPL, X: function (k) { return k / (SPL - 1) * W; }, Y: function (v) { return H / 2 - (v / mx) * (H / 2 - 8); } };
 }
 /* 静态部分（底、面积、折线、击杀竖线）缓存到离屏画布 —— 播放时每帧只重画播放头，避免卡顿 */
 function sparkBuildCache(W, H) {
@@ -1086,14 +1283,14 @@ function sparkBuildCache(W, H) {
   g.strokeStyle = "#30363d"; g.lineWidth = 1;
   g.beginPath(); g.moveTo(0, H / 2); g.lineTo(W, H / 2); g.stroke();
   g.beginPath(); g.moveTo(0, H / 2);
-  for (let k = 0; k < D; k++) g.lineTo(t.X(k), t.Y(a[k] || 0));
+  for (let k = 0; k < t.n; k++) g.lineTo(t.X(k), t.Y(a[k] || 0));
   g.lineTo(W, H / 2); g.closePath();
   g.fillStyle = "rgba(227,179,65,.18)"; g.fill();
   g.beginPath();
-  for (let k = 0; k < D; k++) { const x = t.X(k), y = t.Y(a[k] || 0); if (k === 0) g.moveTo(x, y); else g.lineTo(x, y); }
+  for (let k = 0; k < t.n; k++) { const x = t.X(k), y = t.Y(a[k] || 0); if (k === 0) g.moveTo(x, y); else g.lineTo(x, y); }
   g.strokeStyle = "#e3b341"; g.lineWidth = 1.4; g.stroke();
   g.strokeStyle = "rgba(248,81,73,.35)";
-  KILLSX.forEach(function (kk) { const k = kOf(kk[0]); if (k === null) return;
+  KILLSX.forEach(function (kk) { const k = kOfE(kk[0]); if (k === null) return;
     g.beginPath(); g.moveTo(t.X(k), 4); g.lineTo(t.X(k), H - 4); g.stroke(); });
   return c;
 }
@@ -1105,7 +1302,7 @@ function paintSpark() {
   const t = sparkXY(W, H);
   sctx.clearRect(0, 0, W, H);
   sctx.drawImage(sparkCache, 0, 0);
-  const kc = kOf(tCur);
+  const kc = kOfE(tCur);
   if (kc !== null) {
     sctx.strokeStyle = "#fff"; sctx.lineWidth = 2;
     sctx.beginPath(); sctx.moveTo(t.X(kc), 0); sctx.lineTo(t.X(kc), H); sctx.stroke();
@@ -1217,6 +1414,8 @@ document.getElementById("mop").oninput = function () {
   document.getElementById("moppct").textContent = this.value + "%"; draw();
 };
 document.getElementById("showBld").onchange = draw;
+document.getElementById("showWard").onchange = draw;
+document.getElementById("showSmoke").onchange = draw;
 document.getElementById("showRoute").onchange = draw;
 document.getElementById("showName").onchange = draw;
 
@@ -1238,6 +1437,10 @@ document.getElementById("showName").onchange = draw;
     document.getElementById("wpN").textContent = "未拟合";
     document.getElementById("wpAuc").textContent = "先跑 python analysis/q7_winprob.py";
   }
+  if (DATA.lite) {
+    document.getElementById("liteNote").style.display = "";
+    document.getElementById("liteStep").textContent = String(STEP);
+  }
   buildAvatars(); buildTable(); buildMarks();
   commit(0);          // 默认停在 0:00（号角）；往前拖 = 出门期（-1:30 起）
 })();
@@ -1250,9 +1453,12 @@ def main():
     ap = argparse.ArgumentParser(description="Q7 单文件 viewer 生成器")
     ap.add_argument("match", nargs="+", help="match_id（可多个）")
     ap.add_argument("--out", default=REVIEW)
+    ap.add_argument("--lite", action="store_true",
+                    help="精简版：地图 512px、逐秒数据抽稀、不含 combat log 明细与技能图标")
+    ap.add_argument("--step", type=int, default=3, help="lite 的抽稀步长（秒）")
     args = ap.parse_args()
     for mid in args.match:
-        build(mid, args.out)
+        build(mid, args.out, lite=args.lite, step=args.step)
 
 
 if __name__ == "__main__":
