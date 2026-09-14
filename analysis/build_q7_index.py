@@ -192,6 +192,10 @@ a{color:#58a6ff;text-decoration:none}a:hover{text-decoration:underline}
 .tag{display:inline-block;padding:0 5px;border-radius:8px;font-size:10px;line-height:15px;background:#21262d;color:#8b949e}
 .tag.full{background:#1f6feb;color:#fff}.tag.lite{background:#2d4f6b;color:#cfe6ff}
 #cmdwrap{display:none;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:8px 10px;margin:8px 0;font-size:12px}
+.chip2{display:inline-block;padding:1px 6px;margin:1px 3px 1px 0;border-radius:9px;font-size:11px;
+       background:#21262d;color:#cfe6ff;text-decoration:none}
+.chip2:hover{background:#1f6feb;color:#fff}
+.chip2.cf{background:#1f6feb;color:#fff}
 #cmd{width:100%;height:52px;background:#0d1117;color:#7ee787;border:1px solid #30363d;border-radius:4px;font-family:ui-monospace,Consolas,monospace;font-size:11px}
 </style></head><body>
 <h1>Q7 回放浏览器 · 多场索引（<span id="nn">@@N@@</span> 场）</h1>
@@ -202,11 +206,20 @@ a{color:#58a6ff;text-decoration:none}a:hover{text-decoration:underline}
   索引扫描于 @@WHEN@@。<br>
   <b>为什么不是"一个页面切 970 场"</b>：完整版单场 4~6MB（±10s 明细是大头），970 场 ≈ 5GB，塞不进一个仓库/页面。
   所以：索引页负责"找场次 + 一行命令"，lite 版负责"批量能点开"，完整版只给重点场次。<br>
+  <b>怎么选</b>：① 顶部"直接打开"框粘 match_id 回车；② 顶部芯片列表＝已构建、点开即看；
+  ③ 下表默认<b>只显示可点开的场次</b>（取消勾选＝全部 970 场，未构建的行点"命令"按钮拿到该场命令）。<br>
   <b>构建任意一场</b>：<code>python analysis/q7_replay.py &lt;match_id&gt; --lite</code> →
   <code>python analysis/build_q7_html.py &lt;match_id&gt; --lite</code>（完整版去掉 <code>--lite</code>）。
   勾选下方"选择"列可生成整批命令。
   时长/胜负在本页由 <b>combat_log 的"号角 → 远古被摧毁"</b> 推出（<b>不依赖 OpenDota</b>）；
   队名/开赛时间/OpenDota 时长来自 <code>stats.db</code>（只覆盖已抓取的联赛，其余留空）。
+</div>
+<div class="bar" style="background:#1c2333;border-color:#1f6feb">
+  <label><b style="color:#79c0ff">直接打开</b> <input type="text" id="jump" placeholder="粘贴 match_id，如 8955197224" style="width:170px" onkeydown="if(event.key==='Enter')jump()"></label>
+  <button class="btn" onclick="jump()">打开这一场</button>
+  <span id="jumpmsg" style="color:#d29922"></span>
+  <span class="sep" style="border-left:1px solid #30363d;height:16px"></span>
+  <span style="color:#8b949e">已构建可直接点开：</span><span id="chips"></span>
 </div>
 <div class="bar">
   <label>搜索 <input type="text" id="q" placeholder="match_id / 队伍 / 英雄 / 联赛" oninput="render()"></label>
@@ -214,7 +227,8 @@ a{color:#58a6ff;text-decoration:none}a:hover{text-decoration:underline}
   <label>英雄 <select id="h" onchange="render()"></select></label>
   <label>胜负 <select id="w" onchange="render()">
     <option value="-1">全部</option><option value="1">天辉胜</option><option value="0">夜魇胜</option></select></label>
-  <label><input type="checkbox" id="onlyF" onchange="render()"> 只看已构建</label>
+  <label><input type="checkbox" id="onlyF" checked onchange="render()"> <b>只看已构建（可点开）</b></label>
+  <span class="mut">取消勾选＝全部 970 场（未构建的行给"命令"按钮）</span>
   <button class="btn" onclick="clearSel()">清空选择</button>
   <button class="btn" onclick="genCmd()">生成构建命令</button>
   <span id="stat"></span>
@@ -233,8 +247,44 @@ a{color:#58a6ff;text-decoration:none}a:hover{text-decoration:underline}
 <script>
 "use strict";
 const ROWS = @@BLOB@@;
-let sortK = "dur", sortDir = -1;
+let sortK = "built", sortDir = -1;      // 默认"已构建优先"（可点开的排前面）
 const sel = new Set();
+function builtRows() { return ROWS.filter(r => r.full || r.lite); }
+function renderChips() {
+  const box = document.getElementById("chips");
+  const list = builtRows().sort((a, b) => (b.full - a.full) || (a.mid - b.mid));
+  box.innerHTML = list.map(r => {
+    const href = "q7_replay_" + r.mid + (r.full ? "" : "_lite") + ".html";
+    const tag = r.full ? "完整" : "lite";
+    return '<a href="' + href + '" target="_blank" class="chip2 ' + (r.full ? "cf" : "cl") + '" title="'
+      + (r.rt || "?") + " vs " + (r.dt || "?") + ' ｜ ' + tag + '">' + r.mid + " · " + tag + "</a>";
+  }).join(" ");
+}
+function jump() {
+  const v = document.getElementById("jump").value.trim();
+  const mid = (v.match(/[0-9]{6,}/) || [])[0];
+  const msg = document.getElementById("jumpmsg");
+  if (!mid) { msg.textContent = "请输入 match_id（纯数字，如 8955197224）"; return; }
+  const r = ROWS.find(x => String(x.mid) === mid);
+  if (!r) { msg.textContent = "索引里没有这一场（970 场之外？）"; return; }
+  if (r.full) { window.open("q7_replay_" + mid + ".html", "_blank"); msg.textContent = ""; return; }
+  if (r.lite) { window.open("q7_replay_" + mid + "_lite.html", "_blank"); msg.textContent = ""; return; }
+  msg.textContent = "这一场还没构建 → 命令已填到下方，粘到项目根目录执行（约 10 秒）";
+  cmdFor(r.mid);
+}
+function oneCmd(mid, lite) {
+  return lite
+    ? "python analysis/q7_replay.py " + mid + " --lite\npython analysis/build_q7_html.py " + mid + " --lite --step 4"
+    : "python analysis/q7_replay.py " + mid + "\npython analysis/build_q7_html.py " + mid;
+}
+function cmdFor(mid) {
+  const txt = "# 这一场（match_id " + mid + "）\n" + oneCmd(mid, true)
+    + "\n\n# 完整版（含 ±10s 全量明细）\n" + oneCmd(mid, false)
+    + "\n\n# 构建后把 analysis/output_review/q7_replay_*" + mid + "*.html 拷到 publish_repo 再 push";
+  document.getElementById("cmdwrap").style.display = "block";
+  document.getElementById("cmd").value = txt;
+  document.getElementById("cmd").select();
+}
 function fmtDur(s) { if (s === null || s === undefined) return "—"; s = Math.round(s); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); }
 function fmtDate(t) { if (!t) return "—"; const d = new Date(t * 1000); return d.toISOString().slice(0, 10); }
 function initSel() {
@@ -280,8 +330,9 @@ function render() {
   const tb = document.getElementById("tb");
   let html = "";
   for (const r of a) {
-    const link = r.full ? '<a href="q7_replay_' + r.mid + '.html" target="_blank">完整版</a>'
-      : (r.lite ? '<a href="q7_replay_' + r.mid + '_lite.html" target="_blank">lite</a>' : '<span class="mut">未构建</span>');
+    const link = r.full ? '<a href="q7_replay_' + r.mid + '.html" target="_blank"><b>打开(完整)</b></a>'
+      : (r.lite ? '<a href="q7_replay_' + r.mid + '_lite.html" target="_blank"><b>打开(lite)</b></a>'
+                : '<button class="btn" style="padding:2px 8px" title="把这一场的构建命令填到下方" onclick="cmdFor(' + r.mid + ')">命令</button>');
     const tags = (r.full ? '<span class="tag full">完整</span> ' : "") + (r.lite ? '<span class="tag lite">lite</span>' : "");
     html += '<tr><td><input type="checkbox" data-mid="' + r.mid + '"' + (sel.has(r.mid) ? " checked" : "") + ' onchange="toggleOne(this)"></td>'
       + '<td class="n">' + r.mid + '</td><td class="n">' + r.lg + "</td>"
@@ -324,7 +375,7 @@ document.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => {
   if (sortK === k) sortDir = -sortDir; else { sortK = k; sortDir = -1; }
   render();
 });
-initSel(); render();
+initSel(); renderChips(); render();
 </script></body></html>
 """
 
