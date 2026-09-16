@@ -811,7 +811,10 @@ def bld_label(tgt):
 
 
 def build_timeline(con, match_id, players, kills, horn_cle, t0, t1):
-    """时间轴重大事件：[disp, side, kind, text]；side=2 画上方（对天辉有利）、3 画下方。"""
+    """时间轴重大事件：[disp, side, kind, text, icon, own]
+    side=2 画轴上方（对天辉有利）、3 画下方；
+    icon 决定画什么（'h:<hero>' 阵亡英雄头像 / tower / rax_melee / rax_range / fort / roshan / watch）；
+    own = 该英雄或建筑属于哪一方（2/3，roshan 为 0），用来给图标上色。"""
     short = {p["npc"]: p["short"] for p in players}
     team_of = {p["i"]: p["team"] for p in players}
     out = []
@@ -820,7 +823,8 @@ def build_timeline(con, match_id, players, kills, horn_cle, t0, t1):
         if ki < 0 or ki not in team_of or vi not in team_of:
             continue
         out.append([int(disp), int(team_of[ki]), TL_KILL,
-                    short[players[vi]["npc"]] + " 被 " + short[players[ki]["npc"]] + " 击杀"])
+                    short[players[vi]["npc"]] + " 被 " + short[players[ki]["npc"]] + " 击杀",
+                    "h:" + short[players[vi]["npc"]], int(team_of[vi])])
     for r in con.execute(
         "SELECT t_cle, target, t_team FROM combat_log WHERE match_id=? AND type_category='death' "
         "AND is_target_building=1 ORDER BY t_cle", (match_id,)):
@@ -832,7 +836,12 @@ def build_timeline(con, match_id, players, kills, horn_cle, t0, t1):
             continue
         own = int(r["t_team"]) if r["t_team"] in (2, 3) else (2 if "goodguys" in t else 3)
         kind = TL_FORT if "fort" in t else (TL_RAX if ("rax" in t or "barracks" in t) else TL_TOWER)
-        out.append([d, 3 if own == 2 else 2, kind, bld_label(t)])
+        ick = ("fort" if kind == TL_FORT else
+               ("tower" if kind == TL_TOWER else
+                ("rax_melee" if "melee" in t else "rax_range")))
+        if "watch" in t:
+            ick = "watch"
+        out.append([d, 3 if own == 2 else 2, kind, bld_label(t), ick, own])
     for r in con.execute(
         "SELECT t_cle, attacker, a_team FROM combat_log WHERE match_id=? AND type_category='death' "
         "AND target='npc_dota_roshan' ORDER BY t_cle", (match_id,)):
@@ -841,7 +850,7 @@ def build_timeline(con, match_id, players, kills, horn_cle, t0, t1):
             continue
         side = int(r["a_team"]) if r["a_team"] in (2, 3) else 2
         who = short.get(r["attacker"], r["attacker"] or "?")
-        out.append([d, side, TL_ROSHAN, "肉山 被 " + who + " 击杀"])
+        out.append([d, side, TL_ROSHAN, "肉山 被 " + who + " 击杀", "roshan", 0])
     out.sort(key=lambda e: e[0])
     return out
 
@@ -913,6 +922,21 @@ def selfcheck(dat):
                     % (len(wd), no, ns, dew, cen))
     else:
         msgs.append("眼位：无（解析失败或本场无数据）")
+    tls = dat.get("tl", [])
+    if tls:
+        up = sum(1 for e in tls if e[1] == 2)
+        ick = {}
+        for e in tls:
+            k2 = e[4].split(":")[0] if e[4].startswith("h:") else e[4]
+            ick[k2] = ick.get(k2, 0) + 1
+        msgs.append("时间轴重大事件：%d 条（对天辉有利 %d / 对夜魇有利 %d）｜击杀 %d / 建筑 %d / 肉山 %d"
+                    % (len(tls), up, len(tls) - up,
+                       sum(1 for e in tls if e[2] == 0), sum(1 for e in tls if e[2] in (1, 2, 3)),
+                       sum(1 for e in tls if e[2] == 4)))
+        msgs.append("  样例：" + "；".join("%d:%02d [%s] %s" % (e[0] // 60, e[0] % 60, e[4], e[3])
+                                        for e in tls[:4]))
+        msgs.append("  图标分布：" + "、".join("%s×%d" % kv for kv in
+                                          sorted(ick.items(), key=lambda x: -x[1])[:12]))
     msgs.append("烟雾：使用 %d 次 ｜ 英雄处于烟雾中的区间 %d 段"
                 % (len(dat.get("smoke", [])),
                    sum(len(v) for v in (dat.get("smoked") or {}).values())))

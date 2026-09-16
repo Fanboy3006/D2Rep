@@ -157,6 +157,7 @@ eval(src + `
   renderDetail: function(){ renderDetail(); }, renderCD: function(){ renderCD(); },
   det: DET, dnames: DNAMES, cd: CD, tput: TPUT, wp: WP,
   wards: WARDS, smoke: SMOKE, smoked: SMOKED, wicons: WICONS,
+  iconsq: ICONSQ, tlicons: TLICONS, tlIconSrc: tlIconSrc,
   tl: TL, buildTimelineEvents: function(){ buildTimelineEvents(); },
   markNear: function(){ markNear(); }, jumpTo: jumpTo, fmtTL: fmtTL,
   evEls: function(){ return evEls; },
@@ -378,75 +379,125 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
   ok(iCv > iLeft && iCv < iRight, "画布在左栏内（不与右栏同级）");
 }
 
-/* ══ 3a1. 时间轴：重大事件时间戳（上=天辉有利 / 下=夜魇有利） ══ */
+/* ══ 3a1. 时间轴重大事件（图标版：阵亡英雄头像 / 建筑图标，上=天辉有利 下=夜魇有利） ══ */
 {
   const TL = S.tl || [];
-  ok(TL.length > 30, "时间轴事件数据 " + TL.length + " 条");
-  ok(TL.every(e => e.length === 4 && (e[1] === 2 || e[1] === 3) && e[2] >= 0 && e[2] <= 4 && typeof e[3] === "string"),
-     "事件字段 = [时刻, 有利方, 类型, 文案]");
+  ok(TL.length > 30, "时间轴事件 " + TL.length + " 条");
+  ok(TL.every(e => e.length === 6 && (e[1] === 2 || e[1] === 3) && typeof e[3] === "string"
+                  && typeof e[4] === "string" && [0, 2, 3].indexOf(e[5]) >= 0),
+     "字段 = [时刻, 有利方, 类型, 文案, 图标, 所属方]");
   const up = TL.filter(e => e[1] === 2), dn = TL.filter(e => e[1] === 3);
+  const kills = TL.filter(e => e[2] === 0), blds = TL.filter(e => e[2] !== 0);
   ok(up.length > 0 && dn.length > 0, "天辉有利 " + up.length + " 条 / 夜魇有利 " + dn.length + " 条");
-  ok(TL.some(e => e[2] === 1) && TL.some(e => e[2] === 0), "同时含击杀与建筑（塔）事件");
-  ok(TL.every(e => e[0] >= T0 - 1 && e[0] <= T1 + 1), "事件时刻都在时间轴范围内");
-  // 上下分侧：天辉有利的贴在轴上方（style.bottom），夜魇在下方（style.top）
-  g("showTL").checked = true; g("tlBld").checked = false;
+  ok(kills.length > 0 && blds.length > 0, "击杀 " + kills.length + " 条 / 建筑与肉山 " + blds.length + " 条");
+  // 击杀：图标 = 阵亡英雄头像；建筑：图标 = 建筑类型键
+  ok(kills.every(e => e[4].indexOf("h:") === 0), "击杀事件图标键 = h:<英雄>");
+  ok(blds.every(e => ["tower", "rax_melee", "rax_range", "fort", "roshan", "watch"].indexOf(e[4]) >= 0),
+     "建筑/肉山图标键合法（" + [...new Set(blds.map(e => e[4]))].join("/") + "）");
+  ok(TL.every(e => e[0] >= T0 - 1 && e[0] <= T1 + 1), "事件时刻在时间轴范围内");
+  const sq = Object.keys(S.iconsq || {}).length, ti = Object.keys(S.tlicons || {}).length;
+  ok(sq >= 5 && ti >= 3, "图标资产已内嵌：英雄方头像 " + sq + " 个 / 建筑类 " + ti + " 个");
+  // 预热：时间戳文字关掉（默认）
+  g("showTL").checked = false; g("tlBld").checked = false;
   S.buildTimelineEvents();
-  const upHost = g("evUp").children, dnHost = g("evDn").children;
-  ok(upHost.length > 0 && dnHost.length > 0, "上方带 " + upHost.length + " 个元素，下方带 " + dnHost.length + " 个");
-  const upTicks = upHost.filter(c => String(c.className).indexOf("evt") === 0);
-  const dnTicks = dnHost.filter(c => String(c.className).indexOf("evt") === 0);
-  ok(upTicks.length === up.length && dnTicks.length === dn.length,
-     "刻度数 = 各侧事件数（上 " + upTicks.length + "/" + up.length + "，下 " + dnTicks.length + "/" + dn.length + "）");
-  ok(upTicks.every(c => c.style.bottom && !c.style.top),
-     "天辉刻度都用 bottom 定位（贴轴上方）");
-  ok(dnTicks.every(c => c.style.top && !c.style.bottom),
-     "夜魇刻度都用 top 定位（贴轴下方）");
-  // 时间戳标签
-  const upLbl = upHost.filter(c => String(c.className).indexOf("ev ") === 0);
-  const dnLbl = dnHost.filter(c => String(c.className).indexOf("ev ") === 0);
-  ok(upLbl.length === up.length && dnLbl.length === dn.length,
-     "时间戳标签数 = 各侧事件数（上 " + upLbl.length + " / 下 " + dnLbl.length + "）");
-  ok(upLbl.every(c => /^\d+:\d\d$/.test(String(c.textContent))),
-     "标签文案是 mm:ss（例 " + upLbl.slice(0, 3).map(c => c.textContent).join(" / ") + "）");
-  ok(upLbl.every(c => String(c.className).indexOf("c2") > 0) && dnLbl.every(c => String(c.className).indexOf("c3") > 0),
-     "标签颜色按有利方分类（上 c2=天辉 / 下 c3=夜魇）");
-  const bldLbl = upLbl.concat(dnLbl).filter(c => String(c.className).indexOf("bld") > 0);
-  ok(bldLbl.length > 0, "建筑事件有加粗样式（" + bldLbl.length + " 个）");
-  ok(upLbl.every(c => String(c.title).match(/^\d+:\d\d\s+\S+/)),
-     "标签 title 含时间戳+类型+文案：" + String(upLbl[0].title).slice(0, 40));
-  // 点标签 → 跳到该时刻
-  const target = TL.find(e => e[1] === 2);
-  const lab = upLbl.find(c => c.textContent === S.fmtTL(target[0]));
-  ok(!!lab, "能找到对应时刻的标签 " + S.fmtTL(target[0]));
-  if (lab) {
-    S.commit(T0);
-    lab.onclick();
-    ok(Math.abs(S.getTBig() - target[0]) < 1.5, "点标签 → 大条跳到 " + S.getTBig() + "（目标 " + target[0] + "）");
+  const upKids = g("evUp").children, dnKids = g("evDn").children;
+  const upMark = upKids.filter(c => String(c.className).indexOf("evm") === 0);
+  const dnMark = dnKids.filter(c => String(c.className).indexOf("evm") === 0);
+  ok(upMark.length === up.length && dnMark.length === dn.length,
+     "标记数 = 各侧事件数（上 " + upMark.length + "/" + up.length + "，下 " + dnMark.length + "/" + dn.length + "）");
+  ok(upMark.every(c => c.style.bottom && !c.style.top) && dnMark.every(c => c.style.top && !c.style.bottom),
+     "天辉有利贴轴上方 / 夜魇有利贴轴下方");
+  // 图标：每个标记都有 <img class=ico> 且 src 是内嵌 PNG
+  const imgs = upMark.concat(dnMark).map(c => c.children.filter(x => String(x.className) === "ico")[0]);
+  ok(imgs.every(x => x && String(x.src).indexOf("data:image/png;base64,") === 0),
+     "每个事件都画了图标（" + imgs.length + " 个内嵌 PNG）");
+  // 描边色类 = 所属方；alt = 事件文案；bld 类与类型一致（按 TL 逐条对齐）
+  const seqUp = up, seqDn = dn;
+  const bad = [];
+  [["up", upMark, seqUp], ["dn", dnMark, seqDn]].forEach(function (pair) {
+    const tag = pair[0], marks = pair[1], seq = pair[2];
+    if (marks.length !== seq.length) { bad.push(tag + ":数量"); return; }
+    for (let i2 = 0; i2 < seq.length; i2++) {
+      const e = seq[i2], cl = String(marks[i2].className);
+      const own = e[5] || 0;
+      const wantR = "r" + (own === 2 ? "2" : (own === 3 ? "3" : "0"));
+      const wantBld = e[2] !== 0;
+      if (cl.indexOf(wantR) < 0) bad.push(tag + "#" + i2 + ":缺少" + wantR);
+      if ((cl.indexOf("bld") > 0) !== wantBld) bad.push(tag + "#" + i2 + ":bld类不符");
+      if ((cl.indexOf("r2") > 0) && (cl.indexOf("r3") > 0)) bad.push(tag + "#" + i2 + ":双色");
+      const im = marks[i2].children.filter(x => String(x.className) === "ico")[0];
+      if (!im || String(im.alt) !== String(e[3])) bad.push(tag + "#" + i2 + ":alt");
+    }
+  });
+  ok(bad.length === 0, "描边色类=所属方 / bld类=类型 / alt=文案（" + TL.length + " 条逐条对齐）"
+     + (bad.length ? " 不符 " + bad.length + " 处：" + bad.slice(0, 4).join(",") : ""));
+  const allMark = upMark.concat(dnMark);
+  const cnt = f => allMark.filter(c => String(c.className).indexOf(f) > 0).length;
+  const ecnt = v => TL.filter(e => (e[5] || 0) === v).length;
+  const n2 = cnt("r2"), n3 = cnt("r3"), n0 = cnt("r0");
+  const e2 = ecnt(2), e3 = ecnt(3), e0 = ecnt(0);
+  ok(n2 === e2 && n3 === e3 && n0 === e0,
+     "绿环（天辉的）" + n2 + "/" + e2 + " 个、红环（夜魇的）" + n3 + "/" + e3
+     + " 个、灰环（无主的肉山）" + n0 + "/" + e0 + " 个，与数据一致");
+  ok(n2 + n3 + n0 === TL.length, "每个标记恰好一个环色（" + (n2 + n3 + n0) + "/" + TL.length + "）");
+  if (e0 > 0) {
+    const rEl = TL.filter(e => (e[5] || 0) === 0)[0];
+    ok(rEl[4] === "roshan", "无主事件只有肉山（" + rEl[3] + "）");
   }
-  // "只标建筑/肉山" 开关
-  g("tlBld").checked = true; S.buildTimelineEvents();
-  const upLbl2 = g("evUp").children.filter(c => String(c.className).indexOf("ev ") === 0);
-  ok(upLbl2.length === up.filter(e => e[2] !== 0).length,
-     "只标建筑 → 上方标签只剩 " + upLbl2.length + " 个（=非击杀事件数）");
-  ok(upLbl2.every(c => c.textContent.match(/^\d+:\d\d$/) && String(c.className).indexOf("bld") > 0),
-     "剩下的都是建筑类标签");
-  g("tlBld").checked = false;
-  // "事件时间戳" 关掉 → 只剩刻度
-  g("showTL").checked = false; S.buildTimelineEvents();
-  ok(g("evUp").children.filter(c => String(c.className).indexOf("ev ") === 0).length === 0,
-     "关掉时间戳 → 不再渲染标签（刻度仍在）");
-  ok(g("evUp").children.length === up.length, "刻度仍然全在（" + g("evUp").children.length + "）");
+  // 击杀图标就是阵亡英雄的头像
+  const k0 = kills[0];
+  const kMark = upMark.concat(dnMark).filter(c => String(c.title).indexOf(k0[3].slice(0, 6)) >= 0)[0];
+  ok(!!kMark, "能找到某条击杀事件的标记（" + k0[3] + "）");
+  if (kMark) {
+    const im0 = kMark.children.filter(x => String(x.className) === "ico")[0];
+    ok(String(im0.src) === String(S.iconsq[k0[4].slice(2)]),
+       "阵亡英雄（" + k0[4].slice(2) + "）头像用的就是该英雄的小头像");
+  }
+  // 建筑图标带 bld 类
+  ok(upMark.concat(dnMark).filter(c => String(c.className).indexOf("bld") > 0).length === blds.length,
+     "建筑类标记数 = 建筑事件数（" + blds.length + "）");
+  // 泳道高度必须容得下最高一层标记（否则图标会盖到上面的说明/坐标轴上）
+  const laneUp = parseFloat(String(g("evUp").style.height)), laneDn = parseFloat(String(g("evDn").style.height));
+  const topUp = Math.max.apply(null, [0].concat(upMark.map(c => parseFloat(String(c.style.bottom || "0")))));
+  const topDn = Math.max.apply(null, [0].concat(dnMark.map(c => parseFloat(String(c.style.top || "0")))));
+  ok(laneUp >= topUp + 26 && laneDn >= topDn + 26,
+     "泳道高度容得下最高一层（上 " + laneUp + "≥" + topUp + "+26，下 " + laneDn + "≥" + topDn + "+26）");
+  ok(upMark.every(c => parseFloat(String(c.style.bottom || "0")) >= 0) && upMark.length > 0,
+     "上方标记全部锚在轴上方（bottom 定位）");
+  // 时间戳文字默认不显示；打开后每个标记带 mm:ss
+  ok(upMark.every(c => c.children.filter(x => String(x.className) === "t").length === 0),
+     "默认只显示图标（不显示时间戳文字）");
   g("showTL").checked = true; S.buildTimelineEvents();
-  // 靠近播放头的标签高亮
-  S.commit(target[0]);
-  S.markNear();
-  const near = S.evEls().filter(x => String(x.el.className).indexOf("near") > 0);
-  ok(near.length > 0, "靠近播放头的事件标签被高亮（" + near.length + " 个）");
-  ok(near.every(x => Math.abs(x.t - S.getT()) <= 25), "高亮范围 = ±25s");
-  // CSS 契约
-  const css = (raw.match(/<style>([\s\S]*?)<\/style>/) || [, ""])[1];
-  ok(/\.tlaxis\{/.test(css) && /\.evlane\{/.test(css) && /\.ev\{/.test(css), "时间轴上下带样式已定义");
-  ok(/#timeline\{margin-top/.test(css), "#timeline 作为独立整宽面板");
+  const upMark2 = g("evUp").children.filter(c => String(c.className).indexOf("evm") === 0);
+  const ts = upMark2.map(c => c.children.filter(x => String(x.className) === "t")[0]);
+  ok(ts.every(x => x && /^\d+:\d\d$/.test(String(x.textContent))),
+     "打开「时间戳文字」→ 图标旁带 mm:ss（" + ts.slice(0, 4).map(x => x.textContent).join(" ") + "）");
+  g("showTL").checked = false;
+  // 只标建筑/肉山
+  g("tlBld").checked = true; S.buildTimelineEvents();
+  const upMark3 = g("evUp").children.filter(c => String(c.className).indexOf("evm") === 0);
+  ok(upMark3.length === up.filter(e => e[2] !== 0).length,
+     "只标建筑/肉山 → 上方标记 " + upMark3.length + " 个");
+  ok(upMark3.every(c => String(c.className).indexOf("bld") > 0), "剩下的都是建筑类");
+  g("tlBld").checked = false; S.buildTimelineEvents();
+  // 刻度与点击跳转
+  const ticks = g("evUp").children.filter(c => String(c.className).indexOf("evt") === 0);
+  ok(ticks.length === up.length, "轴上刻度数 = 事件数（" + ticks.length + "）");
+  const tgt = up[0];
+  const mk2 = g("evUp").children.filter(c => String(c.className).indexOf("evm") === 0)
+    .find(c => Math.abs(parseInt(String(c.style.left), 10) / 100 * (T1 - T0) + T0 - tgt[0]) < 40);
+  if (mk2) { S.commit(T0); mk2.onclick(); ok(S.getTBig() > T0, "点图标 → 跳到 " + S.getTBig()); }
+  // 高亮
+  S.commit(tgt[0]); S.markNear();
+  ok(S.evEls().filter(x => String(x.el.className).indexOf("near") > 0).length > 0,
+     "靠近播放头的事件被高亮");
+  // CSS 契约：时间轴在地图之上 + 整宽
+  const iTL = raw.indexOf('id="timeline"'), iW = raw.indexOf('class="wrap"');
+  ok(iTL > 0 && iW > 0 && iTL < iW, "时间轴在地图（.wrap）之前（上方）");
+  const css2 = (raw.match(/<style>([\s\S]*?)<\/style>/) || [, ""])[1];
+  ok(/\.evm\{/.test(css2) && /\.evm \.ico\{/.test(css2), "图标标记样式已定义");
+  ok(/\.evm\.r0 \.ico/.test(css2), "无主（肉山）灰环样式已定义");
+  ok(/#timeline\{margin-top/.test(css2), "#timeline 独立整宽面板");
   S.commit(900);
 }
 

@@ -28,6 +28,7 @@ Q7DIR = os.path.join(ROOT, "analysis", "output_q7")
 REVIEW = os.path.join(ROOT, "analysis", "output_review")
 AB_ICON_DIR = os.path.join(ROOT, "opendota_analysis", "assets", "ability_icons")
 WARD_ICON_DIR = os.path.join(ROOT, "opendota_analysis", "assets", "ward_icons")
+TL_ICON_DIR = os.path.join(ROOT, "opendota_analysis", "assets", "tl_icons")
 ICON_DIR = os.path.join(ROOT, "opendota_analysis", "assets", "hero_icons")
 MAP_PNG = os.path.join(REVIEW, "_q5_map_annot.png")
 WINPROB = os.path.join(Q7DIR, "q7_winprob.json")
@@ -51,6 +52,37 @@ def b64_png_opt(path, colors=64, size=None):
         if len(data) >= os.path.getsize(path):
             data = open(path, "rb").read()
         return base64.b64encode(data).decode("ascii")
+    except Exception:
+        return b64(path)
+
+
+def square_avatar(path, size=26):
+    """英雄图（128×72 卡片）→ 裁中心正方形 → 缩小。时间轴上的"阵亡英雄头像"用它。"""
+    try:
+        from PIL import Image
+        im = Image.open(path).convert("RGB")
+        w, h = im.size
+        s0 = min(w, h)
+        left = (w - s0) // 2
+        im = im.crop((left, 0, left + s0, s0)).resize((size, size), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, "PNG", optimize=True)
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:
+        return b64(path)
+
+
+def tint_icon(path, rgb, size=26):
+    """官方建筑图标是**白色字形 + alpha**（好/坏阵营文件完全相同）→ 按队伍上色。"""
+    try:
+        from PIL import Image
+        im = Image.open(path).convert("RGBA")
+        out = Image.new("RGBA", im.size, rgb + (255,))
+        out.putalpha(im.getchannel("A"))
+        out = out.resize((size, size), Image.LANCZOS)
+        buf = io.BytesIO()
+        out.save(buf, "PNG", optimize=True)
+        return base64.b64encode(buf.getvalue()).decode("ascii")
     except Exception:
         return b64(path)
 
@@ -124,6 +156,30 @@ def build(mid, outdir, lite=False, step=3):
         if os.path.exists(fp):
             ab_icons[base] = "data:image/png;base64," + b64_png_opt(fp, 64)
 
+    # ---- 时间轴图标：阵亡英雄方形头像 + 建筑/肉山图标（按队伍上色，只内嵌本场用到的）----
+    TINT = {2: (126, 231, 135), 3: (255, 140, 140)}
+    iconsq, tlicons = {}, {}
+    for e in dat.get("tl", []):
+        ic = e[4] if len(e) > 4 else ""
+        own = e[5] if len(e) > 5 else 0
+        if ic.startswith("h:"):
+            short = ic[2:]
+            if short not in iconsq:
+                fp = os.path.join(ICON_DIR, short + ".png")
+                if os.path.exists(fp):
+                    iconsq[short] = "data:image/png;base64," + square_avatar(fp, 26 if lite else 30)
+        else:
+            k = ic if ic == "roshan" else (ic + ("_r" if own == 2 else "_d"))
+            if k in tlicons:
+                continue
+            fp = os.path.join(TL_ICON_DIR, ic + ".png")
+            if not os.path.exists(fp):
+                continue
+            if ic == "roshan":
+                tlicons[k] = "data:image/png;base64," + b64_png_opt(fp, 64, 30)
+            else:
+                tlicons[k] = "data:image/png;base64," + tint_icon(fp, TINT.get(own, TINT[2]), 30)
+
     # ---- 眼位图标（官方 observer / truesight，各 ~1.4KB）----
     ward_icons = {}
     for k, fn in (("obs", "ward_observer.png"), ("sen", "ward_sentry.png")):
@@ -192,6 +248,8 @@ def build(mid, outdir, lite=False, step=3):
         "icons": icons,
         "abicons": ({} if lite else ab_icons),
         "wicons": ward_icons,
+        "iconsq": iconsq,
+        "tlicons": tlicons,
     }
     blob = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).replace("</", "<\\/")
     map_b64 = b64_png_opt(MAP_PNG, 64, (448 if lite else None)) if lite else b64(MAP_PNG)
@@ -297,17 +355,26 @@ input[type=range]{width:100%;accent-color:var(--acc)}
 #small::-webkit-slider-thumb{cursor:pointer}
 /* ── 时间轴：上下事件带（天辉有利在上、夜魇有利在下）── */
 .tlaxis{position:relative;margin-top:4px}
-.evlane{position:relative;height:52px}
+.evlane{position:relative;height:30px}
 .evlane .evt{position:absolute;border-radius:1px}
 .evlane .evt.b{width:3px}
 .tlaxis .evhint{font-size:10.5px;color:#8b949e;line-height:14px}
 .tlaxis .evhint.up{color:#8b949e}
-.ev{position:absolute;font-size:10.5px;line-height:13px;white-space:nowrap;transform:translateX(-50%);
-    cursor:pointer;padding:0 3px;border-radius:3px;border:1px solid transparent;font-variant-numeric:tabular-nums}
-.ev:hover{border-color:#fff;background:#1f6feb55;z-index:5}
-.ev.c2{color:#7ee787}.ev.c3{color:#ff9ea4}
-.ev.bld{font-weight:700;background:#ffffff10}
-.ev.near{background:#e3b34133;border-color:#e3b341;color:#fff}
+.tlaxis .evhint .lg{color:#8b949e;margin-left:8px;font-size:10px}
+/* 事件标记：图标（+可选 mm:ss）；上方=天辉有利、下方=夜魇有利 */
+.evm{position:absolute;transform:translateX(-50%);cursor:pointer;display:flex;flex-direction:column;
+     align-items:center;gap:0;padding:1px 2px;border-radius:4px;border:1px solid transparent}
+.evm:hover{border-color:#fff;background:#1f6feb66;z-index:6}
+.evm .ico{width:22px;height:22px;border-radius:50%;display:block;object-fit:cover;background:#0d1117;
+          border:2px solid #555}
+.evm.r2 .ico{border-color:#4aa564}
+.evm.r3 .ico{border-color:#d24b4b}
+.evm.r0 .ico{border-color:#8b949e}
+.evm.bld .ico{border-radius:4px}
+.evm .t{font-size:9.5px;line-height:11px;color:#a9b1ba;font-variant-numeric:tabular-nums;white-space:nowrap}
+.evm.near{background:#e3b34140;border-color:#e3b341}
+.evm.near .t{color:#fff}
+.evm.near .ico{border-color:#e3b341}
 .axrow{position:relative}
 #big{width:100%}
 #smallwrap{position:relative}
@@ -394,6 +461,44 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
       </span></div>
   </div>
 </div>
+
+<div class="panel" id="timeline">
+    <div class="tlrow">
+      <span class="lb">播放</span>
+      <button class="btn big" id="play">▶ 播放</button>
+      <button class="btn" onclick="step(-5)">« 5s</button>
+      <button class="btn" onclick="step(5)">5s »</button>
+      <span class="lbl" style="color:var(--dim);font-size:12px">速度</span>
+      <button class="btn spd active" data-s="1" onclick="setSpeed(1)">1×</button>
+      <button class="btn spd" data-s="2" onclick="setSpeed(2)">2×</button>
+      <button class="btn spd" data-s="4" onclick="setSpeed(4)">4×</button>
+      <span class="sep">｜</span>
+      <label class="toggle"><input type="checkbox" id="showTL" onchange="buildTimelineEvents()"> 时间戳文字</label>
+      <label class="toggle"><input type="checkbox" id="tlBld" onchange="buildTimelineEvents()"> 只标建筑/肉山</label>
+      <span class="tip" style="margin-left:auto">空格=播放/暂停 ｜ ←→=±5s ｜ 点图标=跳到该时刻</span>
+    </div>
+
+    <div class="tlaxis">
+      <div class="evhint up">▲ 对<b class="dr">天辉</b>有利<span class="lg">图标＝阵亡英雄头像 / 被毁的塔·兵营·基地·肉山；<b>描边色＝它属于哪一方</b>（绿=天辉、红=夜魇、灰=无主·肉山）；悬停看说明，点图标跳到该时刻</span><span style="float:right;color:#8b949e">大时间轴：全场 0:00 → @@DUR@@</span></div>
+      <div class="evlane" id="evUp"></div>
+      <div class="axrow">
+        <input type="range" id="big" min="0" max="1" value="0" step="0.5">
+      </div>
+      <div class="evlane" id="evDn"></div>
+      <div class="evhint dn">▼ 对<b class="dd">夜魇</b>有利</div>
+    </div>
+    <div class="tip" id="biglabel">—</div>
+
+    <div class="tlrow"><span class="lb">小时间轴<br><span style="font-size:10px">±60s</span></span>
+      <div style="flex:1;min-width:0" id="smallwrap">
+        <input type="range" id="small" min="-60" max="60" value="0" step="0.5">
+        <div id="scenter"></div>
+        <div class="tip" id="smalllabel">—</div>
+      </div>
+    </div>
+    <div class="tip"><b>双条语义</b>：拖小条 → 实际时刻 = 大条 + 小条偏移（地图/表格实时跟随，大条滑块同步小幅移动）；
+      <b>松手提交</b> → 大条推进"滑过的量"，小条<b>瞬时归零</b>。点火花线/拖大条 = 直接绝对定位（小条归零）。</div>
+  </div>
 
 <div class="wrap">
 <div class="left">
@@ -500,45 +605,6 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
   </details>
 </div>
 </div>
-
-  <div class="panel" id="timeline">
-    <div class="tlrow">
-      <span class="lb">播放</span>
-      <button class="btn big" id="play">▶ 播放</button>
-      <button class="btn" onclick="step(-5)">« 5s</button>
-      <button class="btn" onclick="step(5)">5s »</button>
-      <span class="lbl" style="color:var(--dim);font-size:12px">速度</span>
-      <button class="btn spd active" data-s="1" onclick="setSpeed(1)">1×</button>
-      <button class="btn spd" data-s="2" onclick="setSpeed(2)">2×</button>
-      <button class="btn spd" data-s="4" onclick="setSpeed(4)">4×</button>
-      <span class="sep">｜</span>
-      <label class="toggle"><input type="checkbox" id="showTL" checked onchange="buildTimelineEvents()"> 事件时间戳</label>
-      <label class="toggle"><input type="checkbox" id="tlBld" onchange="buildTimelineEvents()"> 只标建筑/肉山</label>
-      <span class="tip" style="margin-left:auto">空格=播放/暂停 ｜ ←→=±5s ｜ 点事件标签=跳到该时刻</span>
-    </div>
-
-    <div class="tlaxis">
-      <div class="evhint up">▲ 对<b class="dr">天辉</b>有利（击杀 / 推塔 / 肉山）<span style="float:right;color:#8b949e">大时间轴：全场 0:00 → @@DUR@@ （拖动或点事件标签）</span></div>
-      <div class="evlane" id="evUp"></div>
-      <div class="axrow">
-        <input type="range" id="big" min="0" max="1" value="0" step="0.5">
-      </div>
-      <div class="evlane" id="evDn"></div>
-      <div class="evhint dn">▼ 对<b class="dd">夜魇</b>有利</div>
-    </div>
-    <div class="tip" id="biglabel">—</div>
-
-    <div class="tlrow"><span class="lb">小时间轴<br><span style="font-size:10px">±60s</span></span>
-      <div style="flex:1;min-width:0" id="smallwrap">
-        <input type="range" id="small" min="-60" max="60" value="0" step="0.5">
-        <div id="scenter"></div>
-        <div class="tip" id="smalllabel">—</div>
-      </div>
-    </div>
-    <div class="tip"><b>双条语义</b>：拖小条 → 实际时刻 = 大条 + 小条偏移（地图/表格实时跟随，大条滑块同步小幅移动）；
-      <b>松手提交</b> → 大条推进"滑过的量"，小条<b>瞬时归零</b>。点火花线/拖大条 = 直接绝对定位（小条归零）。</div>
-  </div>
-
 
 <script>
 "use strict";
@@ -1399,47 +1465,70 @@ const TL = DATA.tl || [];
 const KIND_NAME = ["击杀", "塔", "兵营", "基地", "肉山"];
 let evEls = [];          // [{el, t, side}]
 function fmtTL(t) { const v = Math.round(t); return Math.floor(Math.abs(v) / 60) + ":" + String(Math.abs(v) % 60).padStart(2, "0"); }
+const ICONSQ = DATA.iconsq || {}, TLICONS = DATA.tlicons || {};
+function tlIconSrc(e) {
+  const ic = e[4] || "", own = e[5] || 0;
+  if (ic.indexOf("h:") === 0) return ICONSQ[ic.slice(2)] || null;
+  if (ic === "roshan") return TLICONS.roshan || null;
+  return TLICONS[ic + (own === 2 ? "_r" : "_d")] || TLICONS[ic + "_r"] || null;
+}
 function buildTimelineEvents() {
   const up = document.getElementById("evUp"), dn = document.getElementById("evDn");
   up.innerHTML = ""; dn.innerHTML = "";
   evEls = [];
-  const showLabels = document.getElementById("showTL").checked;
+  const showTime = document.getElementById("showTL").checked;
   const onlyBld = document.getElementById("tlBld").checked;
-  const W = Math.max(300, up.clientWidth || 900);
+  const W = Math.max(320, up.clientWidth || 900);
   const span = Math.max(1, T1 - T0);
-  const rows = [0, 0, 0];                 // 每行"最后一个标签的右边界(px)"
-  const mk = function (host, e, side) {
+  const ROWH = showTime ? 44 : 27;      // 每层高度（带时间戳时更高）
+  const NROW = 3;                       // 每个事件最多 3 层错开
+  const MH = showTime ? 38 : 26;        // 标记自身高度（图标 22 + 内边距/边框 4 + 可选时间戳 11）
+  const SP = showTime ? 38 : 27;        // 同层最小水平间距（像素）
+  up.style.height = dn.style.height = (4 + (NROW - 1) * ROWH + MH) + "px";
+  const mk = function (host, e, side, rows) {
+    const bld = e[2] !== 0, own = e[5] || 0;
     const x = (e[0] - T0) / span * W;
-    const bld = e[2] !== 0;
     const tick = document.createElement("div");
     tick.className = "evt" + (bld ? " b" : "");
     tick.style.left = (e[0] - T0) / span * 100 + "%";
-    tick.style.background = side === 2 ? "#4aa564" : "#d24b4b";
+    tick.style.background = own === 2 ? "#4aa564" : (own === 3 ? "#d24b4b" : "#8b949e");
     tick.style.height = (bld ? 13 : 8) + "px";
     if (side === 2) { tick.style.bottom = "0"; } else { tick.style.top = "0"; }
     tick.title = fmtTL(e[0]) + "  " + KIND_NAME[e[2]] + "  " + e[3];
     tick.onclick = function () { jumpTo(e[0]); };
     host.appendChild(tick);
-    if (!showLabels || (onlyBld && !bld)) return;
-    // 贪心错行：选"右边界最靠左"且能放下的一行，放不下就取最小
+    if (onlyBld && !bld) return;
     let row = -1, best = 1e9;
     for (let r = 0; r < rows.length; r++) {
-      if (x - rows[r] >= 30 && rows[r] < best) { best = rows[r]; row = r; }
+      if (x - rows[r] >= SP && rows[r] < best) { best = rows[r]; row = r; }
     }
     if (row < 0) { row = 0; for (let r = 1; r < rows.length; r++) if (rows[r] < rows[row]) row = r; }
-    rows[row] = x + 30;
-    const el = document.createElement("div");
-    el.className = "ev c" + side + (bld ? " bld" : "");
-    el.style.left = (e[0] - T0) / span * 100 + "%";
-    const off = 6 + row * 15;
-    if (side === 2) { el.style.bottom = off + "px"; } else { el.style.top = off + "px"; }
-    el.textContent = fmtTL(e[0]);
-    el.title = fmtTL(e[0]) + "  " + KIND_NAME[e[2]] + " ｜ " + e[3];
-    el.onclick = function () { jumpTo(e[0]); };
-    host.appendChild(el);
-    evEls.push({ el: el, t: e[0] });
+    rows[row] = x + SP;
+    const m = document.createElement("div");
+    m.className = "evm r" + (own === 2 ? "2" : (own === 3 ? "3" : "0")) + (bld ? " bld" : "");
+    m.style.left = (e[0] - T0) / span * 100 + "%";
+    const off = 4 + row * ROWH;
+    if (side === 2) { m.style.bottom = off + "px"; } else { m.style.top = off + "px"; }
+    const src = tlIconSrc(e);
+    const im = document.createElement("img");
+    im.className = "ico";
+    im.alt = e[3];
+    if (src) { im.src = src; } else { im.style.visibility = "hidden"; }
+    const tm = document.createElement("span");
+    tm.className = "t";
+    tm.textContent = fmtTL(e[0]);
+    if (side === 2) { if (showTime) m.appendChild(tm); m.appendChild(im); }
+    else { m.appendChild(im); if (showTime) m.appendChild(tm); }
+    m.title = fmtTL(e[0]) + "  " + KIND_NAME[e[2]] + " ｜ " + e[3]
+      + (own === 2 ? "（天辉的）" : (own === 3 ? "（夜魇的）" : ""));
+    m.onclick = function () { jumpTo(e[0]); };
+    host.appendChild(m);
+    evEls.push({ el: m, t: e[0] });
   };
-  TL.forEach(function (e) { mk(e[1] === 2 ? up : dn, e, e[1]); });
+  const ru = [0, 0, 0], rd = [0, 0, 0];   // 上下两条泳道各自分层，互不影响
+  TL.forEach(function (e) {
+    if (e[1] === 2) { mk(up, e, 2, ru); } else { mk(dn, e, 3, rd); }
+  });
   markNear();
 }
 function jumpTo(t) {
