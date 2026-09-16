@@ -76,7 +76,7 @@ const ok = (cond, msg) => { console.log((cond ? "  ok   " : "  FAIL ") + msg); i
 let S = null;
 eval(src + "\n;globalThis.__t={getView:function(){return viewRect;},getSel:function(){return selKey;},"
   + "getAgg:function(){return AGG;},getD:function(){return D;},getIX:function(){return IX;},"
-  + "getFlags:function(){return {trickyOnly:trickyOnly,censOut:censOut,nOrg:orgSet.length,wsel:wsel,metric:metric};},"
+  + "getFlags:function(){return {censOut:censOut,nOrg:orgSet.length,wsel:wsel,metric:metric};},"
   + "getIcon:function(){return obsIcon;},"
   + "getBg:function(){return {ready:bgReady,op:bgOp};},"
   + "getDots:function(){return DOTS;},getDot:function(){return locked;},"
@@ -166,7 +166,7 @@ ok(I.some((r) => r[IX.cens] === 1), "存在截断(cens=1)行: " + I.filter((r) =
 ok(I.every((r) => r[IX.cens] !== 1 || r[IX.surv] <= Math.max(0, r[IX.destroy] - r[IX.place]) + 0.05),
    "截断行的 存活 == 销毁-放置");
 const hdrCols = (raw.match(/<thead><tr>([\s\S]*?)<\/tr><\/thead>/) || [, ""])[1].match(/<th/g).length;
-ok(hdrCols === 12, "表头列数 12(加上「格」列; 实际 " + hdrCols + ")");
+ok(hdrCols === 11, "表头列数 11(「格」列已加、「刁钻?」列已移除; 实际 " + hdrCols + ")");
 
 // ---- 布局契约(owner 实测两轮: 地图超出分辨率 / 与明细表对不齐) ----
 // 没有 CSS 引擎可渲染, 所以把"布局规则"本身钉住: ①两栏不换行 ②地图边长受视口限制且保持正方形
@@ -424,21 +424,37 @@ eval("toggleOrg(0, false)"); eval("toggleOrg(1, false)");
 ok(nAgg() === nAll0, "全部取消 -> 回到全部战队 " + nAll0);
 // 全选
 eval("setAllOrg(true)");
-ok(nAgg() === nAll0, "全选 == 全部战队 " + nAgg());
+const nSelAll = S.getFlags().nOrg;
+ok(nSelAll === D.orgs.length - D.hidden_orgs.length,
+   "全选 = 只勾可选的 " + nSelAll + " 支(共 " + D.orgs.length + " 支, 隐藏 " + D.hidden_orgs.length + " 支)");
+ok(nAgg() < nAll0, "全选(不含隐藏队) 的行数 " + nAgg() + " < 不勾任何一支(全部战队) " + nAll0
+   + " —— 隐藏队的数据仍在'全部'里");
 eval("setAllOrg(false)");
-// 只看刁钻 / 剔除截断眼(在"全部"下)
+// 剔除截断眼(在"全部"下)
 const nAny = nAgg();
-mkEl("tk").checked = true; eval("setTricky()");
-const nTk = nAgg();
-ok(nTk > 0 && nTk < nAny, "只看刁钻生效: " + nTk + " < " + nAny);
-ok(S.getAgg().list.every((i) => I[i][IX.tricky] === 1), "只看刁钻 -> 聚合里没有非刁钻行");
 mkEl("cx").checked = true; eval("setCens()");
 ok(S.getAgg().list.every((i) => I[i][IX.cens] === 0), "剔除截断眼 -> 聚合里没有截断行");
-ok(S.getAgg().list.every((i) => I[i][IX.ovl] >= D.tricky.min_overlap),
-   "只看刁钻 -> 每支的共存都 >= " + D.tricky.min_overlap + "s(新口径)");
 mkEl("cx").checked = false; eval("setCens()");
-mkEl("tk").checked = false; eval("setTricky()");
-ok(nAgg() === nAny, "取消筛选 -> 回到 " + nAny);
+ok(nAgg() === nAny, "取消剔除 -> 回到 " + nAny);
+
+// ---- owner 2026-09 两处改动: ① 页面上完全没有"刁钻"统计 ② 4 支中国战队不给单项筛选 ----
+{
+  ok(!/id="tk"/.test(raw), "页面上没有「只看刁钻」开关(#tk 不存在)");
+  ok(!/tricky_rate|n_tricky/.test(raw), "页面上没有刁钻率/刁钻数指标按钮");
+  ok(!/<th[^>]*>刁钻/.test(raw), "明细表没有「刁钻?」列");
+  ok(!/data-m="tricky/.test(raw), "指标按钮里没有 tricky 项");
+  ok(/刁钻眼位的统计已按 owner 要求从本页移除/.test(raw), "图例里写明刁钻统计已移除");
+  const cks = (raw.match(/class="orgck"/g) || []).length;
+  ok(cks === D.orgs.length - D.hidden_orgs.length, "战队复选框 " + cks + " 个 = " + D.orgs.length + " − " + D.hidden_orgs.length);
+  const hidden = D.hidden_orgs.map((i) => "<label class=\"otog\"[^>]*>[^<]*<input[^>]*data-i=\"" + i + "\"");
+  ok(hidden.every((re) => !new RegExp(re).test(raw)), "4 支隐藏战队没有复选框: " + D.hidden_orgs.join(","));
+  ok(D.hidden_orgs.every((i) => D.orgs[i]), "隐藏索引对应真实队名: " + D.hidden_orgs.map((i) => D.orgs[i]).join(" / "));
+  // 隐藏队的眼在"全部"里, 但点不到它们 -> 单独筛选只可能是其它队
+  const hiddenRows = I.filter((r) => D.hidden_orgs.indexOf(D.match_org[r[IX.mi]][r[IX.team] === 2 ? 0 : 1]) >= 0).length;
+  ok(hiddenRows > 0, "4 支隐藏队在数据里共 " + hiddenRows + " 支眼(计入总量)");
+  eval("setAllOrg(false)");
+  ok(S.getAgg().list.length === I.length, "不勾任何一支 -> 全部 " + I.length + " 支(含隐藏队)");
+}
 
 // 时间窗(4 个按钮: 0-7/7-20/20+/全部)
 [-1, 0, 1, 2].forEach((w) => {
@@ -447,7 +463,7 @@ ok(nAgg() === nAny, "取消筛选 -> 回到 " + nAny);
 });
 ok(S.getFlags().wsel === 2, "最后一个 setWin 生效(wsel=2)");
 // 指标切换(含新增的"出场场次")
-["avg_surv", "n_obs", "n_match", "dew_rate", "tricky_rate", "n_tricky"].forEach((m) => {
+["avg_surv", "n_obs", "per_match", "use_rate", "n_match", "dew_rate"].forEach((m) => {
   try { eval("setMetric('" + m + "')"); ok(true, "setMetric('" + m + "') 未抛异常"); }
   catch (e) { ok(false, "setMetric('" + m + "') 抛异常: " + e.message); }
 });
@@ -483,7 +499,7 @@ ok(true, "筛选/指标/锁定交互未抛异常");
 // ---- 鲁棒性: 空结果 + 最坏格钻取规模 ----
 // 空结果(该筛选下一支眼都没有)不许抛异常, 且必须给出"没有假眼"的空态
 eval("setWin(0)"); eval("setAllOrg(false)");
-mkEl("tk").checked = true; eval("setTricky()");
+
 mkEl("cx").checked = true; eval("setCens()");
 eval("toggleOrg(0, true)");
 const nEmpty = nAgg();
@@ -496,7 +512,7 @@ try {
   S.setSel(null);
 } catch (e) { emptyOk = false; console.log("       empty-state threw: " + e.message); }
 ok(emptyOk, "空结果/空格钻取不抛异常且出空态");
-eval("setAllOrg(false)"); mkEl("tk").checked = false; eval("setTricky()");
+eval("setAllOrg(false)");
 mkEl("cx").checked = false; eval("setCens()");
 eval("setWin(-1)");
 
