@@ -457,13 +457,19 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
   ok(upMark.concat(dnMark).filter(c => String(c.className).indexOf("bld") > 0).length === blds.length,
      "建筑类标记数 = 建筑事件数（" + blds.length + "）");
   // 泳道高度必须容得下最高一层标记（否则图标会盖到上面的说明/坐标轴上）
+  const cssT = (raw.match(/<style>([\s\S]*?)<\/style>/) || [, ""])[1];
+  const icoW = parseFloat((cssT.match(/\.evm \.ico\{width:([\d.]+)px/) || [0, "0"])[1]) || 0;
+  ok(icoW >= 24, "事件图标够大（CSS " + icoW + "px，头像才认得出是谁）");
   const laneUp = parseFloat(String(g("evUp").style.height)), laneDn = parseFloat(String(g("evDn").style.height));
   const topUp = Math.max.apply(null, [0].concat(upMark.map(c => parseFloat(String(c.style.bottom || "0")))));
   const topDn = Math.max.apply(null, [0].concat(dnMark.map(c => parseFloat(String(c.style.top || "0")))));
-  ok(laneUp >= topUp + 26 && laneDn >= topDn + 26,
-     "泳道高度容得下最高一层（上 " + laneUp + "≥" + topUp + "+26，下 " + laneDn + "≥" + topDn + "+26）");
+  ok(laneUp >= topUp + icoW + 4 && laneDn >= topDn + icoW + 4,
+     "泳道高度容得下最高一层（上 " + laneUp + "≥" + topUp + "+" + (icoW + 4) + "，下 " + laneDn + "≥" + topDn + "+" + (icoW + 4) + "）");
   ok(upMark.every(c => parseFloat(String(c.style.bottom || "0")) >= 0) && upMark.length > 0,
      "上方标记全部锚在轴上方（bottom 定位）");
+  // 密集处不该全挤在同一条水平线上：同一侧最多用到 4 层
+  const lvUp = new Set(upMark.map(c => String(c.style.bottom)));
+  ok(lvUp.size >= 3 && lvUp.size <= 4, "同侧最多 4 层错开（实际用到 " + lvUp.size + " 层）");
   // 时间戳文字默认不显示；打开后每个标记带 mm:ss
   ok(upMark.every(c => c.children.filter(x => String(x.className) === "t").length === 0),
      "默认只显示图标（不显示时间戳文字）");

@@ -167,7 +167,7 @@ def build(mid, outdir, lite=False, step=3):
             if short not in iconsq:
                 fp = os.path.join(ICON_DIR, short + ".png")
                 if os.path.exists(fp):
-                    iconsq[short] = "data:image/png;base64," + square_avatar(fp, 26 if lite else 30)
+                    iconsq[short] = "data:image/png;base64," + square_avatar(fp, 52)
         else:
             k = ic if ic == "roshan" else (ic + ("_r" if own == 2 else "_d"))
             if k in tlicons:
@@ -176,9 +176,9 @@ def build(mid, outdir, lite=False, step=3):
             if not os.path.exists(fp):
                 continue
             if ic == "roshan":
-                tlicons[k] = "data:image/png;base64," + b64_png_opt(fp, 64, 30)
+                tlicons[k] = "data:image/png;base64," + b64_png_opt(fp, 64, 52)
             else:
-                tlicons[k] = "data:image/png;base64," + tint_icon(fp, TINT.get(own, TINT[2]), 30)
+                tlicons[k] = "data:image/png;base64," + tint_icon(fp, TINT.get(own, TINT[2]), 52)
 
     # ---- 眼位图标（官方 observer / truesight，各 ~1.4KB）----
     ward_icons = {}
@@ -365,7 +365,7 @@ input[type=range]{width:100%;accent-color:var(--acc)}
 .evm{position:absolute;transform:translateX(-50%);cursor:pointer;display:flex;flex-direction:column;
      align-items:center;gap:0;padding:1px 2px;border-radius:4px;border:1px solid transparent}
 .evm:hover{border-color:#fff;background:#1f6feb66;z-index:6}
-.evm .ico{width:22px;height:22px;border-radius:50%;display:block;object-fit:cover;background:#0d1117;
+.evm .ico{width:26px;height:26px;border-radius:50%;display:block;object-fit:cover;background:#0d1117;
           border:2px solid #555}
 .evm.r2 .ico{border-color:#4aa564}
 .evm.r3 .ico{border-color:#d24b4b}
@@ -1480,10 +1480,10 @@ function buildTimelineEvents() {
   const onlyBld = document.getElementById("tlBld").checked;
   const W = Math.max(320, up.clientWidth || 900);
   const span = Math.max(1, T1 - T0);
-  const ROWH = showTime ? 44 : 27;      // 每层高度（带时间戳时更高）
-  const NROW = 3;                       // 每个事件最多 3 层错开
-  const MH = showTime ? 38 : 26;        // 标记自身高度（图标 22 + 内边距/边框 4 + 可选时间戳 11）
-  const SP = showTime ? 38 : 27;        // 同层最小水平间距（像素）
+  const ROWH = showTime ? 48 : 31;      // 每层高度（带时间戳时更高）
+  const NROW = 4;                       // 每个事件最多 4 层错开（3 层在团战/换家时图标会压在一起）
+  const MH = showTime ? 42 : 30;        // 标记自身高度（图标 26 + 内边距/边框 4 + 可选时间戳 12）
+  const SP = showTime ? 46 : 29;        // 同层最小水平间距（像素）
   up.style.height = dn.style.height = (4 + (NROW - 1) * ROWH + MH) + "px";
   const mk = function (host, e, side, rows) {
     const bld = e[2] !== 0, own = e[5] || 0;
@@ -1525,7 +1525,10 @@ function buildTimelineEvents() {
     host.appendChild(m);
     evEls.push({ el: m, t: e[0] });
   };
-  const ru = [0, 0, 0], rd = [0, 0, 0];   // 上下两条泳道各自分层，互不影响
+  // 每条泳道各自分层：初值给 -1e9（0 会让开头的几个事件挤在同一层）
+  const NEG = -1e9;
+  const ru = [], rd = [];
+  for (let i = 0; i < NROW; i++) { ru.push(NEG); rd.push(NEG); }
   TL.forEach(function (e) {
     if (e[1] === 2) { mk(up, e, 2, ru); } else { mk(dn, e, 3, rd); }
   });
