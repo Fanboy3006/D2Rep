@@ -327,6 +327,31 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
      "hover 英雄标记 → 状态行显示该英雄信息：" + String(g("mapInfo").textContent).slice(0, 60));
 }
 
+/* ══ 3a0. 布局契约（owner 第一条：地图正方形且宽度 = 网页一半） ══ */
+{
+  const css = (raw.match(/<style>([\s\S]*?)<\/style>/) || [, ""])[1];
+  const wrap = (css.match(/\.wrap\{[^}]*\}/) || [""])[0];
+  ok(/display:\s*grid/.test(wrap), "两栏用 grid 布局");
+  const m = wrap.match(/grid-template-columns:\s*minmax\(0,\s*calc\((\d+)%\s*([+-])\s*(\d+)px\)\)/);
+  ok(!!m, "左栏宽度写成 calc(50% + 18px) 形式（" + (m ? m[0] : wrap) + "）");
+  if (m) {
+    const pct = +m[1], sign = m[2], off = +m[3];
+    const canvasPct = sign === "+" ? pct + (off - 18) / 10 : pct - (off + 18) / 10;
+    ok(Math.abs(canvasPct - 50) < 0.2,
+       "地图画布宽度 = 内容宽度的 " + canvasPct.toFixed(1) + "%（目标 50%）");
+  }
+  const cvRule = (css.match(/#cv\{[^}]*\}/) || [""])[0];
+  ok(/aspect-ratio:\s*1\s*\/\s*1/.test(cvRule), "画布强制 1:1（aspect-ratio:1/1）");
+  ok(/width:\s*100%/.test(cvRule), "画布宽度跟随左栏");
+  const iLeft = raw.indexOf('class="left"'), iRight = raw.indexOf('class="right');
+  ok(iLeft > 0 && iRight > iLeft, "DOM 顺序：地图在左、明细在右");
+  ok(/@media\(max-width:1180px\)\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/.test(css),
+     "窄屏（≤1180px）退回单栏");
+  ok(!/\.right\{width:470px/.test(css), "右栏不再是固定 470px（改为吃掉剩余宽度）");
+  const iCv = raw.indexOf('id="cv"');
+  ok(iCv > iLeft && iCv < iRight, "画布在左栏内（不与右栏同级）");
+}
+
 /* ══ 3a. 眼位 + 烟雾图层（复用 Q5B 口径） ══ */
 {
   const W = S.wards || [];
