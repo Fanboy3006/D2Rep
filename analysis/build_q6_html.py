@@ -17,7 +17,7 @@ import json
 import os
 import time
 
-VERSION = "v19"      # 功能版本号(每次改前端就 +1; 页面顶部会显示, 用来确认浏览器加载的是哪一版)
+VERSION = "v20"      # 功能版本号(每次改前端就 +1; 页面顶部会显示, 用来确认浏览器加载的是哪一版)
 
 # 默认不提供单项筛选的战队(仍计入"全部战队"的总量)
 ORG_HIDDEN = ("Xtreme Gaming", "Vici Gaming", "Team Resilience", "Yakutou Brothers")
@@ -111,7 +111,7 @@ table.help td:first-child{white-space:nowrap;color:#e6edf3}
 .left{flex:1 1 auto;min-width:260px;position:relative;text-align:center}
 .right{flex:0 0 clamp(360px,34vw,660px);min-width:300px}
 canvas{border:1px solid #30363d;border-radius:8px;cursor:grab;display:block;margin:0 auto;
-  width:min(100%, max(320px, calc(100vh - 430px)));height:auto;aspect-ratio:1/1;max-width:100%}
+  width:min(100%, max(320px, calc(100vh - 395px)));height:auto;aspect-ratio:1/1;max-width:100%}
 .btn{background:#21262d;border:1px solid #30363d;color:#c9d1d9;border-radius:6px;padding:4px 9px;margin:2px;cursor:pointer;font-size:12px}
 .btn.on{background:#1f6feb;border-color:#1f6feb;color:#fff}
 select{background:#21262d;border:1px solid #30363d;color:#c9d1d9;border-radius:6px;padding:4px 8px;font-size:12px;max-width:260px}
@@ -126,9 +126,62 @@ table#drill{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
 #gridwrap{max-height:460px;overflow:auto;border:1px solid #30363d;border-radius:8px;margin-top:8px}
 #tip{position:absolute;background:#161b22ee;border:1px solid #30363d;border-radius:6px;padding:6px 9px;font-size:12px;pointer-events:none;display:none;z-index:9;white-space:nowrap}
 .pgn{font-size:12px;color:#8b949e;margin:6px 0}
+/* 顶部: 只有标题 + 一句"说明见下方" */
+.topbar{background:#11161d;border:1px solid #21262d;border-radius:10px;padding:10px 14px 9px;margin:0 0 10px}
+.topbar h1{margin:0}
+.hintline{font-size:12.5px;color:#8b949e;line-height:1.65;margin-top:5px}
+.hintline a{color:#79c0ff;text-decoration:none;margin-left:6px;white-space:nowrap}
+.hintline a:hover{text-decoration:underline}
+/* 底部说明: 卡片式, 便于阅读 */
+.legend{margin-top:16px}
+.legend h4{margin-top:14px}
+.totop{text-align:right;font-size:12px;margin-top:8px}
+.totop a{color:#79c0ff;text-decoration:none}
+.totop a:hover{text-decoration:underline}
+html{scroll-behavior:smooth}
+/* 明细表: 斑马纹 + 悬停高亮, 长表更好读 */
+#drill tbody tr:nth-child(even){background:#12171f}
+.right h3{border-bottom:1px solid #21262d;padding-bottom:6px;margin-top:0}
 </style></head><body>
+<div class="topbar" id="top">
 <h1>职业比赛 · 假眼（侦察守卫）眼位热力图 <span id="build" style="font-size:12px;font-weight:400;color:#8b949e;margin-left:10px">@@BUILD@@</span></h1>
-<div class="legend">
+<div class="hintline">把 <b>970 场职业比赛</b>里每一支<b>假眼（侦察守卫）</b>的插入位置铺成热力图：选战队 / 阵营 / 时间窗与指标，滚轮缩放、中键（或右键、Shift+左键）拖动，点格子看明细。<a href="#help">↓ 完整操作说明 · 指标定义 · 注意事项见页面底部</a></div>
+</div>
+<div class="controls">
+ <div><label class="lbl" style="font-size:12px">战队(可多选) </label>
+  <button class="btn" onclick="setAllOrg(true)">全选</button>
+  <button class="btn" onclick="setAllOrg(false)">清空</button>
+  <span id="orgstat" style="font-size:12px;color:#8b949e;margin-left:8px"></span></div>
+ <div id="orgbox">@@ORGBOX@@</div>
+ <div style="margin:6px 0"><span class="lbl">阵营 </span>@@SIDEBTNS@@
+  <span class="sep"></span>@@WINBTNS@@
+  <label class="toggle" style="margin-left:10px"><input type="checkbox" id="cx" onchange="setCens()"> <b>剔除截断眼</b>(存活被比赛结束截断)</label></div>
+ <div style="margin:6px 0">@@METBTNS@@</div>
+ <div class="sliderbar" style="display:flex;flex-wrap:wrap;gap:14px;align-items:center">
+  <label>底图透明度 <input id="mop" type="range" min="0" max="100" value="35" oninput="setBg()"></label> <span id="moppct">35%</span>
+  <label><input id="sl" type="range" min="1" max="400" step="1" value="0" oninput="setCap()"> 值热力上限 <b id="cap">自动</b></label> <button class="btn" onclick="resetCap()">重置自动</button>
+  <label><input id="ns" type="range" min="0" max="60" value="0" oninput="setN()"> 位置出现次数(假眼数)下限</label> <span id="nsv">0</span>
+  <button class="btn" onclick="resetView()">复位视野</button></div>
+ <div class="pgn" id="curdesc" style="margin:2px 0 0"></div>
+</div>
+<div class="wrap">
+ <div class="left">
+  <canvas id="cv" width="1024" height="1024"></canvas>
+  <div id="tip"></div>
+  <div id="dotinfo" style="display:none;font-size:12px;line-height:1.7;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:8px 10px;margin-top:6px"></div>
+  <div class="pgn">滚轮缩放 · <b>拖动平移:按住鼠标中键(或右键 / Shift+左键)</b> · <b>点格</b>=切到该格并置为 <b>4 倍档</b>(以该格为中心; 已经更近时只居中、不再放大; 点已选中的格不动) ·
+   其它缩放档位用<b>滚轮</b>, 回全图用 <b>复位视野</b> · <b>4 倍档就会画出该格的眼点</b>, <b>点眼点</b>(或点右侧明细表任一行)锁定该眼 · hover 看格子数值</div>
+ </div>
+ <div class="right">
+  <h3 style="margin:8px 0">假眼明细（点地图格子）</h3>
+  <div id="sum" class="pgn"></div>
+  <div id="gridwrap"><table id="drill"><thead><tr>
+   <th class="c">match_id</th><th class="c">格</th><th>战队</th><th class="c">阵营</th><th>放置</th><th>销毁</th><th>存活</th>
+   <th class="c">被反 / 存活状态</th><th>期间敌方真眼<br><span style="font-weight:400;color:#8b949e">达标/任意</span></th><th>最近距离<br><span style="font-weight:400;color:#8b949e">达标/任意</span></th><th>最长共存<br><span style="font-weight:400;color:#8b949e">任意交集</span></th></tr></thead><tbody></tbody></table></div>
+ </div>
+</div>
+<div class="legend" id="help">
+
 <h4>这是什么</h4>
 把 <b>970 场职业比赛</b>里每一支<b>假眼（侦察守卫）</b>的插入位置铺到地图上，按格子统计成热力图，用来回答"哪些位置常被插眼、这些眼活了多久、有多少被反掉"。
 地图被划成 <b>100 × 100 个方格</b>，每格 <b>172 单位</b>见方；每支眼归属到<b>一支战队</b>、一个<b>阵营</b>（天辉 / 夜魇）和一个<b>时间窗</b>，可以任意组合筛选。
@@ -174,38 +227,7 @@ table#drill{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
 <b>5. 时间窗按"插入时刻"划分</b>，0-7 分窗包含比赛开始前的布眼（开局前插的眼也算在这一窗）。<br>
 <b>6. 坐标与方位</b>：地图中心是 (0, 0)；天辉（Radiant）基地在左下（x、y 均为负），夜魇（Dire）基地在右上。
 </div>
-<div class="controls">
- <div><label class="lbl" style="font-size:12px">战队(可多选) </label>
-  <button class="btn" onclick="setAllOrg(true)">全选</button>
-  <button class="btn" onclick="setAllOrg(false)">清空</button>
-  <span id="orgstat" style="font-size:12px;color:#8b949e;margin-left:8px"></span></div>
- <div id="orgbox">@@ORGBOX@@</div>
- <div style="margin:6px 0"><span class="lbl">阵营 </span>@@SIDEBTNS@@
-  <span class="sep"></span>@@WINBTNS@@
-  <label class="toggle" style="margin-left:10px"><input type="checkbox" id="cx" onchange="setCens()"> <b>剔除截断眼</b>(存活被比赛结束截断)</label></div>
- <div style="margin:6px 0">@@METBTNS@@</div>
- <div class="sliderbar" style="display:flex;flex-wrap:wrap;gap:14px;align-items:center">
-  <label>底图透明度 <input id="mop" type="range" min="0" max="100" value="35" oninput="setBg()"></label> <span id="moppct">35%</span>
-  <label><input id="sl" type="range" min="1" max="400" step="1" value="0" oninput="setCap()"> 值热力上限 <b id="cap">自动</b></label> <button class="btn" onclick="resetCap()">重置自动</button>
-  <label><input id="ns" type="range" min="0" max="60" value="0" oninput="setN()"> 位置出现次数(假眼数)下限</label> <span id="nsv">0</span>
-  <button class="btn" onclick="resetView()">复位视野</button></div>
- <div class="pgn" id="curdesc" style="margin:2px 0 0"></div>
-</div>
-<div class="wrap">
- <div class="left">
-  <canvas id="cv" width="1024" height="1024"></canvas>
-  <div id="tip"></div>
-  <div id="dotinfo" style="display:none;font-size:12px;line-height:1.7;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:8px 10px;margin-top:6px"></div>
-  <div class="pgn">滚轮缩放 · <b>拖动平移:按住鼠标中键(或右键 / Shift+左键)</b> · <b>点格</b>=切到该格并置为 <b>4 倍档</b>(以该格为中心; 已经更近时只居中、不再放大; 点已选中的格不动) ·
-   其它缩放档位用<b>滚轮</b>, 回全图用 <b>复位视野</b> · <b>4 倍档就会画出该格的眼点</b>, <b>点眼点</b>(或点右侧明细表任一行)锁定该眼 · hover 看格子数值</div>
- </div>
- <div class="right">
-  <h3 style="margin:8px 0">假眼明细（点地图格子）</h3>
-  <div id="sum" class="pgn"></div>
-  <div id="gridwrap"><table id="drill"><thead><tr>
-   <th class="c">match_id</th><th class="c">格</th><th>战队</th><th class="c">阵营</th><th>放置</th><th>销毁</th><th>存活</th>
-   <th class="c">被反 / 存活状态</th><th>期间敌方真眼<br><span style="font-weight:400;color:#8b949e">达标/任意</span></th><th>最近距离<br><span style="font-weight:400;color:#8b949e">达标/任意</span></th><th>最长共存<br><span style="font-weight:400;color:#8b949e">任意交集</span></th></tr></thead><tbody></tbody></table></div>
- </div>
+<div class="totop"><a href="#top">↑ 回到顶部</a></div>
 </div>
 <script>
 const D = @@DAT@@;

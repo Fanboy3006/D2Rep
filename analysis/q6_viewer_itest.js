@@ -183,6 +183,15 @@ ok(hdrCols === 11, "表头列数 11(「格」列已加、「刁钻?」列已移�
   ok(iControls > 0 && iWrap > 0 && iControls < iWrap, "布局: 控件块在 .wrap 之前(两栏顶部对齐)");
   ok(iWrap < raw.indexOf('id="cv"'), "布局: 画布在 .wrap 内(与明细表同排)");
   ok(/id="curdesc"/.test(raw) && /id="orgstat"/.test(raw) && /id="ns"/.test(raw), "布局: 控件元素移出左栏后仍在(curdesc/orgstat/ns)");
+  // 顶部只留一句"说明见下方", 完整说明挪到页面底部
+  const iTop = raw.indexOf('class="topbar"'), iHelp = raw.indexOf('class="legend" id="help"');
+  ok(iTop > 0 && iTop < iControls, "布局: 顶栏(标题+一句提示)在控件之前");
+  ok(iHelp > raw.indexOf('class="wrap"') && iHelp < raw.indexOf("<script>"),
+     "布局: 完整说明块在页面最下方(两栏之后)");
+  ok(/<div class="hintline">[\s\S]*?href="#help"/.test(raw), "顶部的提示里有跳到说明的锚点(#help)");
+  ok(/href="#top"/.test(raw), "说明块末尾有回到顶部锚点(#top)");
+  ok(/id="top"/.test(raw), "顶栏有 #top 锚点");
+  ok(/\.legend\{[^}]*margin-top:16px/.test(css) && /\.hintline\{/.test(css), "布局: 说明块/顶栏提示有独立样式(卡片式)");
 }
 
 fire("cv", "wheel", ev(512, 512, { deltaY: -100 }));
