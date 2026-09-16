@@ -443,7 +443,11 @@ ok(nAgg() === nAny, "取消剔除 -> 回到 " + nAny);
   ok(!/tricky_rate|n_tricky/.test(raw), "页面上没有刁钻率/刁钻数指标按钮");
   ok(!/<th[^>]*>刁钻/.test(raw), "明细表没有「刁钻?」列");
   ok(!/data-m="tricky/.test(raw), "指标按钮里没有 tricky 项");
-  ok(/刁钻眼位的统计已按 owner 要求从本页移除/.test(raw), "图例里写明刁钻统计已移除");
+  ok(!/刁钻/.test(raw), "页面上完全不出现「刁钻」字样");
+  ok(/这是什么/.test(raw) && /怎么用/.test(raw) && /读数字时要注意/.test(raw), "顶部有面向使用者的操作说明(这是什么/怎么用/读数字时要注意)");
+  ok(!/owner|Q5B|口径|裁定|STRATEGY\/|DEM_FORMAT/.test(raw.replace(/data:image\/png;base64,[^"]*/g, "")),
+     "页面正文不含内部用语(owner/Q5B/口径/裁定/文档路径)");
+  ok(/970 场/.test(raw) && /100 × 100/.test(raw) && /172 单位/.test(raw), "说明里写清数据规模与网格口径");
   const cks = (raw.match(/class="orgck"/g) || []).length;
   ok(cks === D.orgs.length - D.hidden_orgs.length, "战队复选框 " + cks + " 个 = " + D.orgs.length + " − " + D.hidden_orgs.length);
   const hidden = D.hidden_orgs.map((i) => "<label class=\"otog\"[^>]*>[^<]*<input[^>]*data-i=\"" + i + "\"");
