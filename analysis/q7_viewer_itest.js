@@ -45,16 +45,13 @@ const mkctx = () => new Proxy({}, {
 const els = {};
 function mkEl(id) {
   if (els[id]) return els[id];
+  const cls = new Set();
   const e = {
-    id, style: {}, dataset: {}, innerHTML: "", textContent: "", className: "", title: "",
-    _v: "0", checked: true, _h: {},
-    classList: {
-      _s: new Set(),
-      toggle(c, on) { if (on === undefined) { this._s.has(c) ? this._s.delete(c) : this._s.add(c); } else if (on) this._s.add(c); else this._s.delete(c); },
-      add(c) { this._s.add(c); }, remove(c) { this._s.delete(c); }, contains(c) { return this._s.has(c); },
-    },
+    id, style: {}, dataset: {}, textContent: "", title: "",
+    _v: "0", _cn: "", _ih: "", checked: true, _h: {},
     addEventListener(t, f) { (e._h[t] = e._h[t] || []).push(f); },
-    appendChild() {}, removeChild() {},
+    children: [],
+    appendChild(c) { e.children.push(c); }, removeChild() {},
     querySelector() { return mkEl(id + "_q"); },
     querySelectorAll() { return []; },
     getContext() { return mkctx(); },
@@ -62,7 +59,33 @@ function mkEl(id) {
     getAttribute(k) { return e["_attr_" + k]; },
     focus() {}, blur() {}, click() { if (e.onclick) e.onclick({}); },
   };
+  /* classList 真的维护 className（否则 toggle('near') 之类断言永远看不到效果） */
+  e.classList = {
+    add(c) { cls.add(c); e.className = [...cls].join(" "); },
+    remove(c) { cls.delete(c); e.className = [...cls].join(" "); },
+    toggle(c, on) {
+      const want = (on === undefined) ? !cls.has(c) : !!on;
+      if (want) cls.add(c); else cls.delete(c);
+      e.className = [...cls].join(" ");
+      return want;
+    },
+    contains(c) { return cls.has(c); },
+  };
+  Object.defineProperty(e, "className", {
+    get() { return e._cn; },
+    set(v) {
+      e._cn = String(v == null ? "" : v);
+      cls.clear();
+      e._cn.split(/\s+/).filter(Boolean).forEach((x) => cls.add(x));
+    },
+  });
+  /* innerHTML = "" 必须清空 children（浏览器语义；不清会让重复渲染在桩里累加） */
+  Object.defineProperty(e, "innerHTML", {
+    get() { return e._ih; },
+    set(v) { e._ih = String(v == null ? "" : v); if (e._ih === "") e.children.length = 0; },
+  });
   Object.defineProperty(e, "value", { get() { return e._v; }, set(v) { e._v = v; } });
+  Object.defineProperty(e, "clientWidth", { get() { return e._cw === undefined ? 900 : e._cw; }, set(v) { e._cw = v; } });
   if (id === "spark") { e.width = 1200; e.height = 78; }
   return (els[id] = e);
 }
@@ -107,7 +130,7 @@ const g = (id) => mkEl(id);
 const fmtSec = (s) => (s < 0 ? "-" : "") + Math.floor(Math.abs(s) / 60) + ":" + String(Math.abs(Math.round(s)) % 60).padStart(2, "0");
 
 /* 桩不解析 HTML → 勾选框的初始 checked 必须照 HTML 属性同步，否则默认态与浏览器不一致 */
-["showBld", "showRoute", "showName", "showWard", "showSmoke", "tc0", "tc1", "tc2", "tc3", "tfold", "tcdall"].forEach((id) => {
+["showBld", "showRoute", "showName", "showWard", "showSmoke", "showTL", "tlBld", "tc0", "tc1", "tc2", "tc3", "tfold", "tcdall"].forEach((id) => {
   const m = raw.match(new RegExp('<input[^>]*id="' + id + '"[^>]*>'));
   mkEl(id).checked = !!(m && /\bchecked\b/.test(m[0]));
 });
@@ -134,6 +157,9 @@ eval(src + `
   renderDetail: function(){ renderDetail(); }, renderCD: function(){ renderCD(); },
   det: DET, dnames: DNAMES, cd: CD, tput: TPUT, wp: WP,
   wards: WARDS, smoke: SMOKE, smoked: SMOKED, wicons: WICONS,
+  tl: TL, buildTimelineEvents: function(){ buildTimelineEvents(); },
+  markNear: function(){ markNear(); }, jumpTo: jumpTo, fmtTL: fmtTL,
+  evEls: function(){ return evEls; },
   wardsAliveAt: wardsAliveAt, isSmoked: isSmoked, markText: markText,
   diffEnd: function(){ return [DIFF.nw[D-1], DIFF.cg[D-1], DIFF.cx[D-1]]; }
 };
@@ -350,6 +376,78 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
   ok(!/\.right\{width:470px/.test(css), "右栏不再是固定 470px（改为吃掉剩余宽度）");
   const iCv = raw.indexOf('id="cv"');
   ok(iCv > iLeft && iCv < iRight, "画布在左栏内（不与右栏同级）");
+}
+
+/* ══ 3a1. 时间轴：重大事件时间戳（上=天辉有利 / 下=夜魇有利） ══ */
+{
+  const TL = S.tl || [];
+  ok(TL.length > 30, "时间轴事件数据 " + TL.length + " 条");
+  ok(TL.every(e => e.length === 4 && (e[1] === 2 || e[1] === 3) && e[2] >= 0 && e[2] <= 4 && typeof e[3] === "string"),
+     "事件字段 = [时刻, 有利方, 类型, 文案]");
+  const up = TL.filter(e => e[1] === 2), dn = TL.filter(e => e[1] === 3);
+  ok(up.length > 0 && dn.length > 0, "天辉有利 " + up.length + " 条 / 夜魇有利 " + dn.length + " 条");
+  ok(TL.some(e => e[2] === 1) && TL.some(e => e[2] === 0), "同时含击杀与建筑（塔）事件");
+  ok(TL.every(e => e[0] >= T0 - 1 && e[0] <= T1 + 1), "事件时刻都在时间轴范围内");
+  // 上下分侧：天辉有利的贴在轴上方（style.bottom），夜魇在下方（style.top）
+  g("showTL").checked = true; g("tlBld").checked = false;
+  S.buildTimelineEvents();
+  const upHost = g("evUp").children, dnHost = g("evDn").children;
+  ok(upHost.length > 0 && dnHost.length > 0, "上方带 " + upHost.length + " 个元素，下方带 " + dnHost.length + " 个");
+  const upTicks = upHost.filter(c => String(c.className).indexOf("evt") === 0);
+  const dnTicks = dnHost.filter(c => String(c.className).indexOf("evt") === 0);
+  ok(upTicks.length === up.length && dnTicks.length === dn.length,
+     "刻度数 = 各侧事件数（上 " + upTicks.length + "/" + up.length + "，下 " + dnTicks.length + "/" + dn.length + "）");
+  ok(upTicks.every(c => c.style.bottom && !c.style.top),
+     "天辉刻度都用 bottom 定位（贴轴上方）");
+  ok(dnTicks.every(c => c.style.top && !c.style.bottom),
+     "夜魇刻度都用 top 定位（贴轴下方）");
+  // 时间戳标签
+  const upLbl = upHost.filter(c => String(c.className).indexOf("ev ") === 0);
+  const dnLbl = dnHost.filter(c => String(c.className).indexOf("ev ") === 0);
+  ok(upLbl.length === up.length && dnLbl.length === dn.length,
+     "时间戳标签数 = 各侧事件数（上 " + upLbl.length + " / 下 " + dnLbl.length + "）");
+  ok(upLbl.every(c => /^\d+:\d\d$/.test(String(c.textContent))),
+     "标签文案是 mm:ss（例 " + upLbl.slice(0, 3).map(c => c.textContent).join(" / ") + "）");
+  ok(upLbl.every(c => String(c.className).indexOf("c2") > 0) && dnLbl.every(c => String(c.className).indexOf("c3") > 0),
+     "标签颜色按有利方分类（上 c2=天辉 / 下 c3=夜魇）");
+  const bldLbl = upLbl.concat(dnLbl).filter(c => String(c.className).indexOf("bld") > 0);
+  ok(bldLbl.length > 0, "建筑事件有加粗样式（" + bldLbl.length + " 个）");
+  ok(upLbl.every(c => String(c.title).match(/^\d+:\d\d\s+\S+/)),
+     "标签 title 含时间戳+类型+文案：" + String(upLbl[0].title).slice(0, 40));
+  // 点标签 → 跳到该时刻
+  const target = TL.find(e => e[1] === 2);
+  const lab = upLbl.find(c => c.textContent === S.fmtTL(target[0]));
+  ok(!!lab, "能找到对应时刻的标签 " + S.fmtTL(target[0]));
+  if (lab) {
+    S.commit(T0);
+    lab.onclick();
+    ok(Math.abs(S.getTBig() - target[0]) < 1.5, "点标签 → 大条跳到 " + S.getTBig() + "（目标 " + target[0] + "）");
+  }
+  // "只标建筑/肉山" 开关
+  g("tlBld").checked = true; S.buildTimelineEvents();
+  const upLbl2 = g("evUp").children.filter(c => String(c.className).indexOf("ev ") === 0);
+  ok(upLbl2.length === up.filter(e => e[2] !== 0).length,
+     "只标建筑 → 上方标签只剩 " + upLbl2.length + " 个（=非击杀事件数）");
+  ok(upLbl2.every(c => c.textContent.match(/^\d+:\d\d$/) && String(c.className).indexOf("bld") > 0),
+     "剩下的都是建筑类标签");
+  g("tlBld").checked = false;
+  // "事件时间戳" 关掉 → 只剩刻度
+  g("showTL").checked = false; S.buildTimelineEvents();
+  ok(g("evUp").children.filter(c => String(c.className).indexOf("ev ") === 0).length === 0,
+     "关掉时间戳 → 不再渲染标签（刻度仍在）");
+  ok(g("evUp").children.length === up.length, "刻度仍然全在（" + g("evUp").children.length + "）");
+  g("showTL").checked = true; S.buildTimelineEvents();
+  // 靠近播放头的标签高亮
+  S.commit(target[0]);
+  S.markNear();
+  const near = S.evEls().filter(x => String(x.el.className).indexOf("near") > 0);
+  ok(near.length > 0, "靠近播放头的事件标签被高亮（" + near.length + " 个）");
+  ok(near.every(x => Math.abs(x.t - S.getT()) <= 25), "高亮范围 = ±25s");
+  // CSS 契约
+  const css = (raw.match(/<style>([\s\S]*?)<\/style>/) || [, ""])[1];
+  ok(/\.tlaxis\{/.test(css) && /\.evlane\{/.test(css) && /\.ev\{/.test(css), "时间轴上下带样式已定义");
+  ok(/#timeline\{margin-top/.test(css), "#timeline 作为独立整宽面板");
+  S.commit(900);
 }
 
 /* ══ 3a. 眼位 + 烟雾图层（复用 Q5B 口径） ══ */
@@ -599,6 +697,20 @@ if (process.argv[3] && process.argv[3].indexOf("dump=") === 0) {
     console.log("-- 技能 CD --");
     console.log("   " + strip(g("cdboard").innerHTML).replace(/\t/g, " | "));
     console.log("-- 胜率 -- " + g("vWp").textContent + "（" + g("vWpNote").textContent + "）");
+    console.log("-- 时间轴重大事件 --");
+    S.buildTimelineEvents();
+    [["evUp", "▲ 天辉有利（轴上方）"], ["evDn", "▼ 夜魇有利（轴下方）"]].forEach(function (pair) {
+      const kids = g(pair[0]).children;
+      const ticks = kids.filter(c => String(c.className).indexOf("evt") === 0);
+      const labs = kids.filter(c => String(c.className).indexOf("ev ") === 0);
+      console.log("   " + pair[1] + "：刻度 " + ticks.length + " 个，时间戳 " + labs.length + " 个");
+      const rows = {};
+      labs.forEach(c => { const o = c.style.bottom || c.style.top || "0"; rows[o] = (rows[o] || 0) + 1; });
+      console.log("     错行分布 " + JSON.stringify(rows) + " ｜ 样例 " +
+        labs.slice(0, 14).map(c => c.textContent + (String(c.className).indexOf("bld") > 0 ? "*" : "")).join(" "));
+      const b = labs.filter(c => String(c.className).indexOf("bld") > 0).slice(0, 5);
+      if (b.length) console.log("     建筑类时间戳：" + b.map(c => c.textContent + " [" + String(c.title).slice(0, 32) + "]").join(" ｜ "));
+    });
   });
 }
 

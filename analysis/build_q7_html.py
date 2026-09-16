@@ -184,6 +184,7 @@ def build(mid, outdir, lite=False, step=3):
         "cd": cd,
         "tp": dat.get("tp", {}),
         "wp": wp,
+        "tl": dat.get("tl", []),
         "wards": dat.get("wards", []),
         "smoke": dat.get("smoke", []),
         "smoked": dat.get("smoked", {}),
@@ -245,6 +246,8 @@ h1{font-size:17px;margin:0 0 4px}
 .sub{color:var(--dim);font-size:12px;line-height:1.7;margin-bottom:10px}
 .sub b{color:#79c0ff}
 .panel{background:var(--pnl);border:1px solid var(--bd);border-radius:8px;padding:10px 12px}
+#timeline{margin-top:14px}
+#timeline .tlrow{margin:6px 0}
 /* ---------- 顶部数值条 ---------- */
 #top{display:flex;flex-wrap:wrap;gap:10px;align-items:stretch;margin-bottom:10px}
 .stat{background:var(--pnl);border:1px solid var(--bd);border-radius:8px;padding:8px 14px;min-width:150px}
@@ -292,9 +295,21 @@ input[type=range]{width:100%;accent-color:var(--acc)}
 #big::-webkit-slider-runnable-track{height:8px;background:#21262d;border:1px solid var(--bd);border-radius:5px}
 #big::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:20px;margin-top:-7px;border-radius:3px;background:var(--acc);border:1px solid #fff3;cursor:pointer}
 #small::-webkit-slider-thumb{cursor:pointer}
-#bigmarks{position:relative;height:14px;margin:0 0 -10px 106px;pointer-events:none}
-#bigmarks i{position:absolute;top:0;width:1px;height:9px;background:#f0883e;opacity:.85}
-#bigmarks i.b{background:#8b949e;height:12px;width:2px}
+/* ── 时间轴：上下事件带（天辉有利在上、夜魇有利在下）── */
+.tlaxis{position:relative;margin-top:4px}
+.evlane{position:relative;height:52px}
+.evlane .evt{position:absolute;border-radius:1px}
+.evlane .evt.b{width:3px}
+.tlaxis .evhint{font-size:10.5px;color:#8b949e;line-height:14px}
+.tlaxis .evhint.up{color:#8b949e}
+.ev{position:absolute;font-size:10.5px;line-height:13px;white-space:nowrap;transform:translateX(-50%);
+    cursor:pointer;padding:0 3px;border-radius:3px;border:1px solid transparent;font-variant-numeric:tabular-nums}
+.ev:hover{border-color:#fff;background:#1f6feb55;z-index:5}
+.ev.c2{color:#7ee787}.ev.c3{color:#ff9ea4}
+.ev.bld{font-weight:700;background:#ffffff10}
+.ev.near{background:#e3b34133;border-color:#e3b341;color:#fff}
+.axrow{position:relative}
+#big{width:100%}
 #smallwrap{position:relative}
 #scenter{position:absolute;left:50%;top:-2px;width:1px;height:22px;background:#8b949e;opacity:.6;pointer-events:none}
 .tip{color:var(--dim);font-size:11px;line-height:1.7}
@@ -403,39 +418,6 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
 
   <div id="avatars"></div>
 
-  <div class="panel" id="timeline">
-    <div class="tlrow">
-      <span class="lb">播放</span>
-      <button class="btn big" id="play">▶ 播放</button>
-      <button class="btn" onclick="step(-5)">« 5s</button>
-      <button class="btn" onclick="step(5)">5s »</button>
-      <span class="lbl" style="color:var(--dim);font-size:12px">速度</span>
-      <button class="btn spd active" data-s="1" onclick="setSpeed(1)">1×</button>
-      <button class="btn spd" data-s="2" onclick="setSpeed(2)">2×</button>
-      <button class="btn spd" data-s="4" onclick="setSpeed(4)">4×</button>
-      <span class="tip" style="margin-left:auto">空格=播放/暂停 ｜ ←→=±5s</span>
-    </div>
-
-    <div class="tlrow"><span class="lb">大时间轴<br><span style="font-size:10px">全场 0 → @@DUR@@</span></span>
-      <div style="flex:1;min-width:0">
-        <div id="bigmarks"></div>
-        <input type="range" id="big" min="0" max="1" value="0" step="0.5">
-        <div class="tip" id="biglabel">—</div>
-      </div>
-    </div>
-
-    <div class="tlrow"><span class="lb">小时间轴<br><span style="font-size:10px">±60s</span></span>
-      <div style="flex:1;min-width:0" id="smallwrap">
-        <input type="range" id="small" min="-60" max="60" value="0" step="0.5">
-        <div id="scenter"></div>
-        <div class="tip" id="smalllabel">—</div>
-      </div>
-    </div>
-    <div class="tip"><b>双条语义</b>：拖小条 → 实际时刻 = 大条 + 小条偏移（地图/表格实时跟随，大条滑块同步小幅移动）；
-      <b>松手提交</b> → 大条推进"滑过的量"，小条<b>瞬时归零</b>。点火花线/拖大条 = 直接绝对定位（小条归零）。</div>
-  </div>
-</div>
-
 <div class="right panel">
   <div id="paneList">
     <div class="kv" id="selinfo"><b>明细表</b>（默认：双方 10 英雄 KDA + 正反补）</div>
@@ -518,6 +500,45 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
   </details>
 </div>
 </div>
+
+  <div class="panel" id="timeline">
+    <div class="tlrow">
+      <span class="lb">播放</span>
+      <button class="btn big" id="play">▶ 播放</button>
+      <button class="btn" onclick="step(-5)">« 5s</button>
+      <button class="btn" onclick="step(5)">5s »</button>
+      <span class="lbl" style="color:var(--dim);font-size:12px">速度</span>
+      <button class="btn spd active" data-s="1" onclick="setSpeed(1)">1×</button>
+      <button class="btn spd" data-s="2" onclick="setSpeed(2)">2×</button>
+      <button class="btn spd" data-s="4" onclick="setSpeed(4)">4×</button>
+      <span class="sep">｜</span>
+      <label class="toggle"><input type="checkbox" id="showTL" checked onchange="buildTimelineEvents()"> 事件时间戳</label>
+      <label class="toggle"><input type="checkbox" id="tlBld" onchange="buildTimelineEvents()"> 只标建筑/肉山</label>
+      <span class="tip" style="margin-left:auto">空格=播放/暂停 ｜ ←→=±5s ｜ 点事件标签=跳到该时刻</span>
+    </div>
+
+    <div class="tlaxis">
+      <div class="evhint up">▲ 对<b class="dr">天辉</b>有利（击杀 / 推塔 / 肉山）<span style="float:right;color:#8b949e">大时间轴：全场 0:00 → @@DUR@@ （拖动或点事件标签）</span></div>
+      <div class="evlane" id="evUp"></div>
+      <div class="axrow">
+        <input type="range" id="big" min="0" max="1" value="0" step="0.5">
+      </div>
+      <div class="evlane" id="evDn"></div>
+      <div class="evhint dn">▼ 对<b class="dd">夜魇</b>有利</div>
+    </div>
+    <div class="tip" id="biglabel">—</div>
+
+    <div class="tlrow"><span class="lb">小时间轴<br><span style="font-size:10px">±60s</span></span>
+      <div style="flex:1;min-width:0" id="smallwrap">
+        <input type="range" id="small" min="-60" max="60" value="0" step="0.5">
+        <div id="scenter"></div>
+        <div class="tip" id="smalllabel">—</div>
+      </div>
+    </div>
+    <div class="tip"><b>双条语义</b>：拖小条 → 实际时刻 = 大条 + 小条偏移（地图/表格实时跟随，大条滑块同步小幅移动）；
+      <b>松手提交</b> → 大条推进"滑过的量"，小条<b>瞬时归零</b>。点火花线/拖大条 = 直接绝对定位（小条归零）。</div>
+  </div>
+
 
 <script>
 "use strict";
@@ -1373,24 +1394,66 @@ small.onmouseup = smallCommit;
 small.ontouchend = smallCommit;
 window.addEventListener("pointerup", function () { setTimeout(smallCommit, 0); });
 
-/* 大时间轴上的击杀/建筑刻度 */
-function buildMarks() {
-  const box = document.getElementById("bigmarks");
-  box.innerHTML = "";
-  const span = T1 - T0;
-  KILLSX.forEach(function (k) {
-    const i = document.createElement("i");
-    i.style.left = ((k[0] - T0) / span * 100) + "%";
-    i.title = "击杀 " + fmt(k[0]);
-    box.appendChild(i);
-  });
-  (DATA.events || []).forEach(function (ev) {
-    const i = document.createElement("i"); i.className = "b";
-    i.style.left = ((ev[0] - T0) / span * 100) + "%";
-    i.title = ev[1] + " @ " + fmt(ev[0]);
-    box.appendChild(i);
-  });
+/* ═══════════════ 时间轴：重大事件时间戳（上=天辉有利 / 下=夜魇有利） ═══════════════ */
+const TL = DATA.tl || [];
+const KIND_NAME = ["击杀", "塔", "兵营", "基地", "肉山"];
+let evEls = [];          // [{el, t, side}]
+function fmtTL(t) { const v = Math.round(t); return Math.floor(Math.abs(v) / 60) + ":" + String(Math.abs(v) % 60).padStart(2, "0"); }
+function buildTimelineEvents() {
+  const up = document.getElementById("evUp"), dn = document.getElementById("evDn");
+  up.innerHTML = ""; dn.innerHTML = "";
+  evEls = [];
+  const showLabels = document.getElementById("showTL").checked;
+  const onlyBld = document.getElementById("tlBld").checked;
+  const W = Math.max(300, up.clientWidth || 900);
+  const span = Math.max(1, T1 - T0);
+  const rows = [0, 0, 0];                 // 每行"最后一个标签的右边界(px)"
+  const mk = function (host, e, side) {
+    const x = (e[0] - T0) / span * W;
+    const bld = e[2] !== 0;
+    const tick = document.createElement("div");
+    tick.className = "evt" + (bld ? " b" : "");
+    tick.style.left = (e[0] - T0) / span * 100 + "%";
+    tick.style.background = side === 2 ? "#4aa564" : "#d24b4b";
+    tick.style.height = (bld ? 13 : 8) + "px";
+    if (side === 2) { tick.style.bottom = "0"; } else { tick.style.top = "0"; }
+    tick.title = fmtTL(e[0]) + "  " + KIND_NAME[e[2]] + "  " + e[3];
+    tick.onclick = function () { jumpTo(e[0]); };
+    host.appendChild(tick);
+    if (!showLabels || (onlyBld && !bld)) return;
+    // 贪心错行：选"右边界最靠左"且能放下的一行，放不下就取最小
+    let row = -1, best = 1e9;
+    for (let r = 0; r < rows.length; r++) {
+      if (x - rows[r] >= 30 && rows[r] < best) { best = rows[r]; row = r; }
+    }
+    if (row < 0) { row = 0; for (let r = 1; r < rows.length; r++) if (rows[r] < rows[row]) row = r; }
+    rows[row] = x + 30;
+    const el = document.createElement("div");
+    el.className = "ev c" + side + (bld ? " bld" : "");
+    el.style.left = (e[0] - T0) / span * 100 + "%";
+    const off = 6 + row * 15;
+    if (side === 2) { el.style.bottom = off + "px"; } else { el.style.top = off + "px"; }
+    el.textContent = fmtTL(e[0]);
+    el.title = fmtTL(e[0]) + "  " + KIND_NAME[e[2]] + " ｜ " + e[3];
+    el.onclick = function () { jumpTo(e[0]); };
+    host.appendChild(el);
+    evEls.push({ el: el, t: e[0] });
+  };
+  TL.forEach(function (e) { mk(e[1] === 2 ? up : dn, e, e[1]); });
+  markNear();
 }
+function jumpTo(t) {
+  playing = false;
+  document.getElementById("play").textContent = "▶ 播放";
+  commit(t);
+}
+function markNear() {
+  for (let i = 0; i < evEls.length; i++) {
+    const d = Math.abs(evEls[i].t - tCur);
+    evEls[i].el.classList.toggle("near", d <= 25);
+  }
+}
+window.addEventListener("resize", function () { buildTimelineEvents(); });
 
 /* ═══════════════ 播放 ═══════════════ */
 function tick(ts) {
@@ -1450,7 +1513,7 @@ document.getElementById("showName").onchange = draw;
     document.getElementById("liteNote").style.display = "";
     document.getElementById("liteStep").textContent = String(STEP);
   }
-  buildAvatars(); buildTable(); buildMarks();
+  buildAvatars(); buildTable(); buildTimelineEvents();
   commit(0);          // 默认停在 0:00（号角）；往前拖 = 出门期（-1:30 起）
 })();
 </script>

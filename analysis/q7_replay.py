@@ -391,6 +391,7 @@ def parse_match(db, match_id, league, with_detail=True):
     #     销毁与眼"一一对应"；右删失=比赛结束时仍存活。返回的 place/destroy 是**游戏钟(cle)**。
     wards = load_wards(con, match_id, horn_cle, t0, t1)
     smoke, smoked = load_smoke(con, players, horn_cle, t0, t1, pos, t0)
+    tl = build_timeline(con, match_id, players, kills, horn_cle, t0, t1)
 
     con.close()
 
@@ -447,6 +448,7 @@ def parse_match(db, match_id, league, with_detail=True):
         "cd": cd,
         "tp": tpu,
         "wards": wards,
+        "tl": tl,
         "smoke": smoke,
         "smoked": smoked,
         "kda": kda,
@@ -773,6 +775,75 @@ def load_smoke(con, players, horn_cle, t0, t1, pos, t0i):
     for npc in smoked:
         smoked[npc].sort()
     return smoke, smoked
+
+
+# ──────────────────────── 2e2. 时间轴重大事件 ────────────────────────
+LANE_CN = {"top": "上路", "mid": "中路", "bot": "下路"}
+TL_KILL, TL_TOWER, TL_RAX, TL_FORT, TL_ROSHAN = 0, 1, 2, 3, 4
+
+
+def bld_label(tgt):
+    """npc_dota_badguys_tower1_top → '夜魇 上路 1塔'（用于时间轴标注）。"""
+    import re
+    t = (tgt or "").replace("npc_dota_", "")
+    side = ("天辉" if t.startswith("goodguys") else
+            ("夜魇" if t.startswith("badguys") else "中立"))
+    rest = t.split("_", 1)[1] if "_" in t else t
+    lane = ""
+    for k, v in LANE_CN.items():
+        if rest.endswith("_" + k) or ("_" + k + "_") in rest:
+            lane = v
+            break
+    if "fort" in rest:
+        return side + " 基地"
+    if "rax" in rest or "barracks" in rest:
+        kind = ("近战兵营" if "melee" in rest else
+                ("远程兵营" if "range" in rest else "兵营"))
+        return (side + " " + lane + " " + kind).replace("  ", " ")
+    if "tower" in rest:
+        m = re.search(r"tower(\d)", rest)
+        return (side + " " + lane + " " + (m.group(1) if m else "?") + "塔").replace("  ", " ")
+    if "fillers" in rest:
+        return side + " 基地填充塔"
+    if "watch" in rest:
+        return side + " 瞭望塔"
+    return side + " " + rest.replace("_", " ")
+
+
+def build_timeline(con, match_id, players, kills, horn_cle, t0, t1):
+    """时间轴重大事件：[disp, side, kind, text]；side=2 画上方（对天辉有利）、3 画下方。"""
+    short = {p["npc"]: p["short"] for p in players}
+    team_of = {p["i"]: p["team"] for p in players}
+    out = []
+    for k in kills:
+        disp, ki, vi, asst = k
+        if ki < 0 or ki not in team_of or vi not in team_of:
+            continue
+        out.append([int(disp), int(team_of[ki]), TL_KILL,
+                    short[players[vi]["npc"]] + " 被 " + short[players[ki]["npc"]] + " 击杀"])
+    for r in con.execute(
+        "SELECT t_cle, target, t_team FROM combat_log WHERE match_id=? AND type_category='death' "
+        "AND is_target_building=1 ORDER BY t_cle", (match_id,)):
+        d = int(round(float(r["t_cle"]) - horn_cle))
+        if d < t0 or d > t1:
+            continue
+        t = r["target"] or ""
+        if "fillers" in t:            # 基地旁的填充塔不计入"重大事件"
+            continue
+        own = int(r["t_team"]) if r["t_team"] in (2, 3) else (2 if "goodguys" in t else 3)
+        kind = TL_FORT if "fort" in t else (TL_RAX if ("rax" in t or "barracks" in t) else TL_TOWER)
+        out.append([d, 3 if own == 2 else 2, kind, bld_label(t)])
+    for r in con.execute(
+        "SELECT t_cle, attacker, a_team FROM combat_log WHERE match_id=? AND type_category='death' "
+        "AND target='npc_dota_roshan' ORDER BY t_cle", (match_id,)):
+        d = int(round(float(r["t_cle"]) - horn_cle))
+        if d < t0 or d > t1:
+            continue
+        side = int(r["a_team"]) if r["a_team"] in (2, 3) else 2
+        who = short.get(r["attacker"], r["attacker"] or "?")
+        out.append([d, side, TL_ROSHAN, "肉山 被 " + who + " 击杀"])
+    out.sort(key=lambda e: e[0])
+    return out
 
 
 # ──────────────────────── 3. 自检 + 落盘 ────────────────────────
