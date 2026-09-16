@@ -55,7 +55,8 @@ function mkEl(id) {
     querySelector() { return mkEl(id + "_q"); },
     querySelectorAll() { return []; },
     getContext() { return mkctx(); },
-    getBoundingClientRect() { return { left: 0, top: 0, width: 1024, height: 1024 }; },    setAttribute(k, v) { e["_attr_" + k] = v; },
+    /* 显示尺寸 == 逻辑尺寸（页面 fitCanvas() 会把两者设成同一个值），否则 evPx 的换算会错 */
+    getBoundingClientRect() { return { left: 0, top: 0, width: e.width || e.clientWidth, height: e.height || e.clientHeight }; },    setAttribute(k, v) { e["_attr_" + k] = v; },
     getAttribute(k) { return e["_attr_" + k]; },
     focus() {}, blur() {}, click() { if (e.onclick) e.onclick({}); },
   };
@@ -86,6 +87,7 @@ function mkEl(id) {
   });
   Object.defineProperty(e, "value", { get() { return e._v; }, set(v) { e._v = v; } });
   Object.defineProperty(e, "clientWidth", { get() { return e._cw === undefined ? 900 : e._cw; }, set(v) { e._cw = v; } });
+  Object.defineProperty(e, "clientHeight", { get() { return e._ch === undefined ? 560 : e._ch; }, set(v) { e._ch = v; } });
   if (id === "spark") { e.width = 1200; e.height = 78; }
   return (els[id] = e);
 }
@@ -143,6 +145,8 @@ eval(src + `
   getT: function(){ return tCur; }, getTBig: function(){ return tBig; }, getS: function(){ return sVal; },
   getView: function(){ return viewRect; }, getSel: function(){ return selIdx; }, getPlaying: function(){ return playing; },
   getAnn: function(){ return annMarks; },
+  getCSX: function(){ return CSX; }, fitCanvas: function(){ return fitCanvas(); },
+  mapScale: mapScale, w2p: w2p,
   posAt: posAt, valAt: valAt, diffAt: diffAt, kOf: kOf,
   clampView: clampView, w2pView: w2pView, calibFromPx: calibFromPx,
   commit: function(t){ commit(t); }, step: function(d){ step(d); },
@@ -271,21 +275,24 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
 /* ══ 3. 地图缩放/平移 + 选中 ══ */
 {
   const evp = (x, y, ex) => Object.assign({ clientX: x, clientY: y, button: 0, preventDefault() {} }, ex || {});
+  const CSX = S.getCSX();                     // 画布逻辑边长（fitCanvas 按可用高度定的）
+  const CTR = Math.round(CSX / 2);
   ok(S.getView() === null, "初始为全图（viewRect=null）");
-  g("cv").onwheel(evp(512, 512, { deltaY: -100 }));
+  g("cv").onwheel(evp(CTR, CTR, { deltaY: -100 }));
   const v1 = S.getView();
   ok(v1 && (v1[1] - v1[0]) < 17200 * 0.9, "滚轮上滚 → 放大到视野宽 " + Math.round(v1[1] - v1[0]));
   // 平移（★ 起点必须避开英雄标记：点到标记=选中而不是拖拽，这是设计）
   const clearPt = () => {
-    let best = [900, 120], bd = -1;
-    for (let x = 60; x <= 960; x += 60) for (let y = 60; y <= 960; y += 60) {
+    let best = [Math.round(CSX * 0.9), Math.round(CSX * 0.12)], bd = -1;
+    const st = Math.round(CSX / 16);
+    for (let x = st; x <= CSX - st; x += st) for (let y = st; y <= CSX - st; y += st) {
       let d = 1e9;
       S.getAnn().forEach((m) => { d = Math.min(d, Math.hypot(x - m.x, y - m.y)); });
       if (d > bd) { bd = d; best = [x, y]; }
     }
     return { pt: best, d: bd };
   };
-  const cp = clearPt(), p0 = cp.pt, p1 = [Math.max(20, p0[0] - 300), p0[1]];
+  const cp = clearPt(), p0 = cp.pt, p1 = [Math.max(Math.round(CSX * 0.02), p0[0] - Math.round(CSX * 0.15)), p0[1]];
   const x0 = S.getView()[0];
   g("cv").onmousedown(evp(p0[0], p0[1]));
   g("cv").onmousemove(evp(p1[0], p1[1]));
@@ -294,16 +301,16 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
      "拖拽平移生效 " + x0.toFixed(0) + " → " + S.getView()[0].toFixed(0) + "（起点距最近标记 " + cp.d.toFixed(0) + "px）");
   // 一路缩小 → 回全图
   let back = false;
-  for (let i = 0; i < 40; i++) g("cv").onwheel(evp(512, 512, { deltaY: 100 }));
+  for (let i = 0; i < 40; i++) g("cv").onwheel(evp(CTR, CTR, { deltaY: 100 }));
   back = S.getView() === null;
   ok(back, "滚轮下滚 40 次 → 回到全图（不再卡死）");
   // 极限放大被钳制
-  for (let i = 0; i < 40; i++) g("cv").onwheel(evp(512, 512, { deltaY: -100 }));
+  for (let i = 0; i < 40; i++) g("cv").onwheel(evp(CTR, CTR, { deltaY: -100 }));
   const vw = S.getView()[1] - S.getView()[0];
   ok(vw >= 599 && vw <= 601, "极限放大钳制在 600 世界单位（实际 " + Math.round(vw) + "）");
   // 平移不越界
-  g("cv").onmousedown(evp(100, 100));
-  g("cv").onmousemove(evp(900, 900));
+  g("cv").onmousedown(evp(Math.round(CSX * 0.2), Math.round(CSX * 0.2)));
+  g("cv").onmousemove(evp(Math.round(CSX * 0.8), Math.round(CSX * 0.8)));
   g("cv").onmouseup();
   const v = S.getView();
   ok(v[0] >= -8620 && v[1] <= 8620 && v[2] >= -8620 && v[3] <= 8620,
@@ -329,10 +336,17 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
   // ★ 几何闭环：地图标记像素坐标必须 == 官方标定式（与 PIL 预览/底图同一套常量）
   {
     const p = PL[t0i], q = S.posAt(p.npc, 900);
-    const want = [508.3019 + 0.049038 * q.x, 504.5433 - 0.049038 * q.y];
+    const sc = CSX / 1024;                       // 标定式是 1024 底图推出的 → 按 CSX 缩放
+    const want = [(508.3019 + 0.049038 * q.x) * sc, (504.5433 - 0.049038 * q.y) * sc];
     ok(Math.abs(heroAnn[0].x - want[0]) < 0.01 && Math.abs(heroAnn[0].y - want[1]) < 0.01,
-       "标记像素坐标 == w2p(世界坐标)（" + heroAnn[0].x.toFixed(1) + "," + heroAnn[0].y.toFixed(1)
-       + " vs " + want[0].toFixed(1) + "," + want[1].toFixed(1) + "）");
+       "标记像素坐标 == w2p(世界坐标)×(CSX/1024)（" + heroAnn[0].x.toFixed(1) + "," + heroAnn[0].y.toFixed(1)
+       + " vs " + want[0].toFixed(1) + "," + want[1].toFixed(1) + "，缩放 " + sc.toFixed(3) + "）");
+    const w0 = S.w2p(q.x, q.y);
+    ok(Math.abs(w0[0] - want[0]) < 0.01 && Math.abs(w0[1] - want[1]) < 0.01,
+       "页面自己的 w2p() 也按同一比例缩放（全图态标定闭环）");
+    const wb = S.calibFromPx(w0[0], w0[1]);
+    ok(Math.abs(wb[0] - q.x) < 1 && Math.abs(wb[1] - q.y) < 1,
+       "calibFromPx 与缩放后的 w2p 互逆（" + Math.round(wb[0]) + "," + Math.round(wb[1]) + " vs " + Math.round(q.x) + "," + Math.round(q.y) + "）");
   }
   g("cv").onmousedown(evp(heroAnn[0].x, heroAnn[0].y, { button: 0, preventDefault() {} }));
   ok(S.getSel() >= 0, "点英雄标记 → 选中下标 " + S.getSel() + "（该处是 " + t0i + " 号）");
@@ -354,29 +368,92 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
      "hover 英雄标记 → 状态行显示该英雄信息：" + String(g("mapInfo").textContent).slice(0, 60));
 }
 
-/* ══ 3a0. 布局契约（owner 第一条：地图正方形且宽度 = 网页一半） ══ */
+/* ══ 3a0. 布局契约（owner：地图+头像在左、combat log 占右半屏、四块同屏不滚动） ══ */
 {
   const css = (raw.match(/<style>([\s\S]*?)<\/style>/) || [, ""])[1];
   const wrap = (css.match(/\.wrap\{[^}]*\}/) || [""])[0];
   ok(/display:\s*grid/.test(wrap), "两栏用 grid 布局");
-  const m = wrap.match(/grid-template-columns:\s*minmax\(0,\s*calc\((\d+)%\s*([+-])\s*(\d+)px\)\)/);
-  ok(!!m, "左栏宽度写成 calc(50% + 18px) 形式（" + (m ? m[0] : wrap) + "）");
-  if (m) {
-    const pct = +m[1], sign = m[2], off = +m[3];
-    const canvasPct = sign === "+" ? pct + (off - 18) / 10 : pct - (off + 18) / 10;
-    ok(Math.abs(canvasPct - 50) < 0.2,
-       "地图画布宽度 = 内容宽度的 " + canvasPct.toFixed(1) + "%（目标 50%）");
+  ok(/grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(0,\s*1fr\)/.test(wrap),
+     "左右两栏各占一半宽（combat log 吃掉右半屏）");
+  ok(/flex:\s*1 1 auto/.test(wrap) && /min-height:\s*0/.test(wrap),
+     ".wrap 吃掉剩下的高度（flex:1 1 auto + min-height:0）");
+  ok(/body\{[^}]*height:\s*100vh/.test(css) && /body\{[^}]*overflow-x:\s*hidden/.test(css),
+     "页面锁一屏高（100vh，横向不滚；高度不够时才纵向兜底滚动）");
+  ok(/html,body\{height:100%\}/.test(css), "html/body 高度拉到 100%");
+  const rightRule = (css.match(/\.right\{[^}]*\}/) || [""])[0];
+  ok(/overflow:\s*auto/.test(rightRule), "右栏自己滚（combat log 长了不撑破页面）");
+  ok(/@media\(max-width:1180px\)/.test(css) && /display:\s*block/.test(css),
+     "窄屏（≤1180px）退回单栏 + 允许整页滚动");
+  ok(!/\.right\{width:470px/.test(css), "右栏不是固定 470px");
+
+  /* ★ 真·DOM 结构检查：HTML 标签必须配对，.right 必须是 .left 的兄弟（曾经漏了一个 </div>，
+       结果整个 combat log 被塞进左栏里、右半屏全空 —— 文本下标的断言完全没发现）。 */
+  const stop = raw.indexOf("<script");
+  const seg = raw.slice(0, stop > 0 ? stop : raw.length);
+  const root = { tag: "root", cls: "", id: "", children: [] };
+  const stack = [root];
+  let unclosed = 0;
+  const re = /<(\/?)(div|canvas)\b([^>]*)>/g;
+  let mm;
+  while ((mm = re.exec(seg))) {
+    if (mm[1] === "/") {
+      for (let k = stack.length - 1; k > 0; k--) {
+        if (stack[k].tag === mm[2]) { stack.length = k; break; }
+      }
+      continue;
+    }
+    const attr = mm[3];
+    const node = {
+      tag: mm[2],
+      cls: (attr.match(/class="([^"]*)"/) || [, ""])[1],
+      id: (attr.match(/id="([^"]*)"/) || [, ""])[1],
+      children: [],
+      parent: stack[stack.length - 1],
+    };
+    stack[stack.length - 1].children.push(node);
+    stack.push(node);
   }
-  const cvRule = (css.match(/#cv\{[^}]*\}/) || [""])[0];
-  ok(/aspect-ratio:\s*1\s*\/\s*1/.test(cvRule), "画布强制 1:1（aspect-ratio:1/1）");
-  ok(/width:\s*100%/.test(cvRule), "画布宽度跟随左栏");
-  const iLeft = raw.indexOf('class="left"'), iRight = raw.indexOf('class="right');
-  ok(iLeft > 0 && iRight > iLeft, "DOM 顺序：地图在左、明细在右");
-  ok(/@media\(max-width:1180px\)\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/.test(css),
-     "窄屏（≤1180px）退回单栏");
-  ok(!/\.right\{width:470px/.test(css), "右栏不再是固定 470px（改为吃掉剩余宽度）");
-  const iCv = raw.indexOf('id="cv"');
-  ok(iCv > iLeft && iCv < iRight, "画布在左栏内（不与右栏同级）");
+  unclosed = stack.length - 1;
+  ok(unclosed === 0, "markup 里 div/canvas 全部配对（未闭合 " + unclosed + " 个）");
+  const find = (n, pred, out) => {
+    out = out || [];
+    n.children.forEach((c) => { if (pred(c)) out.push(c); find(c, pred, out); });
+    return out;
+  };
+  const wraps = find(root, (n) => n.cls === "wrap");
+  ok(wraps.length === 1, "只有一个 .wrap（实际 " + wraps.length + "）");
+  if (wraps.length === 1) {
+    const w = wraps[0];
+    ok(w.children.length === 2, ".wrap 直接子元素 = 2 个（实际 " + w.children.length + "）");
+    const l = w.children[0], r = w.children[1];
+    ok(l.cls === "left" && /(^|\s)right(\s|$)/.test(r.cls),
+       ".wrap 的两个孩子 = .left / .right（实际 " + l.cls + " / " + r.cls + "）");
+    ok(l.children.some((c) => c.id === "mapwrap") && l.children.some((c) => c.id === "avatars"),
+       ".left 里是地图 + 头像条");
+    ok(!/right/.test(l.cls) && find(l, (n) => /(^|\s)right(\s|$)/.test(n.cls)).length === 0,
+       ".left 里没有 .right（combat log 不在左栏里）");
+    ok(r.children.some((c) => c.id === "paneList") && r.children.some((c) => c.id === "paneHero"),
+       ".right 里是默认表 + 英雄 combat log 两个面板");
+    const mw = find(l, (n) => n.id === "mapwrap")[0];
+    ok(mw && mw.children.some((c) => c.id === "mapbox"), "#mapwrap 里有 #mapbox（画布按剩余高度定尺寸）");
+    const mb = find(l, (n) => n.id === "mapbox")[0];
+    ok(mb && mb.children.some((c) => c.id === "cv" && c.tag === "canvas"), "#mapbox 里是 #cv");
+  }
+  /* 地图尺寸由 JS 定：正方形 + 逻辑坐标系跟着走 */
+  const cvw = Number(g("cv").width), cvh = Number(g("cv").height);
+  ok(cvw === cvh && cvw > 0, "画布正方形（" + cvw + "×" + cvh + "）");
+  ok(S.getCSX() === cvw, "逻辑坐标系 CSX == 画布边长（" + S.getCSX() + "）");
+  ok(parseFloat(String(g("cv").style.width)) === cvw && parseFloat(String(g("cv").style.height)) === cvw,
+     "画布 CSS 尺寸 = 逻辑尺寸（1:1，缩小地图不会把字也缩小）");
+  ok(S.getCSX() === 560, "按左栏可用高度取边长（桩里 mapbox=900×560 → 560，实际 " + S.getCSX() + "）");
+  ok(/function fitCanvas/.test(src) && /mapScale\(\)/.test(src),
+     "地图尺寸/标定缩放都在页面里（fitCanvas + mapScale）");
+  /* 头像条：地图下方一行 10 个（天辉 5 ｜ 夜魇 5），省下的高度还给地图 */
+  ok(/function buildAvatars/.test(src) && /team\(2, "天辉"\)/.test(src) && /team\(3, "夜魇"\)/.test(src),
+     "头像条一行渲染：先是天辉 5 个、再是夜魇 5 个");
+  ok(/dv\.className = "tdiv"/.test(src), "两队头像之间有分隔线");
+  ok(/\.arow\{[^}]*flex-wrap:\s*wrap/.test(css), "头像条一行放不下时自动换行（窄屏兜底）");
+  ok(/\.tlrow\{[^}]*flex-wrap:\s*wrap/.test(css), "时间轴控制行窄屏会换行（不会挤出屏幕）");
 }
 
 /* ══ 3a1. 时间轴重大事件（图标版：阵亡英雄头像 / 建筑图标，上=天辉有利 下=夜魇有利） ══ */
