@@ -48,9 +48,14 @@ python analysis/ward_analysis.py 8592126358.db 8979891001.db [--team 2|3|all]
 - **多场切换**：`python analysis/build_q7_index.py` 生成 `q7_index.html`（**970 场**可搜可筛、按列排序、
   勾选后一键生成整批构建命令）；`--batch league:19719|spread:8|hero:axe|ids:...|top:20`（加 `--full` 建完整版）；
   `--publish` 复制到 publish_repo。索引的胜负/时长由 combat_log 推出：**415 场对账 OpenDota 时长中位差 0.0s、胜负 0 冲突**。
-- **lite 版**（`build_q7_html.py --lite --step 4`）：**0.3~0.5MB/场**（地图 448px、位置 4s / 经济 16s 抽稀、不含明细与技能图标；
+- **lite 版**（`build_q7_html.py --lite --step 4`）：**0.4~0.6MB/场**（地图 448px、位置 4s / 经济 16s 抽稀、不含明细与技能图标；
   地图/双时间轴/经济·经验差/胜率/KDA/眼位/烟雾/技能CD 全保留）→ 可批量铺开。
   测试：`Q7_LITE=1 node analysis/q7_viewer_itest.js <mid>`。
+- **UI 迭代（owner 逐项提的）**：① 地图宽 = 内容宽 **50%** 且强制 1:1（`grid-template-columns:minmax(0,calc(50% + 18px))`）；
+  ② **时间轴移出左栏 → 地图上方整宽面板**，重大事件带 mm:ss，**上下位置 = 对谁有利**（击杀看凶手方、
+  建筑看被毁方的对面、肉山看击杀方）；③ 事件改成**图标**：阵亡英雄头像 / 塔·兵营·基地·肉山·侦查守卫剪影，
+  **环色 = 它属于哪一方**（绿天辉 / 红夜魇 / 灰无主·肉山），mm:ss 变成可关的开关（默认关）。
+  逐条记录与踩坑见 `Q7_SUBMISSION.md` §8。
 - **改动量实测（别夸大）**：`python analysis/q7_clock_check.py --scan 45` → 窗口内旧/新 |Δ显示秒| 中位 0.03~0.07s、
   最大 ≤9.6s、>30s 的 0 场；`python analysis/q5_clock_check.py --sample 40` → Q5B 逐支眼改动 **0/4591**；
   换时基后全量重跑 Q5B 并与发布版比对 → **SHA256 相同**。
