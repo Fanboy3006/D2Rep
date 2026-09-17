@@ -12,7 +12,8 @@
   · 已继承的前端坑（§9）：capValue 的 DOM 字符串陷阱、onmousemove 的 px 作用域、draw() 重入锁
 
 第一步（MVP）：地图 + 缩放/平移 + 双方 10 英雄头像 + 双时间轴 + 顶部经济/经验差 + 逐秒位置 + KDA/正反补表。
-第二步（本版）：① 点英雄 → 右栏改该英雄 **±10s combat log**（4 toggle：给出/收到 modifier、造成/收到伤害）
+第二步（本版）：① 点英雄 → 右栏改该英雄 **±45s combat log**（4 toggle：给出/收到 modifier、造成/收到伤害；
+                每行带「技能图标 + 对方英雄图标 + 本英雄头像」，见 detail_icons.py）
               ② 下方 **技能 CD**（三态：冷却中灰+剩余秒 / 未学未拥有 / 就绪；重点追踪 BKB / 刷新球 / TP）
               ③ 顶部 **状态胜率**（派生模型，绝不偷看结果）
 """
@@ -22,6 +23,10 @@ import base64
 import io
 import json
 import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import detail_icons as DI          # noqa: E402  明细行图标（英雄头像/技能/道具/建筑/普通攻击）
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 Q7DIR = os.path.join(ROOT, "analysis", "output_q7")
@@ -124,7 +129,7 @@ def decimate(a, step, fill=0):
     return out
 
 
-def build(mid, outdir, lite=False, step=3):
+def build(mid, outdir, lite=False, step=3, fetch_icons=True):
     src = os.path.join(Q7DIR, "q7_%s.json" % mid)
     if lite:
         alt = os.path.join(Q7DIR, "lite", "q7_%s.json" % mid)
@@ -155,6 +160,47 @@ def build(mid, outdir, lite=False, step=3):
         fp = os.path.join(AB_ICON_DIR, base + ".png")
         if os.path.exists(fp):
             ab_icons[base] = "data:image/png;base64," + b64_png_opt(fp, 64)
+
+    # ---- 战斗日志（±45s 明细）每行的小图标：名字 → CSS 类（一张 28px PNG）----
+    #   英雄短名 → 方头像；技能/道具 → 官方图；建筑 → tl_icons 字形（按阵营上色）；
+    #   "普通攻击" → 自绘 UI 字形；解析不到 → 该行不画图标（文字照旧）。
+    #   只内嵌**本场明细里真正出现**的名字；联网取图带缓存（见 detail_icons.py），--no-fetch 可关。
+    dc_css, dicons, dic_stat = [], [], None
+    dnames_all = dat.get("detail_names") or []
+    if not lite and dnames_all:
+        cnt = {}
+        for _npc, _rows in (dat.get("detail") or {}).items():
+            for r in _rows:
+                if len(r) >= 4:
+                    cnt[r[2]] = cnt.get(r[2], 0) + 1
+                    cnt[r[3]] = cnt.get(r[3], 0) + 1
+        rs = DI.Resolver(allow_fetch=fetch_icons)
+        got = rs.prepare(dnames_all, cnt)
+        for i in range(len(dnames_all)):
+            r = got.get(i)
+            if not r:
+                dicons.append("")
+                continue
+            kind, fp = r
+            key = "dc%d" % len(dc_css)
+            try:
+                dc_css.append(".%s{background-image:url(data:image/png;base64,%s)}"
+                              % (key, DI.b64_png(fp, 28)))
+            except Exception:
+                dicons.append("")
+                continue
+            dicons.append(key)
+        dic_stat = rs.stats()
+
+    # ---- 本英雄头像（选中那个英雄，日志第 2 列用）----
+    self_icons = {}
+    for i, p in enumerate(dat["players"]):
+        fp = os.path.join(ICON_DIR, p["short"] + ".png")
+        if os.path.exists(fp):
+            key = "sc%d" % i
+            dc_css.append(".%s{background-image:url(data:image/png;base64,%s)}"
+                          % (key, DI.b64_png(fp, 32)))
+            self_icons[p["npc"]] = key
 
     # ---- 时间轴图标：阵亡英雄方形头像 + 建筑/肉山图标（按队伍上色，只内嵌本场用到的）----
     TINT = {2: (126, 231, 135), 3: (255, 140, 140)}
@@ -237,6 +283,8 @@ def build(mid, outdir, lite=False, step=3):
         "kda": dat["kda"],
         "detail": ({} if lite else dat.get("detail", {})),
         "dnames": ([] if lite else dat.get("detail_names", [])),
+        "dicons": dicons,
+        "selficons": self_icons,
         "cd": cd,
         "tp": dat.get("tp", {}),
         "wp": wp,
@@ -264,6 +312,7 @@ def build(mid, outdir, lite=False, step=3):
     for k, v in (
         ("@@BLOB@@", blob),
         ("@@MAP@@", "data:image/png;base64," + map_b64),
+        ("@@DICSS@@", "".join(dc_css)),
         ("@@MID@@", str(dat["match_id"])),
         ("@@LEAGUE@@", str(league)),
         ("@@RNAME@@", rname),
@@ -283,8 +332,10 @@ def build(mid, outdir, lite=False, step=3):
     out = os.path.join(outdir, "q7_replay_%s%s.html" % (mid, "_lite" if lite else ""))
     with open(out, "w", encoding="utf-8") as f:
         f.write(html)
-    print("wrote %s  size=%.2f MB  (icons %d)" % (os.path.relpath(out, ROOT),
-                                                  os.path.getsize(out) / 1e6, len(icons)))
+    print("wrote %s  size=%.2f MB  (icons %d%s)"
+          % (os.path.relpath(out, ROOT), os.path.getsize(out) / 1e6, len(icons),
+             ("" if not dic_stat else "，明细图标 %d 个名字 / 取图 %d 次"
+              % (len([x for x in dicons if x]), dic_stat["fetched"]))))
     return out
 
 
@@ -416,16 +467,18 @@ tr.selrow{background:#e3b34122;outline:1px solid var(--gold)}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px}
 .dr{color:var(--rad)}.dd{color:var(--dire)}
 .todo{border:1px dashed #d29922;border-radius:6px;padding:6px 8px;color:#d29922;font-size:11px;line-height:1.6;margin-top:8px}
-/* ---------- 第二步：±10s 明细 + 技能 CD ---------- */
+/* ---------- 第二步：±45s 明细（带图标）+ 技能 CD ---------- */
 .tglrow{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0;font-size:12px}
 .tglrow .toggle{padding:3px 8px;font-size:11px}
 .dsum{background:#21262d;border:1px solid var(--bd);border-radius:6px;padding:6px 8px;font-size:12px;
       line-height:1.7;margin:4px 0}
 .dsum b{color:#79c0ff}
 .dwrap{max-height:34vh;overflow:auto;border:1px solid var(--bd);border-radius:6px}
-#dtbl{margin:0;font-size:11.5px}
+#dtbl{margin:0;font-size:11.5px;table-layout:auto}
 #dtbl th{background:#21262d;font-size:11px}
 #dtbl td{padding:2px 5px;border-bottom:1px solid #1c2128}
+#dtbl tbody tr{height:24px}          /* 虚拟滚动按固定行高算（±45s 窗口可能上千行） */
+#dtbl tbody tr.sp td{border:0;padding:0}
 .chip{display:inline-block;padding:0 5px;border-radius:8px;font-size:10px;line-height:15px;white-space:nowrap}
 .c0{background:#2d4f6b;color:#bcd9f2}.c1{background:#4a3a5c;color:#dcccf0}
 .c2{background:#5c2f2f;color:#f5c6c6}.c3{background:#5c4a1f;color:#f0dda6}
@@ -455,7 +508,22 @@ details{margin-top:8px;font-size:12px;color:var(--dim)}
 details summary{cursor:pointer;color:#79c0ff}
 details p{line-height:1.75;margin:6px 0}
 code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
-</style></head><body>
+/* ---------- combat log 行内图标（背景图写在 @@DICSS@@ 里，按名字一类一张）---------- */
+.di{display:inline-block;width:22px;height:22px;background-size:cover;background-position:center;
+    background-color:#15181d;border:1px solid #30363d;border-radius:4px;vertical-align:middle;flex:0 0 auto}
+.di.self{border-radius:50%;border-color:#8b949e}
+.di.big{width:26px;height:26px}
+.dirow{display:flex;align-items:center;gap:6px}
+.dirow .txt{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#dtbl td.dc{text-align:center;width:1%;padding-left:4px;padding-right:4px}
+#dtbl td.dv{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+#dtbl td.do{white-space:nowrap;max-width:170px}
+#dtbl td.do .txt{display:inline-block;max-width:120px;overflow:hidden;text-overflow:ellipsis;
+                 vertical-align:middle}
+#dtbl td.dn2{white-space:nowrap;max-width:330px}
+</style>
+<style id="dicss">@@DICSS@@</style>
+</head><body>
 
 <h1>Q7 · 全盘复现交互 UI（回放浏览器）— match <span id="mid">@@MID@@</span>
   <span class="sub" style="font-weight:400">联赛 @@LEAGUE@@ ｜ <b>@@RNAME@@</b> vs <b>@@DNAME@@</b> ｜ 结果 @@WIN@@ ｜ 游戏时长 @@DUR@@
@@ -555,10 +623,10 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
     </tr></thead><tbody></tbody></table>
     </div>
     <div class="tip" id="liteNote" style="display:none"><b>这是 lite（精简）版</b>：为压体积，
-      逐秒数据抽稀到每 <b id="liteStep">3</b> 秒一格、<b>不含 ±10s combat log 明细与技能图标</b>；
+      逐秒数据抽稀到每 <b id="liteStep">3</b> 秒一格、<b>不含 ±45s combat log 明细与技能图标</b>；
       地图/表格/胜率/眼位/烟雾/技能 CD 三态都保留。完整版见同目录 <code>q7_replay_&lt;match&gt;.html</code>。</div>
     <div class="tip"><b>点任意英雄</b>（表格行 / 头像 / 地图上的标记）→ 本栏切到该英雄的
-      <b>±10s combat log</b>（4 个 toggle）+ <b>技能 CD</b>。</div>
+      <b>±45s combat log</b>（4 个 toggle，每行带技能/对方英雄图标）+ <b>技能 CD</b>。</div>
   </div>
 
   <div id="paneHero" style="display:none">
@@ -574,8 +642,8 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
       <label class="toggle"><input type="checkbox" id="tcdall" onchange="renderCD()">显示天赋/空槽</label>
     </div>
     <div class="dsum" id="dsum">—</div>
-    <div class="dwrap"><table id="dtbl"><thead><tr>
-      <th>时刻</th><th>类别</th><th>名称</th><th>对象</th><th>数值</th>
+    <div class="dwrap" id="dwrap"><table id="dtbl"><thead><tr>
+      <th>时刻</th><th>本英雄</th><th>技能 / 事件</th><th>数值</th><th>对象</th>
     </tr></thead><tbody></tbody></table></div>
 
     <div class="cdhead">技能冷却（三态：冷却中=灰+剩余秒 ｜ 未学未拥有=锁 ｜ 就绪）</div>
@@ -583,7 +651,7 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
     <div class="tip" id="cdnote"></div>
   </div>
 
-  <div class="todo" id="todobox">本版已实现：① ±10s combat log 四 toggle ② 技能 CD（三态 + BKB/刷新球/TP）
+  <div class="todo" id="todobox">本版已实现：① ±45s combat log 四 toggle（逐行技能/对方英雄图标）② 技能 CD（三态 + BKB/刷新球/TP）
     ③ 状态胜率。<b>仍未做</b>：眼位/烟雾图层、多场切换、移动端 lite 版。</div>
 
   <details open><summary>口径与已知边界（坦诚说明 · 请务必先读）</summary>
@@ -591,8 +659,9 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
       出门 = −1:30（实测初始金 600 事件恰在 −1:29.9）。所有展示时刻都是这条轴。
       <code>entity_snapshots</code> / <code>dems/db</code> 的 CD 事件是<b>回放钟</b>（<code>tick/30</code>）→
       经 <code>analysis/timebase.py</code> 的暂停感知折算（本场暂停 @@PAUSE@@s）。</p>
-    <p><b>② ±10s 明细</b>全部来自 <code>combat_log</code>（4 类：<code>modifier</code> 按 attacker/target 分给出/收到、
-      <code>damage</code> 同理）。窗口 = <b>当前播放时刻 ±10s</b>（owner 默认）。逐条内嵌、无采样丢失；
+    <p><b>② ±45s 明细</b>全部来自 <code>combat_log</code>（4 类：<code>modifier</code> 按 attacker/target 分给出/收到、
+      <code>damage</code> 同理）。窗口 = <b>当前播放时刻 ±45s</b>（owner 2026 定案）。逐条内嵌、无采样丢失；
+      列序 = <b>时刻 ｜ 本英雄 ｜ 技能/事件 ｜ 数值 ｜ 对象</b>；每行的图标是<b>名字 → 官方图的映射</b>（英雄短名→该英雄头像、技能/道具→官方图标、建筑→塔/兵营字形、"普通攻击"→自绘 UI 字形），映射靠名字匹配（去 <code>modifier_</code>/<code>item_</code> 前缀、去尾部词、召唤物归到所属英雄），<b>解析不到就不画图标（文字照旧，绝不拿占位图冒充）</b>；取图带本地缓存（<code>analysis/detail_icons.py</code>，<code>--no-fetch</code> 可离线构建）。
       "折叠连续同项"只是在显示层把同名称/同类别/同数值且时间相邻(≤1.2s)的条目并成一行（括号里是区间精确条数）。</p>
     <p><b>③ 技能 CD</b>来自 <code>dems/db/&lt;league&gt;/&lt;match&gt;.db</code> 的
       <code>ability_cd_start/end</code> + <code>ability_known/learn</code> + <code>item_cd_*</code> + <code>item_known</code>
@@ -1161,7 +1230,7 @@ function selectHero(i) {
   draw();
 }
 
-/* ═══════════════ 英雄 ±10s combat log 明细 ═══════════════ */
+/* ═══════════════ 英雄 ±45s combat log 明细（带图标） ═══════════════ */
 function renderHeroHead() {
   if (selIdx < 0) return;
   const p = PL[selIdx], k = KDA[p.npc];
@@ -1181,15 +1250,36 @@ function renderHeroHead() {
     + (pinfo ? '<br>关键道具：' + pinfo : "");
 }
 
-let lastDetail = null;   // 最近一次渲染的 ±10s 窗口（供回归测试/排查）
+let lastDetail = null;   // 最近一次渲染的窗口（供回归测试/排查）
+const DET_WIN = 45;      // combat log 窗口：当前时刻 ±45s（owner 2026 定案）
+const DICONS = DATA.dicons || [], SELFICONS = DATA.selficons || {};
+let _detKey = "", _detAt = 0, _detTimer = null;
+/* 图标：名字下标 → CSS 类（一类一张背景图）。没有图标就返回空串，单元格留白。 */
+function diTag(idx, cls) {
+  const k = (idx >= 0 && idx < DICONS.length) ? DICONS[idx] : "";
+  return k ? '<i class="di ' + (cls ? cls + " " : "") + k + '"></i>' : "";
+}
 function foldKey(r) { return r[1] + "|" + r[2] + "|" + r[3]; }
-function renderDetail() {
+function renderDetail(force) {
   if (selIdx < 0) return;
   const p = PL[selIdx];
   const abs = detAbs(selIdx), rows = DET[p.npc] || [];
-  const lo = tCur - 10, hi = tCur + 10;
+  const lo = tCur - DET_WIN, hi = tCur + DET_WIN;
   const on = [0, 1, 2, 3].map(function (c) { return document.getElementById("tc" + c).checked; });
   const fold = document.getElementById("tfold").checked;
+  /* ±45s 的窗口比原来大 8 倍（几百行、每行带图标）→ **播放时按 130ms 节流重建**，
+     并保证补一次（窗口一定追上播放头）；拖动滑块/显式调用（force）都立即重建，手感不打折。 */
+  const key = [selIdx, Math.round(lo), Math.round(hi), on.join(""), fold].join("|");
+  if (!force && playing) {
+    if (key === _detKey) return;
+    if (Date.now() - _detAt < 130) {
+      if (!_detTimer) {
+        _detTimer = setTimeout(function () { _detTimer = null; renderDetail(true); }, 140);
+      }
+      return;
+    }
+  }
+  _detKey = key; _detAt = Date.now();
   // 二分找窗口起点
   let a = 0, b = abs.length;
   while (a < b) { const m = (a + b) >> 1; if (abs[m] < lo) a = m + 1; else b = m; }
@@ -1198,7 +1288,7 @@ function renderDetail() {
     const r = rows[k];
     const cat = r[1] >> 2, kind = r[1] & 3;
     if (!on[cat]) continue;
-    picked.push({ t: abs[k], cat: cat, kind: kind, nm: DNAMES[r[2]] || "?", oid: r[3],
+    picked.push({ t: abs[k], cat: cat, kind: kind, nm: DNAMES[r[2]] || "?", nid: r[2], oid: r[3],
                   val: r[4] || 0 });
   }
   let seq = picked;
@@ -1210,7 +1300,7 @@ function renderDetail() {
           last.val === r.val && last.oid === r.oid && r.t - last.tEnd <= 1.2) {
         last.tEnd = r.t; last.n += 1; continue;
       }
-      seq.push({ t: r.t, tEnd: r.t, n: 1, cat: r.cat, kind: r.kind, nm: r.nm, oid: r.oid, val: r.val });
+      seq.push({ t: r.t, tEnd: r.t, n: 1, cat: r.cat, kind: r.kind, nm: r.nm, nid: r.nid, oid: r.oid, val: r.val });
     }
   }
   const cnt = [0, 0, 0, 0];
@@ -1220,37 +1310,76 @@ function renderDetail() {
                  tMax: picked.length ? picked[picked.length - 1].t : null };
   document.getElementById("dsum").innerHTML =
     "<b>" + p.short.replace(/_/g, " ") + "</b>（" + (p.team === 2 ? "天辉" : "夜魇") + " · " + p.name + "）"
-    + " ｜ 窗口 <b>" + fmt(tCur, true) + " ± 10s</b>（" + fmt(lo) + " → " + fmt(hi) + "）"
+    + " ｜ 窗口 <b>" + fmt(tCur, true) + " ± " + DET_WIN + "s</b>（" + fmt(lo) + " → " + fmt(hi) + "）"
     + " ｜ 命中 <b>" + picked.length + "</b> 条"
     + (fold && seq.length !== picked.length ? "（折叠后 " + seq.length + " 行）" : "")
     + "<br>四类条数：" + CATNAME.map(function (c, i) { return c + " <b>" + cnt[i] + "</b>"; }).join(" ｜ ");
   const tb = document.querySelector("#dtbl tbody");
-  const lim = 400;
-  let html = "";
-  for (let k = 0; k < seq.length && k < lim; k++) {
-    const r = seq[k];
-    const now = (r.t <= tCur + 1 && r.tEnd >= tCur - 1) ? "rownow" : (r.tEnd < tCur ? "rowpast" : "rowfut");
-    const other = (r.oid >= 0 ? (DNAMES[r.oid] || "") : "").replace(/^npc_dota_hero_/, "").replace(/^npc_dota_/, "");
-    const kk = r.cat < 2 ? (MINKIND[r.kind] || "") : (DMGKIND[r.kind] || "");
-    const ttxt = (r.n > 1 && r.tEnd > r.t) ? (fmt(r.t) + "–" + fmt(r.tEnd)) : fmt(r.t);
-    html += '<tr class="' + now + '"><td>' + ttxt
-      + '</td><td><span class="chip c' + r.cat + '">' + CATNAME[r.cat].slice(0, 2) + "</span></td>"
-      + '<td class="nm">' + esc(r.nm) + (kk ? ' <span class="dfold">[' + kk + ']</span>' : "")
-      + (r.n > 1 ? ' <b class="dfold">×' + r.n + "</b>" : "") + "</td>"
-      + "<td>" + esc(other) + "</td>"
-      + "<td>" + (r.cat >= 2 ? r.val : "—") + "</td></tr>";
-  }
-  if (!seq.length) {
-    const noDet = !rows.length;
-    html = '<tr><td colspan="5">' + (noDet && DATA.lite
-      ? '<b style="color:#d29922">本页是 lite 版，不含 ±10s combat log 明细</b>（lite 省掉了 2.3MB 逐条明细）。'
+  const selfK = SELFICONS[p.npc] || "";
+  const selfTag = selfK ? '<i class="di self big ' + selfK + '"></i>' : "";
+  const emptyMsg = !seq.length ? ((!rows.length && DATA.lite)
+      ? '<b style="color:#d29922">本页是 lite 版，不含 ±' + DET_WIN + "s combat log 明细</b>（lite 省掉了逐条明细）。"
         + "看明细请构建完整版：<code>python analysis/q7_replay.py " + DATA.mid
         + "</code> → <code>python analysis/build_q7_html.py " + DATA.mid + "</code>"
-      : (noDet ? "该英雄没有明细数据（数据缺失）"
-               : "该窗口内没有命中（可能该英雄此时不在场/无事件，或 4 个 toggle 都被关掉了）")) + "</td></tr>";
+      : (!rows.length ? "该英雄没有明细数据（数据缺失）"
+                      : "该窗口内没有命中（可能该英雄此时不在场/无事件，或 4 个 toggle 都被关掉了）")) : "";
+  /* ★ 虚拟滚动：±45s 的窗口在团战期可能上千行（本场实测最多 1785 行），
+     一次性塞进 DOM 会卡（每行还带 3 个图标）。这里只画视口附近的 ~160 行，
+     上下用等高占位行撑出滚动条；行高固定 24px（CSS 里写死，见 #dtbl tbody tr）。 */
+  detSeq = seq; detSelf = selfTag; detEmpty = emptyMsg; detNow = tCur;
+  let firstNow = 0;
+  for (let k = 0; k < seq.length; k++) { if (seq[k].tEnd >= tCur - 1) { firstNow = k; break; } }
+  detNowIdx = firstNow;
+  const dw = document.getElementById("dwrap");
+  if (dw) {
+    const h = dw.clientHeight || 320;
+    dw.scrollTop = Math.max(0, firstNow * DET_ROWH - h * 0.4);   // 让"当前时刻"落在视口上方 40% 处
   }
-  if (seq.length > lim) html += '<tr><td colspan="5">… 仅列出前 ' + lim + " 行（共 " + seq.length + "）</td></tr>";
+  paintDetRows();
+}
+/* ══ 明细行：只渲染视口内的行（虚拟滚动）══ */
+const DET_ROWH = 24, DET_VIEW = 80, DET_PAD = 20;
+let detSeq = [], detSelf = "", detEmpty = "", detNow = 0, detNowIdx = 0, detPaintPending = false;
+function detRowHTML(r, tNow) {
+  const now = (r.t <= tNow + 1 && r.tEnd >= tNow - 1) ? "rownow" : (r.tEnd < tNow ? "rowpast" : "rowfut");
+  const other = (r.oid >= 0 ? (DNAMES[r.oid] || "") : "").replace(/^npc_dota_hero_/, "").replace(/^npc_dota_/, "");
+  const kk = r.cat < 2 ? (MINKIND[r.kind] || "") : (DMGKIND[r.kind] || "");
+  const ttxt = (r.n > 1 && r.tEnd > r.t) ? (fmt(r.t) + "–" + fmt(r.tEnd)) : fmt(r.t);
+  return '<tr class="' + now + '"><td>' + ttxt + "</td>"
+    + '<td class="dc">' + detSelf + "</td>"
+    + '<td class="dn2"><div class="dirow">' + diTag(r.nid) + '<span class="txt">'
+    + '<span class="chip c' + r.cat + '">' + CATNAME[r.cat].slice(0, 2) + "</span> "
+    + esc(r.nm) + (kk ? ' <span class="dfold">[' + kk + ']</span>' : "")
+    + (r.n > 1 ? ' <b class="dfold">×' + r.n + "</b>" : "")
+    + "</span></div></td>"
+    + '<td class="dv">' + (r.cat >= 2 ? r.val : "—") + "</td>"
+    + '<td class="do"><div class="dirow">' + diTag(r.oid) + '<span class="txt">' + esc(other)
+    + "</span></div></td></tr>";
+}
+function paintDetRows() {
+  const tb = document.querySelector("#dtbl tbody");
+  if (!tb) return;
+  if (!detSeq.length) { tb.innerHTML = '<tr><td colspan="5">' + detEmpty + "</td></tr>"; return; }
+  const dw = document.getElementById("dwrap");
+  const st = dw ? dw.scrollTop : 0;
+  const h = (dw && dw.clientHeight) || 320;
+  let first = Math.max(0, Math.floor(st / DET_ROWH) - DET_PAD);
+  let last = Math.min(detSeq.length, first + Math.ceil(h / DET_ROWH) + DET_PAD * 2);
+  let html = "";
+  if (first > 0) {
+    html += '<tr class="sp"><td colspan="5" style="height:' + (first * DET_ROWH) + 'px"></td></tr>';
+  }
+  for (let k = first; k < last; k++) html += detRowHTML(detSeq[k], detNow);
+  if (last < detSeq.length) {
+    html += '<tr class="sp"><td colspan="5" style="height:'
+      + ((detSeq.length - last) * DET_ROWH) + 'px"></td></tr>';
+  }
   tb.innerHTML = html;
+}
+function detOnScroll() {
+  if (detPaintPending) return;
+  detPaintPending = true;
+  requestAnimationFrame(function () { detPaintPending = false; paintDetRows(); });
 }
 function esc(s) {
   return String(s === undefined || s === null ? "" : s)
@@ -1653,6 +1782,7 @@ document.getElementById("showWard").onchange = draw;
 document.getElementById("showSmoke").onchange = draw;
 document.getElementById("showRoute").onchange = draw;
 document.getElementById("showName").onchange = draw;
+document.getElementById("dwrap").onscroll = detOnScroll;    // 虚拟滚动：滚到哪画哪
 
 /* ═══════════════ 启动 ═══════════════ */
 (function init() {
@@ -1693,9 +1823,11 @@ def main():
     ap.add_argument("--lite", action="store_true",
                     help="精简版：地图 512px、逐秒数据抽稀、不含 combat log 明细与技能图标")
     ap.add_argument("--step", type=int, default=3, help="lite 的抽稀步长（秒）")
+    ap.add_argument("--no-fetch", action="store_true",
+                    help="不给明细图标联网取图（只用本地 assets + 已有缓存）")
     args = ap.parse_args()
     for mid in args.match:
-        build(mid, args.out, lite=args.lite, step=args.step)
+        build(mid, args.out, lite=args.lite, step=args.step, fetch_icons=not args.no_fetch)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # Q7 · 全盘复现交互 UI（回放浏览器）—— 任务文档
 
-> 状态：**第一步（MVP）+ 第二步（±10s combat log 四 toggle / 技能 CD / 状态胜率）均已交付并发布公网**。
+> 状态：**第一步（MVP）+ 第二步（combat log 四 toggle（窗口经 owner 放大到 **±45s**、逐行带图标）/ 技能 CD / 状态胜率）均已交付并发布公网**。
 > **本任务回传**：`analysis/Q7_SUBMISSION.md`（口径说明 / 可复现脚本 / 验证记录 / 准确率边界 / 待拍板）。
 > 交付物：`analysis/output_review/q7_replay_8955197224.html`、`q7_replay_8830423116.html`
 > （公网 `https://bigfatblackwhale.github.io/DSH-Dota2/q7_replay_<match>.html`）。
@@ -31,7 +31,7 @@
 
 ## 0. 一句话
 
-把**一场比赛**做成"全盘复现"的交互 UI：**左侧地图 + 双时间轴 + 10 英雄头像；顶部经济/经验/胜率；右侧明细表**（默认 KDA + 正反补；点某英雄 → 显示该英雄 **±10s 的 combat log** 与**技能 CD**）。
+把**一场比赛**做成"全盘复现"的交互 UI：**左侧地图 + 双时间轴 + 10 英雄头像；顶部经济/经验/胜率；右侧明细表**（默认 KDA + 正反补；点某英雄 → 显示该英雄 **±45s 的 combat log**（逐行带技能/对方英雄图标）与**技能 CD**）。
 **铁律：所有内容严格来自 combat log。**
 
 ---
@@ -103,7 +103,7 @@ is_attacker_hero, is_target_hero, is_target_building, raw_json
 | **左·地图右侧** | **双方 10 个英雄头像**（复用现有 hero icon 资产）：**两列竖排**（天辉一列 ｜ 夜魇一列，各有队名与分隔线）—— owner 方案①，头像不吃地图高度 |
 | **地图上方（整页宽）** | **两条滑动块**：大尺度时间轴（全场，带重大事件图标）+ 小尺度时间轴（±60s）——见 §3；owner 迭代后大时间轴占**整页宽**，位于地图之**上** |
 | **顶部（最上方）** | 当前 **双方经济差距 / 经验差距 / 胜率** + 全场火花线 |
-| **右（半屏宽）** | **明细 / combat log**：默认 = 10 英雄 **KDA + 正反补**；点某英雄 → 改为该英雄 **±10s 的 combat log** + **技能 CD**（见 §4）。**栏内自己滚**，页面整体不滚 |
+| **右（半屏宽）** | **明细 / combat log**：默认 = 10 英雄 **KDA + 正反补**；点某英雄 → 改为该英雄 **±45s 的 combat log**（列序：时刻 ｜ 本英雄 ｜ 技能/事件 ｜ 数值 ｜ 对象，带图标）+ **技能 CD**（见 §4）。**栏内自己滚**，页面整体不滚 |
 
 ---
 
@@ -132,8 +132,8 @@ is_attacker_hero, is_target_hero, is_target_building, raw_json
 | KDA | `type_category='death'` 条目：击杀（attacker=该英雄）、死亡（target=该英雄）、助攻（`assist_players` 含该英雄） |
 | 正补 / 反补 | creep 死亡条目：`type_category='death'`、target=小兵；attacker=该英雄且为**敌方**小兵=正补，attacker=该英雄且为**己方**小兵=反补 |
 
-### 4.2 点某英雄后（±10s combat log）
-以**当前播放时刻**为中心，展示该英雄 **±10 秒**内的 combat log 明细，**4 个可 toggle 的类别**：
+### 4.2 点某英雄后（±45s combat log，带图标）
+以**当前播放时刻**为中心，展示该英雄 **±45 秒**内的 combat log 明细（owner 2026 从 ±10s 放大），**4 个可 toggle 的类别**：
 | toggle | combat_log 来源 |
 |---|---|
 | **给出的 modifier** | `type_category='modifier'`（ModifierAdd/Remove/Stack）、`attacker`=该英雄 |
@@ -210,7 +210,7 @@ https://bigfatblackwhale.github.io/DSH-Dota2/q7_replay_<match>.html
 ## 9. 已知难点 / 风险
 
 1. **combat log 体量大**：单场全类型全量条目可能数十万条 → 单文件 HTML 内嵌需**分片/按需加载**（或只内嵌"该场 + 精简字段"），否则文件过大（Q5B 已 7.8 MB）。
-2. **±10s 明细的实时性**：拖动时间轴时，右表要快速过滤 combat log（按时刻窗口 + 英雄 + 4 类 toggle）→ 前端需预处理索引。
+2. **明细的实时性**：拖动时间轴时，右表要快速过滤 combat log（按时刻窗口 + 英雄 + 4 类 toggle）→ 前端预处理索引；±45s 窗口在团战期可达 ~1.8k 行 → 页面用**虚拟滚动**（只画视口附近 ~160 行）+ 播放时 130ms 节流。
 3. **t_cle vs t_tick**：combat log 有两条时间轴（`t_cle` 游戏钟=叙事轴、`t_tick` 回放钟=实体轴）。**展示用 `t_cle`（游戏时钟）**；与地图/实体对齐时注意两者差异（暂停/量化）。
 4. **经济/经验两套源**（§5.3）需 owner 拍板。
 5. **胜率模型**（§5.1）需 owner 拍板口径，且严防泄漏。
@@ -225,7 +225,7 @@ https://bigfatblackwhale.github.io/DSH-Dota2/q7_replay_<match>.html
 3. **技能 CD**：接受"combat log 事件 + 冷却常量表"；关键道具 BKB/刷新球/TP 的追踪粒度。
 4. **双时间轴**：松手提交 vs 实时提交；归零瞬时 vs 动画。
 5. **单场还是多场**：先做单场样板（建议）。
-6. **±10s 窗口**：以当前播放时刻为中心？
+6. ~~±10s 窗口~~ → **owner 2026 定：±45s**（已实现）。
 
 ---
 

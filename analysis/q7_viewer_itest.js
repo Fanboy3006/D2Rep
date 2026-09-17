@@ -158,10 +158,12 @@ eval(src + `
   lastDetail: function(){ return lastDetail; },
   winProb: winProb, fmtPct: fmtPct, cdState: cdState,
   cdHTML: function(){ return String(document.getElementById("cdboard").innerHTML); },
-  renderDetail: function(){ renderDetail(); }, renderCD: function(){ renderCD(); },
+  renderDetail: function(){ renderDetail(true); }, renderCD: function(){ renderCD(); },
   det: DET, dnames: DNAMES, cd: CD, tput: TPUT, wp: WP,
   wards: WARDS, smoke: SMOKE, smoked: SMOKED, wicons: WICONS,
   iconsq: ICONSQ, tlicons: TLICONS, tlIconSrc: tlIconSrc,
+  dicons: DICONS, selficons: SELFICONS, diTag: diTag, DETWIN: DET_WIN,
+  detLen: function(){ return detSeq.length; }, paintDet: function(){ paintDetRows(); }, detScroll: function(){ detOnScroll(); },
   tl: TL, buildTimelineEvents: function(){ buildTimelineEvents(); },
   markNear: function(){ markNear(); }, jumpTo: jumpTo, fmtTL: fmtTL,
   evEls: function(){ return evEls; },
@@ -633,11 +635,11 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
   S.commit(900);
 }
 
-/* ══ 3b. 第二步：±10s combat log 四 toggle + 技能 CD + 状态胜率 ══ */
+/* ══ 3b. 第二步：±45s combat log（带技能/对方英雄图标）四 toggle + 技能 CD + 状态胜率 ══ */
 if (!LITE) {
   // --- 数据自洽：明细是 Δ 编码的逐条数组；CD 数据存在 ---
   const pl0 = PL[0];
-  ok(S.det && Object.keys(S.det).length === 10, "10 个英雄都有 ±10s 明细数组（" + Object.keys(S.det).length + "）");
+  ok(S.det && Object.keys(S.det).length === 10, "10 个英雄都有 ±45s 明细数组（" + Object.keys(S.det).length + "）");
   let nAll = 0, okShape = true, lastDtNeg = 0;
   Object.keys(S.det).forEach((k) => {
     const a = S.det[k];
@@ -656,22 +658,61 @@ if (!LITE) {
      "技能/道具 CD 数据存在（键 " + (S.cd ? Object.keys(S.cd.keys).length : 0) + " 个，源 " + (S.cd ? S.cd.src : "-") + "）");
   ok(!!S.wp, "状态胜率模型已内嵌（" + (S.wp ? (S.wp.n_match + " 场拟合") : "缺") + "）");
 
-  // --- 选一个"忙"的时刻，选中英雄，验证窗口严格 ±10s ---
+  // --- 选一个"忙"的时刻，选中英雄，验证窗口严格 ±45s ---
   g("big").value = 1500; g("big").oninput();
   S.select(0);
   ok(S.getSel() === 0, "选中 0 号英雄");
   const ld = S.lastDetail();
   ok(!!ld, "lastDetail 已记录");
-  ok(Math.abs(ld.lo - 1490) < 1e-6 && Math.abs(ld.hi - 1510) < 1e-6,
-     "明细窗口 = 当前时刻 ±10s（" + ld.lo + " → " + ld.hi + "）");
+  ok(Math.abs(ld.lo - 1455) < 1e-6 && Math.abs(ld.hi - 1545) < 1e-6,
+     "明细窗口 = 当前时刻 ±45s（" + ld.lo + " → " + ld.hi + "）");
   ok(ld.tMin === null || (ld.tMin >= ld.lo && ld.tMax <= ld.hi),
-     "窗口内所有条目都落在 [t−10, t+10]（" + ld.tMin + " → " + ld.tMax + "）");
+     "窗口内所有条目都落在 [t−45, t+45]（" + ld.tMin + " → " + ld.tMax + "）");
   ok(ld.n > 0, "该时刻窗口命中 " + ld.n + " 条（四类合计）");
   ok(ld.cnt.length === 4 && ld.cnt.reduce((a, b) => a + b, 0) === ld.n,
      "四类计数之和 == 命中条数（" + ld.cnt.join("/") + " == " + ld.n + "）");
   ok(String(g("dsum").innerHTML).indexOf("窗口") >= 0 && String(g("dsum").innerHTML).indexOf("命中") >= 0,
      "右栏汇总行显示窗口与命中数");
   ok(String(g("#dtbl tbody").innerHTML).length > 0, "明细表渲染出行（tbody innerHTML 非空）");
+
+  // --- 行内图标与列序（owner：时刻 ｜ 本英雄 ｜ 技能 ｜ 数值 ｜ 对象）---
+  {
+    const dn = S.dnames.length;
+    ok(Array.isArray(S.dicons) && S.dicons.length === dn,
+       "明细图标表按名字下标对齐（" + S.dicons.length + " / " + dn + "）");
+    const nIcon = S.dicons.filter((x) => !!x).length;
+    ok(nIcon > 100, "有图标的名字 " + nIcon + " 个（技能/道具/建筑/英雄/普通攻击）");
+    const selfN = Object.keys(S.selficons || {}).length;
+    ok(selfN === 10, "10 个本英雄头像都内嵌（" + selfN + "）");
+    const css = (raw.match(/<style id="dicss">([\s\S]*?)<\/style>/) || [, ""])[1];
+    ok(css.length > 1000 && (css.match(/\.dc\d+\{/g) || []).length === nIcon,
+       "每张图标一条 CSS 规则（" + (css.match(/\.dc\d+\{/g) || []).length + " 条 / " + nIcon + " 张）");
+    ok(css.indexOf("data:image/png;base64,") > 0, "图标以 data URI 内嵌（单文件、无外链）");
+    // 表头列序
+    const hdr = (raw.match(/<table id="dtbl">[\s\S]*?<\/thead>/) || [""])[0];
+    const cols = (hdr.match(/<th>([^<]*)<\/th>/g) || []).map((x) => x.replace(/<\/?th>/g, ""));
+    ok(cols.join("|") === "时刻|本英雄|技能 / 事件|数值|对象",
+       "列序 = 时刻 ｜ 本英雄 ｜ 技能/事件 ｜ 数值 ｜ 对象（实际 " + cols.join(" | ") + "）");
+    const tb = String(g("#dtbl tbody").innerHTML);
+    const rows = (tb.match(/<tr/g) || []).length;
+    ok(rows > 30, "±45s 窗口渲染行数 " + rows + "（比 ±10s 时明显变多）");
+    ok(tb.indexOf('class="di self big') > 0, "每行第 2 列是本英雄头像（.di.self）");
+    ok((tb.match(/class="di[ "]/g) || []).length >= rows,
+       "技能列挂了图标（" + (tb.match(/class="di[ "]/g) || []).length + " 个 <i class=di>）");
+    ok(tb.indexOf('class="dv"') > 0 && tb.indexOf('class="do"') > 0,
+       "数值列在对象列之前（.dv 先于 .do）");
+    // 对象列最后：一行里 do 必须出现在 dv 之后
+    const i1 = tb.indexOf('class="dv"'), i2 = tb.indexOf('class="do"');
+    ok(i1 > 0 && i2 > i1, "同一行里 数值 在 对象 之前");
+    // 技能名文字仍在（"保留文字信息"）
+    const nm = S.dnames[Object.keys(S.det)[0] ? 0 : 0] || "";
+    ok(/[a-z_]{4,}/.test(tb) && tb.indexOf('class="txt"') > 0, "文字名仍然在（图标只是补充）");
+    // 无图标的名字不该渲染出空 <i>
+    const noIconIdx = S.dicons.findIndex((x) => !x);
+    ok(noIconIdx < 0 || S.diTag(noIconIdx).indexOf("<i") < 0,
+       "没有图标的名字 → 不画图标（不拿占位图冒充）");
+    ok(S.DETWIN === 45, "窗口常量 DET_WIN = 45");
+  }
 
   // --- 4 个 toggle 真的过滤 ---
   const before = S.lastDetail().n;
@@ -690,7 +731,33 @@ if (!LITE) {
 
   // --- 窗口随时间移动 ---
   g("big").value = 2000; g("big").oninput();
-  ok(Math.abs(S.lastDetail().lo - 1990) < 1e-6, "移动时间轴 → 窗口跟着移动（" + S.lastDetail().lo + "）");
+  ok(Math.abs(S.lastDetail().lo - 1955) < 1e-6, "移动时间轴 → 窗口跟着移动（" + S.lastDetail().lo + "）");
+
+  // --- 虚拟滚动：±45s 的团战窗口上千行，DOM 里只画视口附近 ---
+  {
+    const iv = PL.findIndex((q) => q.short === "invoker");
+    if (iv >= 0) {
+      g("big").value = 2745; g("big").oninput();
+      S.clearSel(); S.select(iv);
+      const ld2 = S.lastDetail();
+      ok(ld2 && ld2.shown > 400,
+         "团战时刻（Invoker @2745s）±45s 窗口 " + (ld2 ? ld2.shown : "-") + " 行（实测本场最多 1785 行）");
+      ok(S.detLen() === ld2.shown, "内部序列长度 == 汇总行数（" + S.detLen() + "）");
+      const tbHtml = String(g("#dtbl tbody").innerHTML);
+      const nRow = (tbHtml.match(/<tr/g) || []).length;
+      ok(nRow > 20 && nRow < 300,
+         "虚拟滚动：DOM 里只画 " + nRow + " 行（seq " + ld2.shown + " 行）");
+      ok(tbHtml.indexOf('class="sp"') > 0, "上下各有等高占位行（撑出正确滚动条）");
+      const iFirst = tbHtml.indexOf("<td>");
+      ok(iFirst > 0, "行首是时刻列");
+      // 滚到中段 → 画中段
+      const dw = g("dwrap");
+      dw.scrollTop = 24 * 600; S.paintDet();
+      const tb2 = String(g("#dtbl tbody").innerHTML);
+      ok(tb2 !== tbHtml, "滚动后重画了另一段（虚拟滚动生效）");
+      dw.scrollTop = 0; S.paintDet();
+    }
+  }
 
   // --- 技能 CD 三态 ---
   const cdh = S.cdHTML();
@@ -738,7 +805,7 @@ if (LITE) {
      "位置数组长度按 step 抽稀（" + S.POS[PL[0].npc].x.length + " vs D/" + step + "）");
   ok(S.DIFF.nw.length === Math.floor((D - 1) / estep) + 1,
      "经济序列长度按 estep 抽稀（" + S.DIFF.nw.length + " vs D/" + estep + "）");
-  ok(Object.keys(S.det).length === 0, "lite 版不含 ±10s 明细（载荷 0 条）");
+  ok(Object.keys(S.det).length === 0, "lite 版不含 ±45s 明细（载荷 0 条）");
   // 抽稀后索引仍要取到正确时刻的值：与"沿用上一格"一起验证
   S.commit(1200);
   ok(S.diffAt("nw", 1200) !== null && S.posAt(PL[0].npc, 1200) !== null,
@@ -832,7 +899,7 @@ if (process.argv[3] && process.argv[3].indexOf("dump=") === 0) {
     console.log("英雄 #" + i + "（" + PL[i].short + "）@ " + fmtSec(t));
     console.log("-- 头部 --\n" + strip(g("herotop").innerHTML));
     console.log("-- 汇总 --\n" + strip(g("dsum").innerHTML));
-    console.log("-- ±10s 明细（前 25 行）--");
+    console.log("-- ±45s 明细（前 25 行）--");
     const rows = String(g("#dtbl tbody").innerHTML).split("</tr>").slice(0, 25);
     rows.forEach(function (r) { const txt = strip(r); if (txt) console.log("   " + txt.replace(/\t/g, " | ")); });
     console.log("-- 技能 CD --");
