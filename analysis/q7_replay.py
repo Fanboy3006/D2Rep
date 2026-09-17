@@ -31,11 +31,13 @@
 
 import argparse
 import collections
+import csv
 import glob
 import json
 import os
 import sqlite3
 import sys
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -471,53 +473,80 @@ DMG_KIND = {"DotaCombatlogDamage": 0, "DotaCombatlogCriticalDamage": 1,
 RUN_GAP = 1.2      # 相邻条目间隔 ≤ 该秒数 → 视为同一"连续区间"
 
 
+CAT_LABEL = ["给出的 modifier", "收到的 modifier", "造成伤害", "收到伤害"]
+
+
+def cat_expectation():
+    """四类的"应有条数"规则 —— 与 build_combat_detail 的 push 规则**一一对应**：
+      0 给出的 modifier：库里 attacker=该英雄 的 modifier 条数；
+      1 收到的 modifier：库里 target=该英雄 且 (attacker 为空 或 attacker≠自己) 的 modifier 条数；
+      2 造成伤害       ：库里 attacker=该英雄 的 damage 条数；
+      3 收到伤害       ：库里 target=该英雄 且 (attacker 为空 或 attacker≠自己) 的 damage 条数。
+    （自己打自己/自身 modifier 只记"给出/造成"一侧 → 第 1、3 类显式排除 attacker==target。）"""
+    return [(0, "modifier", "attacker"), (1, "modifier", "target"),
+            (2, "damage", "attacker"), (3, "damage", "target")]
+
+
 def check_detail_attribution(con, detail, names, players, horn_cle, t0, t1):
-    """归属对账：载荷里「收到伤害 / 收到的 modifier 且 other 是英雄」的条数，
-    必须等于库里 `target=某英雄 且 attacker=另一英雄` 的条数（减去窗口外）。
+    """**四类逐条对账**：载荷每一类的条数（以及"object 是英雄"的条数）必须等于直接在库里
+    按同一规则 count 出来的条数，逐英雄比对。
 
     为什么要它：owner 2026 实测发现"收到攻击时只看得到被小怪打"——
     `build_combat_detail` 早期用 if/elif 二选一给事件定归属，英雄打英雄只进了**攻击者**的日志，
-    受害者一侧永远是空的（并且不会报错、不会有 NaN）。这条对账把这种"静默丢半边"钉死。
-    差值只允许来自两处，且都要报出来：
-      · 自己打自己 / 自己给自己上 modifier（按设计只记"造成/给出"一侧）；
-      · 比赛结束（远古被摧毁）之后的结算残留（窗口外，页面本来就不显示）。
+    受害者一侧永远是空的（不报错、无 NaN、总数还挺好看）。这条对账把这种"静默丢半边"钉死：
+    它对着 DB 一条条数，任何一类少记/多记都会红，并且能定位到是哪个英雄差了多少。
+
+    返回 list[dict]，每类一条：{what, expect, payload, hero_expect, hero_payload, ok, worst}
     """
-    hero_set = {p["npc"]: p for p in players}
     short = {p["npc"]: p["short"] for p in players}
     hero_shorts = set(short.values())
-    hs = list(hero_set)
+    hs = list(short)
     inlist = ",".join("?" * len(hs))
+    lo, hi = horn_cle + t0 - 1, horn_cle + t1 + 1        # 与切片里的窗口过滤同一口径
+
+    # 载荷侧：每类计数 + 其中"对手是另一个英雄"的条数（自己对自己不算"英雄↔英雄"）
+    got, got_hero = collections.Counter(), collections.Counter()
+    for npc, rows in detail.items():
+        me = short[npc]
+        for r in rows:
+            cat = r[1] >> 2
+            got[cat] += 1
+            if r[3] >= 0:
+                on = names[r[3]]
+                if on in hero_shorts and not (cat in (0, 2) and on == me):
+                    got_hero[cat] += 1
+
     out = []
-    for label, cat, tc in (("收到伤害", 3, "damage"), ("收到的 modifier", 1, "modifier")):
-        pred_all = self_all = outside = got = 0
-        for npc in hero_set:
-            # 库里：目标=该英雄、攻击者=**另一个英雄**
-            pred_all += con.execute(
-                "SELECT COUNT(*) n FROM combat_log WHERE type_category=? AND target=? "
-                "AND attacker IN (%s) AND attacker<>?" % inlist, (tc, npc) + tuple(hs) + (npc,)
-            ).fetchone()["n"]
-            # 库里：自己打自己 / 自己给自己上 modifier（按设计只记"造成/给出"一侧）
-            self_all += con.execute(
-                "SELECT COUNT(*) n FROM combat_log WHERE type_category=? AND target=? AND attacker=?",
-                (tc, npc, npc)).fetchone()["n"]
-            # 库里：上面那些里落在显示窗口之外的（比赛结束后结算残留，页面本来就不显示）
-            for r in con.execute(
-                "SELECT t_cle FROM combat_log WHERE type_category=? AND target=? "
-                "AND attacker IN (%s) AND attacker<>?" % inlist, (tc, npc) + tuple(hs) + (npc,)
-            ):
-                t = float(r["t_cle"]) - horn_cle
-                if t < t0 - 1 or t > t1 + 1:
-                    outside += 1
-        # 载荷：该类里 other 是英雄的条数
+    for cat, tc, col in cat_expectation():
+        other = "target" if col == "attacker" else "attacker"
+        q = ("SELECT %s k, COUNT(*) n FROM combat_log WHERE type_category=? "
+             "AND t_cle BETWEEN ? AND ? AND %s IN (%s)" % (col, col, inlist))
+        if col == "target":                      # 收到一侧：排除自己对自己
+            q += " AND (%s IS NULL OR %s <> %s)" % (other, other, col)
+        q += " GROUP BY %s" % col
+        db = {r["k"]: r["n"] for r in con.execute(q, (tc, lo, hi) + tuple(hs))}
+        # 英雄来源/目标那一半（用于展示"其中来自英雄/指向英雄多少条"）
+        q2 = ("SELECT target k, COUNT(*) n FROM combat_log WHERE type_category=? AND t_cle BETWEEN ? AND ? "
+              "AND target IN (%s) AND attacker IN (%s) AND attacker <> target GROUP BY target" % (inlist, inlist))
+        db_h2h = {r["k"]: r["n"] for r in con.execute(q2, (tc, lo, hi) + tuple(hs) + tuple(hs))}
+        # 载荷侧逐英雄
+        gots = collections.Counter()
         for npc, rows in detail.items():
             for r in rows:
-                if (r[1] >> 2) == cat and r[3] >= 0 and names[r[3]] in hero_shorts:
-                    got += 1
-        # 注意：pred_all 里已经用 attacker<>该英雄 排除了"自己打自己"，所以这里只减"窗口外"
-        pred = pred_all - outside
-        out.append({"what": label, "db_hero_to_hero": pred_all, "self": self_all,
-                    "after_end": outside, "expect": pred, "payload": got,
-                    "ok": pred == got})
+                if (r[1] >> 2) == cat:
+                    gots[npc] += 1
+        exp_n = sum(db.values())
+        got_n = got[cat]
+        worst = sorted(((short[n], db.get(n, 0), gots.get(n, 0))
+                        for n in set(list(db) + list(gots)) if db.get(n, 0) != gots.get(n, 0)),
+                       key=lambda x: -abs(x[1] - x[2]))[:5]
+        out.append({
+            "what": CAT_LABEL[cat], "cat": cat,
+            "expect": exp_n, "payload": got_n, "ok": exp_n == got_n,
+            "hero_expect": sum(db_h2h.values()), "hero_payload": got_hero[cat],
+            "hero_ok": sum(db_h2h.values()) == got_hero[cat],
+            "worst": worst,
+        })
     return out
 
 
@@ -993,12 +1022,18 @@ def selfcheck(dat):
     tls = dat.get("tl", [])
     ac = dat.get("attr_check") or []
     if ac:
+        bad = [c for c in ac if not c["ok"]]
+        msgs.append("★ 归属对账（四类逐条对 DB）：" + " ｜ ".join(
+            "%s 应有 %d / 载荷 %d %s" % (c["what"], c["expect"], c["payload"],
+                                        "✓" if c["ok"] else "★不一致")
+            for c in ac) + ("  ← **必须查**" if bad else "  → 四类全部一致"))
         for c in ac:
-            msgs.append(
-                "★ 归属对账·%s：库里「英雄→另一英雄」%d 条 − 赛后窗口外 %d = 应有 %d ｜ 载荷 %d → %s"
-                "（另有自己打自己/自身 modifier %d 条，按设计只记「造成/给出」一侧）"
-                % (c["what"], c["db_hero_to_hero"], c["after_end"], c["expect"],
-                   c["payload"], "一致" if c["ok"] else "★不一致，必须查！", c["self"]))
+            if c["hero_expect"] or c["hero_payload"]:
+                msgs.append("   · %s：其中英雄↔英雄 库里 %d 条 / 载荷 %d 条%s"
+                            % (c["what"], c["hero_expect"], c["hero_payload"],
+                               "" if c["hero_expect"] == c["hero_payload"] else "  ★不一致"))
+        for c in bad:
+            msgs.append("   ★ %s 逐英雄差值：%s" % (c["what"], c["worst"]))
     if tls:
         up = sum(1 for e in tls if e[1] == 2)
         ick = {}
@@ -1032,14 +1067,145 @@ def fmt(sec):
     return "%s%d:%02d" % ("-" if sec < 0 else "", s // 60, s % 60)
 
 
+def match_basics(con, match_id):
+    """只取做明细对账需要的量（玩家 / 号角 / 结束 / 时间轴范围）——不碰 CD·眼位·烟雾·时间轴，
+    这样"四类逐条对账"可以便宜地扫全场次（`--attr-scan`）。口径与 parse_match 完全一致。"""
+    players = []
+    for i, r in enumerate(con.execute("SELECT * FROM player_identity ORDER BY player_slot")):
+        players.append({"i": i, "slot": int(r["player_slot"]), "team": int(r["team_id"]),
+                        "npc": r["hero_name"],
+                        "short": (r["hero_name"] or "").replace("npc_dota_hero_", ""),
+                        "name": r["player_name"], "steam": r["steam_id"]})
+    r = con.execute("SELECT t_cle FROM combat_log WHERE type_category='gamestate' AND value=5 LIMIT 1").fetchone()
+    if not r:
+        raise SystemExit("该库没有 gamestate value=5（号角）→ 跳过")
+    horn_cle = float(r["t_cle"])
+    r = con.execute("SELECT t_cle FROM combat_log WHERE type_category='death' AND target LIKE '%_fort' "
+                    "ORDER BY t_cle LIMIT 1").fetchone()
+    if r:
+        end_cle = float(r["t_cle"])
+    else:
+        r = con.execute("SELECT MAX(t_cle) m FROM combat_log WHERE type_category IN ('damage','death','xp','gold')").fetchone()
+        end_cle = float(r["m"]) if r and r["m"] else None
+    if end_cle is None:
+        raise SystemExit("无法定位比赛结束 → 跳过")
+    pos_tt, _nw, _hp = load_snapshots(con)
+    CLK = tb.Clock(con, match_id)
+    hero_first_disp = min(CLK.disp(t) for t in pos_tt) if pos_tt else None
+    t0 = int(min(-90, (hero_first_disp if hero_first_disp is not None else -90) - 1))
+    t1 = int(round(end_cle - horn_cle))
+    return players, horn_cle, t0, t1
+
+
+def attr_audit(db, mid, league):
+    """单场：四类逐条对账（读 DB → 建明细 → 对账）。返回 (ok, 结果列表, 明细条数)。"""
+    con = sqlite3.connect(db)
+    con.row_factory = sqlite3.Row
+    try:
+        players, horn_cle, t0, t1 = match_basics(con, mid)
+        if len(players) < 2:
+            raise SystemExit("player_identity 少于 2 人（库不完整）→ 跳过")
+        detail, names = build_combat_detail(con, players, horn_cle, t0, t1)
+        res = check_detail_attribution(con, detail, names, players, horn_cle, t0, t1)
+        n = sum(len(v) for v in detail.values())
+    finally:
+        con.close()
+    return all(c["ok"] for c in res), res, n
+
+
+def attr_scan(limit=None, seed=20260101, csv_path=None):
+    """全量/抽样：把四类归属对账跑遍 corpus（`dems/db_full/*/*.db`）。
+    **逐场写 CSV + 实时 flush**（被中断也能看到跑到哪、结果不丢），最后打印总账。
+    这是这一项的数据层批检：退出码 0 = 全部一致。"""
+    all_dbs = sorted(glob.glob(os.path.join(ROOT, "dems", "db_full", "*", "*.db")))
+    if not all_dbs:
+        raise SystemExit("没找到 dems/db_full/*/*.db")
+    dbs = all_dbs
+    if limit and limit < len(dbs):
+        import random
+        random.Random(seed).shuffle(dbs)
+        dbs = sorted(dbs[:limit])
+    print("归属对账批检：本批 %d 场（corpus 共 %d 场）" % (len(dbs), len(all_dbs)), flush=True)
+    keys = ["mid", "league", "ok", "rows", "e0", "p0", "e1", "p1", "e2", "p2", "e3", "p3", "note"]
+    f = w = None
+    if csv_path:
+        os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+        f = open(csv_path, "w", encoding="utf-8", newline="")
+        w = csv.DictWriter(f, fieldnames=keys, extrasaction="ignore")
+        w.writeheader()
+        f.flush()
+
+    def emit(r):
+        if w:
+            w.writerow(r)
+            f.flush()
+
+    bad = err = 0
+    t00 = time.time()
+    for i, db in enumerate(dbs):
+        mid = os.path.basename(db)[:-3]
+        league = os.path.basename(os.path.dirname(db))
+        r = {"mid": mid, "league": league}
+        try:
+            ok, res, n = attr_audit(db, mid, league)
+        except SystemExit as e:
+            err += 1
+            r.update({"ok": 0, "note": ("SKIP " + str(e))[:70]})
+            emit(r)
+            print("  [%4d/%d] %s 跳过：%s" % (i + 1, len(dbs), mid, e), flush=True)
+            continue
+        except Exception as e:
+            err += 1
+            r.update({"ok": 0, "note": ("EXC %r" % (e,))[:70]})
+            emit(r)
+            print("  [%4d/%d] %s 异常：%r" % (i + 1, len(dbs), mid, e), flush=True)
+            continue
+        if not ok:
+            bad += 1
+        r.update({"ok": 1 if ok else 0, "rows": n})
+        for c in res:
+            r["e%d" % c["cat"]] = c["expect"]
+            r["p%d" % c["cat"]] = c["payload"]
+        emit(r)
+        if not ok:
+            print("  ★ [%4d/%d] %s **不一致**：%s" % (i + 1, len(dbs), mid,
+                  " ｜ ".join("%s 应有 %d/载荷 %d" % (c["what"], c["expect"], c["payload"]) for c in res)),
+                  flush=True)
+        elif (i + 1) % 25 == 0 or i + 1 == len(dbs):
+            el = time.time() - t00
+            print("  [%4d/%d] 已过 %d 场，全部一致｜不一致 %d ｜跳过/异常 %d｜用时 %.0fs（预计还需 %.0fs）"
+                  % (i + 1, len(dbs), i + 1 - err, bad, err, el,
+                     el / (i + 1) * (len(dbs) - i - 1)), flush=True)
+    print("批检完成：%d 场；不一致 %d 场；跳过/异常 %d 场；用时 %.0fs"
+          % (len(dbs), bad, err, time.time() - t00), flush=True)
+    if f:
+        f.close()
+        print("→", os.path.relpath(csv_path, ROOT), flush=True)
+    return bad
+
+
 def main():
     ap = argparse.ArgumentParser(description="Q7 单场回放数据切片")
-    ap.add_argument("match", help="match_id（如 8955197224）或 .db 路径")
+    ap.add_argument("match", nargs="?", help="match_id（如 8955197224）或 .db 路径")
     ap.add_argument("--out", default=None)
     ap.add_argument("--lite", action="store_true",
                     help="精简切片：跳过 ±45s combat log 明细（体积/耗时的大头），供 lite viewer / 批量构建")
     ap.add_argument("--no-write", action="store_true", help="只跑自检，不落盘")
+    ap.add_argument("--attr-only", action="store_true",
+                    help="只跑「四类归属对账」（便宜：不建 CD/眼位/烟雾/时间轴，不落盘）")
+    ap.add_argument("--attr-scan", nargs="?", const="all", default=None, metavar="N",
+                    help="批检：对 corpus 全量（或抽样 N 场）跑四类归属对账，落 CSV")
     args = ap.parse_args()
+
+    if args.attr_scan is not None:
+        lim = None if args.attr_scan in ("all", "") else int(args.attr_scan)
+        csv_path = os.path.join(ROOT, "analysis", "output_q5", "clock_ab",
+                                "detail_attr_scan%s.csv" % ("" if lim is None else "_%d" % lim))
+        bad = attr_scan(lim, csv_path=csv_path)
+        raise SystemExit(0 if bad == 0 else 1)
+
+    if not args.match:
+        raise SystemExit("要么给 match_id，要么用 --attr-scan [N]")
 
     if os.path.exists(args.match):
         db = args.match
@@ -1050,6 +1216,15 @@ def main():
         db, league = find_db(mid)
 
     print("DB :", os.path.relpath(db, ROOT))
+    if args.attr_only:
+        ok, res, n = attr_audit(db, mid, league)
+        for c in res:
+            print("  %s：应有 %d ｜ 载荷 %d ｜ 其中英雄↔英雄 库里 %d/载荷 %d → %s"
+                  % (c["what"], c["expect"], c["payload"], c["hero_expect"], c["hero_payload"],
+                     "一致" if c["ok"] else "★不一致 %s" % (c["worst"],)))
+        print("四类归属对账：%s（明细逐条 %d 条）" % ("全部一致" if ok else "★有不一致，必须查！", n))
+        raise SystemExit(0 if ok else 1)
+
     dat = parse_match(db, mid, league, with_detail=(not args.lite))
     for line in selfcheck(dat):
         print("  " + line)

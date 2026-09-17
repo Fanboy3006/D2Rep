@@ -62,7 +62,7 @@ python analysis/ward_analysis.py 8592126358.db 8979891001.db [--team 2|3|all]
   每行带**技能图标 + 对方英雄头像**（`analysis/detail_icons.py`：英雄头像 / 官方技能·道具图 /
   塔·兵营·肉山字形 / 自绘"普通攻击"字形；**解析不到就不画，文字名一律保留**），
   ±45s 团战期最多 **1785 行** → **虚拟滚动**（DOM 只画视口附近 ~160 行）+ 播放时 130ms 节流。
-  逐条记录、右半屏 DOM bug（`.left` 没闭合）与取舍见 `Q7_SUBMISSION.md` §8。
+  逐条记录、右半屏 DOM bug（`.left` 没闭合）、**四类归属对账**（英雄↔英雄事件两侧都记；`--attr-only` 单场秒级、`--attr-scan` 全 corpus 批检）与取舍见 `Q7_SUBMISSION.md` §8。
 - **改动量实测（别夸大）**：`python analysis/q7_clock_check.py --scan 45` → 窗口内旧/新 |Δ显示秒| 中位 0.03~0.07s、
   最大 ≤9.6s、>30s 的 0 场；`python analysis/q5_clock_check.py --sample 40` → Q5B 逐支眼改动 **0/4591**；
   换时基后全量重跑 Q5B 并与发布版比对 → **SHA256 相同**。

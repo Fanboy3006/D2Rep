@@ -679,12 +679,24 @@ if (!LITE) {
     ok(noHeroGiven.length === 0,
        "每个英雄的『造成伤害/给出的 modifier』里都有英雄目标（缺 " + noHeroGiven.join(",") + "）");
     // 构建期拿 DB 做的对账结果（真值来自库里逐条 count）必须一致
-    ok(Array.isArray(S.attr) && S.attr.length === 2, "载荷带构建期归属对账结果（" + (S.attr || []).length + " 项）");
+    ok(Array.isArray(S.attr) && S.attr.length === 4, "载荷带构建期四类归属对账结果（" + (S.attr || []).length + " 项）");
     (S.attr || []).forEach((c) => {
       ok(c.ok === true && c.expect === c.payload,
-         "归属对账·" + c.what + "：库里英雄→英雄 " + c.db_hero_to_hero + " − 赛后窗口外 "
-         + c.after_end + " = " + c.expect + " ｜ 载荷 " + c.payload + " → 一致");
+         "归属对账·" + c.what + "：库里应有 " + c.expect + " 条 ｜ 载荷 " + c.payload + " 条 → 一致");
+      if (c.hero_expect || c.hero_payload) {
+        ok(c.hero_ok === true && c.hero_expect === c.hero_payload,
+           "　其中英雄↔英雄 ·" + c.what + "：" + c.hero_expect + " 条（两侧对得上）");
+      }
     });
+    const byCat = {};
+    (S.attr || []).forEach((c) => { byCat[c.cat] = c; });
+    ok(byCat[0] && byCat[1] && byCat[2] && byCat[3], "四类（0/1/2/3）都在对账结果里");
+    ok(byCat[0] && byCat[1] && byCat[0].hero_expect === byCat[1].hero_expect,
+       "同一个英雄↔英雄 modifier 事件在两侧计数一致（给出 " + (byCat[0] || {}).hero_expect
+       + " == 收到 " + (byCat[1] || {}).hero_expect + "）");
+    ok(byCat[2] && byCat[3] && byCat[2].hero_expect === byCat[3].hero_expect,
+       "同一个英雄↔英雄伤害事件在两侧计数一致（造成 " + (byCat[2] || {}).hero_expect
+       + " == 收到 " + (byCat[3] || {}).hero_expect + "）");
   }
   ok(Array.isArray(S.dnames) && S.dnames.length > 50, "名称字典 " + S.dnames.length + " 项");
   ok(!!S.cd && !!S.cd.keys && Object.keys(S.cd.keys).length > 10,
