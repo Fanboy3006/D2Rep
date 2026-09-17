@@ -98,6 +98,14 @@ def variants(nm):
         m = re.match(r"^(.*?)(\d+)$", b)
         if m and m.group(1):
             out.append(m.group(1))
+    # 状态后缀：modifier_largo_song_speed_burst_slowres → largo_song_speed_burst（技能图可能存在）
+    SUF = ("_slowres", "_slow_res", "_slow", "_debuff", "_buff", "_aura", "_effect", "_instance",
+           "_stack", "_stacks", "_bonus", "_stun", "_crit", "_passive", "_dot", "_modifier",
+           "_counter", "_charge", "_marker", "_active", "_hidden", "_lua", "_proc")
+    for b in list(out):
+        for s in SUF:
+            if b.endswith(s) and len(b) > len(s) + 2:
+                out.append(b[:-len(s)])
     for b in list(out):
         parts = b.split("_")
         for k in range(1, 4):
@@ -110,6 +118,67 @@ def variants(nm):
             seen.add(v)
             res.append(v)
     return res
+
+
+# ── 「类别字形」：官方 CDN **没有**小兵/中立/召唤的图（我实测 5 个候选路径全 404）——
+#    下面这几个是我**自绘的 UI 符号**（`assets/ui_icons/`），只表示"属于哪一类单位/状态"；
+#    页面上文字名照旧显示，不冒充游戏美术、也不编造信息。
+GLYPH_RULES = (                     # 顺序即优先级
+    ("siege", "unit_siege"),        # 攻城车（*_siege）
+    ("flagbearer", "unit_flag"),    # 旗手
+    ("ranged", "unit_ranged"),      # 远程小兵
+    ("creep", "unit_creep"),        # 近战小兵（含 upgraded / mega 各种前缀）
+    ("neutral_", "unit_neutral"),   # 中立生物
+    ("miniboss", "unit_neutral"),   # 小野怪 / 大野怪
+)
+
+
+def glyph_for(nm):
+    """类别字形（找不到返回 None）。只兜底"单位/引擎状态"，技能与道具永远走真实图标。"""
+    if not nm:
+        return None
+    if nm.startswith("modifier_"):
+        # 引擎 modifier（modifier_stunned / modifier_invoke_bonuses / modifier_tower_aura_bonus …）
+        fp = os.path.join(UI_DIR, "status.png")
+        return ("status", fp) if os.path.exists(fp) else None
+    for key, g in GLYPH_RULES:
+        if key in nm:
+            fp = os.path.join(UI_DIR, g + ".png")
+            return ("unit", fp) if os.path.exists(fp) else None
+    # 其余没解析出来的基本是单位（召唤物/分身/宠物/野怪变体…）→ 召唤物字形
+    fp = os.path.join(UI_DIR, "unit_summon.png")
+    return ("unit", fp) if os.path.exists(fp) else None
+
+
+def team_of(nm):
+    """名字里带没带阵营（`goodguys` / `badguys`，注意小兵是 `creep_goodguys_melee` 这种**中缀**）
+    → 2/3；用于给小兵字形上色。"""
+    if not nm:
+        return 0
+    if "goodguys" in nm:
+        return 2
+    if "badguys" in nm:
+        return 3
+    return 0
+
+
+def tint_glyph(path, team):
+    """把小兵类白描字形按阵营上色（goodguys=天辉绿 / badguys=夜魇红），带落盘缓存。"""
+    if team not in (2, 3) or not path:
+        return None
+    base = os.path.basename(path)[:-4]
+    dest = os.path.join(UI_DIR, "%s_%s.png" % (base, "r" if team == 2 else "d"))
+    if os.path.exists(dest):
+        return dest
+    try:
+        from PIL import Image
+        im = Image.open(path).convert("RGBA")
+        out = Image.new("RGBA", im.size, TINT[team] + (255,))
+        out.putalpha(im.getchannel("A"))
+        out.resize((SAVE_PX, SAVE_PX), Image.LANCZOS).save(dest, "PNG", optimize=True)
+        return dest
+    except Exception:
+        return None
 
 
 def bld_icon(nm):
@@ -182,7 +251,7 @@ class Resolver(object):
             if v in self.hero:
                 return ("hero", os.path.join(HERO_DIR, v + ".png"))
         if not self.allow_fetch:
-            return None
+            return glyph_for(nm)          # 离线构建也要有兜底字形
         for v in cands:                                   # 联网（带缓存）
             key = "ab:" + v
             if key not in self.cache:
@@ -207,7 +276,8 @@ class Resolver(object):
             elif self.cache[key]:
                 self.ab.add(v)
                 return ("ability", os.path.join(AB_DIR, v + ".png"))
-        return None
+        # ★ 官方图实在没有 → 用自绘的"类别字形"兜底（小兵/中立/召唤/引擎状态）；仍不给占位假图。
+        return glyph_for(nm)
 
     # ---- 一批名字（按次数排，先满足高频）----
     def prepare(self, names, counts=None):

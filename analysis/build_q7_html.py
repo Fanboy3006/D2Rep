@@ -182,6 +182,11 @@ def build(mid, outdir, lite=False, step=3, fetch_icons=True):
                 dicons.append("")
                 continue
             kind, fp = r
+            # 小兵类字形按阵营上色（goodguys_/badguys_ → 天辉绿 / 夜魇红），其余保持原色
+            if kind == "unit":
+                tm = DI.team_of(dnames_all[i])
+                if tm:
+                    fp = DI.tint_glyph(fp, tm) or fp
             key = "dc%d" % len(dc_css)
             try:
                 dc_css.append(".%s{background-image:url(data:image/png;base64,%s)}"

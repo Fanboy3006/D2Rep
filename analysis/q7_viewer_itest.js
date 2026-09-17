@@ -757,6 +757,41 @@ if (!LITE) {
     const noIconIdx = S.dicons.findIndex((x) => !x);
     ok(noIconIdx < 0 || S.diTag(noIconIdx).indexOf("<i") < 0,
        "没有图标的名字 → 不画图标（不拿占位图冒充）");
+    // ★ 图标不再有空白：官方图 + 自绘类别字形（小兵/中立/召唤/状态）全兜住
+    {
+      const miss = S.dnames.filter((n, i) => !S.dicons[i]);
+      ok(miss.length === 0, "所有明细名字都有图标（缺 " + miss.length + "：" + miss.slice(0, 5).join(",") + "）");
+      // 取两张不同名字的图，必须是**不同的** base64（不是同一张占位图）
+      const clsOf = (n) => { const i = S.dnames.indexOf(n); return i >= 0 ? S.dicons[i] : ""; };
+      const uniq = new Set(S.dicons.filter(Boolean));
+      ok(uniq.size > S.dicons.filter(Boolean).length * 0.9,
+         "图标几乎一一对应（" + uniq.size + " / " + S.dicons.filter(Boolean).length + " 个不同类）");
+      const cg = clsOf("creep_goodguys_melee"), cb = clsOf("creep_badguys_melee");
+      if (cg && cb) {
+        ok(cg !== cb, "天辉/夜魇小兵用的是不同类（阵营上色）");
+      }
+      const cssAll = String(raw.match(/<style id="dicss">([\s\S]*?)<\/style>/) ?
+                            raw.match(/<style id="dicss">([\s\S]*?)<\/style>/)[1] : "");
+      const ruleOf = (k) => {
+        const m = new RegExp("\\." + k + "\\{background-image:url\\(data:image/png;base64,([^)]+)\\)\\}");
+        const mm = cssAll.match(m);
+        return mm ? mm[1] : "";
+      };
+      if (cg && cb) {
+        const a = ruleOf(cg), b = ruleOf(cb);
+        ok(a && b && a !== b, "两阵营字形确实是不同的内嵌图（长度 " + a.length + " / " + b.length + "）");
+      }
+      const st = clsOf("modifier_stunned");
+      ok(!!st, "引擎状态 modifier 也有图标（modifier_stunned → " + st + "）");
+      ok(!!clsOf("miniboss") && !!clsOf("thinker"),
+         "中立/召唤单位也有图标（miniboss / thinker）");
+      // 自绘字形资产在仓库里（可复现）
+      const uiDir = path.join(__dirname, "..", "opendota_analysis", "assets", "ui_icons");
+      const need = ["attack.png", "status.png", "unit_creep.png", "unit_ranged.png",
+                    "unit_siege.png", "unit_flag.png", "unit_neutral.png", "unit_summon.png"];
+      const missF = need.filter((f) => !fs.existsSync(path.join(uiDir, f)));
+      ok(missF.length === 0, "类别字形资产齐备（缺 " + missF.join(",") + "）");
+    }
     ok(S.DETWIN === 45, "窗口常量 DET_WIN = 45");
   }
 
