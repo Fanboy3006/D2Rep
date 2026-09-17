@@ -605,8 +605,8 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
 
 <h1>Dota 2 比赛回放浏览器
   <span class="sub" style="font-weight:400"><b>@@RNAME@@</b> vs <b>@@DNAME@@</b> ｜ @@WIN@@ ｜ 时长 @@DUR@@
-  ｜ 比赛编号 @@MID@@</span></h1>
-<div class="tip" style="margin:0 0 6px">怎么用：<b>拖动时间轴</b>或按 <b>▶ 播放</b> 看比赛回放；<b>点地图上的英雄</b>（或右下表格里的任意一行）→ 右栏换成这名英雄的战斗记录与技能冷却；时间轴上的图标可以直接点，跳到那一刻。</div>
+  ｜ 比赛编号 <span id="mid">@@MID@@</span></span>
+  <span class="sub" style="font-weight:400">　怎么用：<b>拖时间轴</b>或点 <b>▶ 播放</b> 看回放；<b>点地图上的英雄</b>（或右下表格任一行）→ 右栏看它的战斗记录与技能冷却；时间轴图标可直接点跳转。</span></h1>
 
 <div id="top">
   <div class="stat clock"><div class="k">当前时刻</div><div class="v" id="vClock">0:00</div>
@@ -1883,23 +1883,37 @@ document.getElementById("dwrap").onscroll = detOnScroll;    // 虚拟滚动：�
 
 /* ═══════════════ 启动 ═══════════════ */
 (function init() {
-  document.getElementById("mid").textContent = DATA.mid;
-  const g = document.getElementById("gapEnd");
-  const a = DIFF.nw[D - 1], b = DIFF.cg[D - 1];
-  if (g && a !== null && b !== null) g.textContent = Math.abs(a - b).toLocaleString("en-US") + "（净值 " + fmtNum(a) + " vs 累计 " + fmtNum(b) + "）";
-  if (WP) {
-    document.getElementById("wpN").textContent = WP.n_match + " 场比赛统计";
-    document.getElementById("wpAuc").textContent =
-      "区分度 " + (WP.auc_test === null ? "—" : WP.auc_test.toFixed(2))
-      + "（1.00 = 完全分得开、0.50 = 与瞎猜无异）";
-  } else {
-    document.getElementById("wpN").textContent = "无数据";
-    document.getElementById("wpAuc").textContent = "本页未附带胜率统计";
+  /* ★ 文案填充一律走 setTxt：**少一个元素也不能让初始化中断**。
+     （踩过一次：改头部文案时删掉了 #mid，init 第一句就抛 TypeError →
+     后面的头像条 / 时间轴 / 地图尺寸全部没建出来，页面看起来"英雄没了、地图变小了"。） */
+  const setTxt = function (id, txt) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = txt;
+  };
+  try {
+    setTxt("mid", DATA.mid);
+    const a = DIFF.nw[D - 1], b = DIFF.cg[D - 1];
+    if (a !== null && b !== null) {
+      setTxt("gapEnd", Math.abs(a - b).toLocaleString("en-US")
+        + "（净值 " + fmtNum(a) + " vs 累计 " + fmtNum(b) + "）");
+    }
+    if (WP) {
+      setTxt("wpN", WP.n_match + " 场比赛统计");
+      setTxt("wpAuc", "区分度 " + (WP.auc_test === null ? "—" : WP.auc_test.toFixed(2))
+        + "（1.00 = 完全分得开、0.50 = 与瞎猜无异）");
+    } else {
+      setTxt("wpN", "无数据");
+      setTxt("wpAuc", "本页未附带胜率统计");
+    }
+    if (DATA.lite) {
+      const ln = document.getElementById("liteNote");
+      if (ln) ln.style.display = "";
+      setTxt("liteStep", String(STEP));
+    }
+  } catch (e) {
+    if (typeof console !== "undefined" && console.warn) console.warn("文案填充出错（不影响交互）：", e);
   }
-  if (DATA.lite) {
-    document.getElementById("liteNote").style.display = "";
-    document.getElementById("liteStep").textContent = String(STEP);
-  }
+  /* 交互初始化：这一段的成败决定页面能不能用，必须放在文案之后单独执行 */
   buildAvatars(); buildTable(); buildTimelineEvents(); fitCanvas();
   commit(0);          // 默认停在 0:00（号角）；往前拖 = 出门期（-1:30 起）
   /* 首帧之后再量一次：字体/图片加载完，左栏可用高度会变（避免地图第一次就取错尺寸） */

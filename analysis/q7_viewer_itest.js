@@ -80,10 +80,17 @@ function mkEl(id) {
       e._cn.split(/\s+/).filter(Boolean).forEach((x) => cls.add(x));
     },
   });
-  /* innerHTML = "" 必须清空 children（浏览器语义；不清会让重复渲染在桩里累加） */
+  /* innerHTML = "" 必须清空 children（浏览器语义；不清会让重复渲染在桩里累加）。
+     另外：真实浏览器会把 innerHTML 字符串里的 id 变成真元素（表格单元格 c-hp-0 之类就是这么做出来的），
+     桩不解析 DOM，所以这里把字符串里的 id 记进"运行时存在的 id"集合，供 getElementById 判断。 */
   Object.defineProperty(e, "innerHTML", {
     get() { return e._ih; },
-    set(v) { e._ih = String(v == null ? "" : v); if (e._ih === "") e.children.length = 0; },
+    set(v) {
+      e._ih = String(v == null ? "" : v);
+      if (e._ih === "") e.children.length = 0;
+      const mm = e._ih.match(/id="([^"]+)"/g);
+      if (mm) mm.forEach((x) => RUNTIME_IDS.add(x.slice(4, -1)));
+    },
   });
   Object.defineProperty(e, "value", { get() { return e._v; }, set(v) { e._v = v; } });
   Object.defineProperty(e, "clientWidth", { get() { return e._cw === undefined ? 900 : e._cw; }, set(v) { e._cw = v; } });
@@ -92,10 +99,29 @@ function mkEl(id) {
   return (els[id] = e);
 }
 const created = [];
+const RUNTIME_IDS = new Set();          // innerHTML 字符串里出现过的 id（浏览器会真的建出这些元素）
 const winH = {};
 const tableRows = [];
+/* ★ 桩只认"页面上真实存在的 id"（浏览器就是这样）：
+   以前桩对任何 id 都凭空造元素，于是"改文案时删掉了 #mid、init 第一句就抛错 →
+   头像条/时间轴/地图尺寸全没建出来"这种事故在测试里完全看不出来（页面表现成"英雄没了、地图变小了"）。
+   "真实存在" = 静态 markup 里的 id ∪ 脚本用 innerHTML 字符串造出来的 id（如表格单元格 c-hp-0）。 */
+const MARKUP_IDS = new Set([
+  ...(raw.slice(0, raw.indexOf("<script")).match(/id="([^"]+)"/g) || []),
+  ...(raw.slice(raw.indexOf("<script")).match(/id="([^"]+)"/g) || []),
+].map((x) => x.slice(4, -1)));
+const DYNAMIC_IDS = new Set();          // 脚本里动态 setAttribute("id", ...) 的（本页目前没有）
+const phantomIds = new Set();
 global.document = {
-  getElementById: mkEl,
+  getElementById: (id) => {
+    const k = String(id);
+    if (!MARKUP_IDS.has(k) && !DYNAMIC_IDS.has(k) && !RUNTIME_IDS.has(k)
+        && !created.some((e) => e.id === k)) {
+      phantomIds.add(k);                // 记下来，测试结束时报错
+      return null;                      // 浏览器行为：不存在就是 null
+    }
+    return mkEl(k);
+  },
   querySelector: (s) => mkEl(String(s)),
   querySelectorAll: (s) => {
     if (s === "#tbl tbody tr") return tableRows;
@@ -498,6 +524,38 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
      "没有『第一步/第二步/第三步』这类内部阶段说法");
   ok(!/<code>python /.test(raw) && !/<code>analysis\//.test(raw),
      "页面上没有让用户去跑命令行/看内部路径的说明");
+}
+
+/* ══ 3a0c. 元素 id 契约：JS 里 getElementById("X") 的 X 必须在页面上真的存在 ══
+   （曾经改文案时删掉了 #mid，而 init() 第一句就是取它 → 抛错中断 →
+     头像条 / 时间轴 / 地图尺寸全都没建出来，页面表现成"英雄没了、地图变小了"。
+     桩 DOM 对任何 id 都会凭空造元素，所以只有对着**真实 HTML** 做这个检查才拦得住。） */
+{
+  const stop = raw.indexOf("<script");
+  const markupIds = new Set((raw.slice(0, stop).match(/id="([^"]+)"/g) || [])
+    .map((x) => x.slice(4, -1)));
+  const allIds = new Set((raw.match(/id="([^"]+)"/g) || []).map((x) => x.slice(4, -1)));
+  const jsSrc = raw.slice(stop);
+  const refs = new Set();
+  let m;
+  const re1 = /getElementById\("([^"]+)"\)/g;
+  while ((m = re1.exec(jsSrc))) refs.add(m[1]);
+  const re2 = /querySelector\("#([A-Za-z0-9_-]+)/g;
+  while ((m = re2.exec(jsSrc))) refs.add(m[1]);
+  const missing = [...refs].filter((x) => !allIds.has(x));
+  ok(missing.length === 0,
+     "JS 引用的 " + refs.size + " 个元素 id 都存在（缺：" + missing.join(",") + "）");
+  // 关键元素必须由 HTML 提供（不能靠脚本创建），否则初始化会踩空
+  const mustHave = ["cv", "spark", "big", "small", "play", "evUp", "evDn", "avatars", "mapbox",
+                    "timeline", "dwrap", "dtbl", "cdboard", "dsum", "herotop", "mid"];
+  const miss2 = mustHave.filter((x) => !markupIds.has(x));
+  ok(miss2.length === 0, "关键元素都在 HTML 里（缺：" + miss2.join(",") + "）");
+  // 初始化里的文案填充必须是"取不到就跳过"，不能再裸取
+  ok(/const setTxt = function \(id, txt\)/.test(jsSrc) && /if \(el\) el\.textContent/.test(jsSrc),
+     "初始化里的文案填充对缺失元素是安全的（setTxt 判空）");
+  // 运行时也不能去取不存在的元素（桩现在会像浏览器一样返回 null 并记账）
+  ok(phantomIds.size === 0,
+     "运行期没有向不存在的元素取过值（" + [...phantomIds].join(",") + "）");
 }
 
 /* ══ 3a1. 时间轴重大事件（图标版：阵亡英雄头像 / 建筑图标，上=天辉有利 下=夜魇有利） ══ */
