@@ -448,11 +448,18 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
   ok(S.getCSX() === 560, "按左栏可用高度取边长（桩里 mapbox=900×560 → 560，实际 " + S.getCSX() + "）");
   ok(/function fitCanvas/.test(src) && /mapScale\(\)/.test(src),
      "地图尺寸/标定缩放都在页面里（fitCanvas + mapScale）");
-  /* 头像条：地图下方一行 10 个（天辉 5 ｜ 夜魇 5），省下的高度还给地图 */
+  /* 头像条：竖排在地图右侧（天辉一列 ｜ 夜魇一列），地图不再被头像压高度（owner 方案①） */
+  const leftRule = (css.match(/\.left\{[^}]*\}/) || [""])[0];
+  ok(/flex-direction:\s*row/.test(leftRule), "左栏是横向排布（地图 + 右侧头像条）");
+  const avRule = (css.match(/#avatars\{[^}]*\}/) || [""])[0];
+  ok(/flex-direction:\s*row/.test(avRule) && /flex:\s*0 0 auto/.test(avRule),
+     "#avatars 是地图右侧的固定宽度条");
+  ok(/\.tcol\{[^}]*flex-direction:\s*column/.test(css), "每队 5 个头像竖着一列");
   ok(/function buildAvatars/.test(src) && /team\(2, "天辉"\)/.test(src) && /team\(3, "夜魇"\)/.test(src),
-     "头像条一行渲染：先是天辉 5 个、再是夜魇 5 个");
-  ok(/dv\.className = "tdiv"/.test(src), "两队头像之间有分隔线");
-  ok(/\.arow\{[^}]*flex-wrap:\s*wrap/.test(css), "头像条一行放不下时自动换行（窄屏兜底）");
+     "头像条渲染：先是天辉一列、再是夜魇一列");
+  ok(/dv\.className = "tdiv"/.test(src), "两列头像之间有分隔线");
+  ok(/@media\(max-height:860px\)/.test(css) && /@media\(max-height:700px\)/.test(css),
+     "矮屏自动把头像缩一档（保证一列 5 个塞得下）");
   ok(/\.tlrow\{[^}]*flex-wrap:\s*wrap/.test(css), "时间轴控制行窄屏会换行（不会挤出屏幕）");
 }
 
