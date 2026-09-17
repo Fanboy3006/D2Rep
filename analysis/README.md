@@ -38,6 +38,9 @@ python analysis/ward_analysis.py 8592126358.db 8979891001.db [--team 2|3|all]
 - **时间口径**：显示钟 `disp = t_cle − horn_cle`（0:00 = 号角）；结束 = 远古被摧毁（不用 `MAX(t_cle)`）。
   `entity_snapshots` 与 `dems/db` 的 CD 事件都是**回放钟**，经 `timebase.Clock` 折算。
 - **经济两套源并列显示**（净值 `m_iNetWorth` / combat-log 累计金币），**owner 定案主显净值差**；胜率模型也用净值差。
+- **技能 CD 数据源（2026 更新）**：parser 里被 combat-log 改写时停用的 `AbilityExtractor` / `JungleExtractor`
+  已**重新接线**，解析出来的主库自带 `ability_cd_*` / `item_cd_*` / `gold` / `neutral_kill` 等事件；
+  联赛仍优先读老库 `dems/db/`，**个人录像（Q7B）回退读主库**。两场与老库逐事件相等（见 `Q7_SUBMISSION.md` §8.2b）。
 - **技能 CD 不需要常量表**：`dems/db` 的 `ability_cd_start/end` 已带**真实剩余冷却秒**（实体 `m_fCooldown`，
   含等级/天赋/减CD）。`db_full` 里没有（COMBAT_LOG_REWRITE 删了散装 extractor，CD 不是 combat 条目）→ **两库按 match_id join**。
 - **状态胜率**：分时间桶逻辑回归 + 桶间系数线性插值，970 场 / 按 match 切分 → **测试 AUC 0.830**（30-40 分钟桶 0.910），

@@ -479,6 +479,34 @@ owner 对第一步/第二步的数据层给了"找到了路子"的结论，随�
    若还想消掉这圈留白，可再选：① 左栏收窄、combat log 吃 >50% 宽；② 给地图加"最大化"开关。
    可视化示意：`.tmp/layout_mock.py` 按 CSS 数值把整页画成 PNG（本机没浏览器时的替代手段）。
 
+### 8.2b 技能 CD 面板的数据源（2026 更新：个人录像也能有）
+
+CD 面板读的是 `game_events` 的 `ability_cd_start/end` + `item_cd_*` + `ability_known/learn`
+（实体 `m_fCooldown` 派生的**真实剩余秒**）。
+
+- **联赛场次**：仍优先读 Q5 版老库 `dems/db/<league>/<mid>.db`（历史数据不变）。
+- **个人录像（Q7B）**：没有老库 → **回退读主库本身**。为此把 parser 里被 combat-log 改写时
+  停用的两个提取器**重新接线**（`dota_parse/src/parse.rs` 的 `AbilityExtractor`、
+  `JungleExtractor`），它们现在重新产出 `ability_cd_*` / `item_cd_*` / `ability_known/learn` /
+  `smoke_count` / `gold` / `neutral_kill`。
+- **验收（两场金标准逐项对比，13 类事件全等）**：
+
+  | 事件类型 | 8955197224 新/老 | 8830423116 新/老 |
+  |---|---|---|
+  | ability_cd_start | 4121 / 4121 | 6321 / 6321 |
+  | ability_cd_end | 4119 / 4119 | 6318 / 6318 |
+  | ability_known / learn | 121/110 一致 | 102/88 一致 |
+  | item_cd_start / end | 47/45 一致 | 227/227 一致 |
+  | item_known / smoke_count | 8/22 一致 | 5/8 一致 |
+  | gold / neutral_kill | 5669/1932 一致 | 3404/1312 一致 |
+  | ward_placed / building_* | 157/36/22 一致 | 115/36/18 一致 |
+
+  且 `load_cd()` 的产出（键名/图标/冷却区间）**老库版与主库版完全相同**：
+  103 个键、121 个技能区间、8 个道具区间逐英雄一致。
+- **代价**：单场解析 109s → **121~125s**（+11~15%，多了两个提取器）。
+- 仍属老库独有的 `purchase` / `ward_destroyed` / `ward_use` / `game_state` 四类事件，其数据都在
+  `combat_log` 里（Q7 从 combat_log 取，不受影响）。
+
 ### 8.3 第 7 条：「收到伤害」看不到被英雄打（owner 抓到的真 bug）
 
 **现象**（owner）：「收到攻击的时候，好像只能看到被小怪打的情况，看不到被人打的情况」。

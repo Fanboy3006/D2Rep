@@ -25,7 +25,8 @@ use source2_demo::proto::DotaCombatlogTypes;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::model::{
-    self, hero_class_to_npc, team_text, EventRow, PlayerIdentityRow, SnapshotRow, DIRE_SLOT_BASE,
+    self, hero_class_to_npc, team_text, CombatLogRow, EventRow, PlayerIdentityRow, SnapshotRow,
+    DIRE_SLOT_BASE,
 };
 
 pub const TICK_RATE: u32 = 30; // Dota 2 simulation ticks per second
@@ -241,35 +242,6 @@ impl PositionExtractor {
     }
 }
 
-/// Purchase extractor: emits raw purchase records from the combat log.
-#[derive(Default)]
-struct PurchaseExtractor {
-    purchases: Vec<(f64, String, String, u32)>,
-}
-
-#[observer]
-#[uses_all]
-impl PurchaseExtractor {
-    #[on_combat_log]
-    fn on_combat_log(&mut self, _ctx: &Context, cle: &CombatLogEntry) -> ObserverResult {
-        if cle.r#type() != DotaCombatlogTypes::DotaCombatlogPurchase {
-            return Ok(());
-        }
-        let t = cle.timestamp().unwrap_or_default() as f64;
-        // For purchase entries the buyer is recorded as the target; fall back
-        // to the attacker name if the target is missing.
-        let buyer = cle
-            .target_name()
-            .or_else(|_| cle.attacker_name())
-            .unwrap_or("unknown")
-            .to_string();
-        let item = cle.value_name().unwrap_or("").to_string();
-        let raw_index = cle.value().unwrap_or(0);
-        self.purchases.push((t, buyer, item, raw_index));
-        Ok(())
-    }
-}
-
 // ---------------------------------------------------------------------------
 // ward extractor (视野/守卫事件)
 // ---------------------------------------------------------------------------
@@ -293,26 +265,86 @@ impl PurchaseExtractor {
 struct WardExtractor {
     placed: Vec<WardPlaced>,
     destroyed: Vec<WardDestroyed>,
+    /// per whole second -> (index -> latest sample that second). Each ward unit
+    /// is a live entity with its own stable index; this lets us track every
+    /// ward's true position and lifetime without LIFO pairing.
+    samples: HashMap<i64, HashMap<u32, WardSample>>,
+    /// whole second sampled on the previous on_tick_start, for the gate.
+    last_sec: i64,
+    /// indices present in the previous sampled whole second (disappearance detection)
+    last_sec_present: Option<Vec<u32>>,
+    /// index -> (last_seen_t, x, y) at the moment before disappearance
+    last_seen: HashMap<u32, (i64, f64, f64)>,
+    /// index -> ward type string
+    idx_class: HashMap<u32, &'static str>,
+    /// index -> npc name
+    idx_npc: HashMap<u32, String>,
+    /// index -> team code
+    idx_team: HashMap<u32, Option<i32>>,
+    /// GAME_IN_PROGRESS (DotaCombatlogGameState val=5) 的 cle.timestamp == 游戏时钟 0:00 锚点。
+    game_start_cl: Option<f64>,
+    /// 放置假眼(Observer Ward)事件: cle.timestamp + attacker + 英雄位置。
+    /// 来自 combat-log 的 obs_wards_placed > 0(玩家插假眼)。
+    ward_use: Vec<WardUse>,
+    /// GamerulesProxy 官方时钟(精确 tick↔cle)。
+    gst_base: f64,           // m_pGameRules.m_flGameStartTime (号角基值, cle 口径)
+    cum_paused_ticks: f64,   // m_pGameRules.m_nTotalPausedTicks (累计暂停 tick 数)
+    game_paused: bool,       // m_pGameRules.m_bGamePaused
+}
+
+#[derive(Debug, Clone)]
+struct WardUse {
+    t: f64,          // cle.timestamp (游戏时钟)
+    actor: Option<String>,
+    ward_type: &'static str,  // "sentry" | "observer"
+    attacker_team: Option<i32>,  // 插眼者队伍 (2/3)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WardSample {
+    t: i64,
+    x: f64,
+    y: f64,
+    team: Option<i32>,
+    class: &'static str,
 }
 
 #[derive(Debug, Clone)]
 struct WardPlaced {
     t: f64,
+    /// 精确游戏时钟(cle) = tick_sec − (cum_paused_ticks/30)。从 GamerulesProxy 官方时钟算出。
+    cle: f64,
     ward_type: &'static str,
     class: String,
     x: f64,
     y: f64,
     team_code: Option<i32>,
+    /// stable per-ward entity index (primary key across samples) — lets Q5
+    /// associate place/destroy/position without any time-based pairing.
+    entity_index: u32,
 }
 
 #[derive(Debug, Clone)]
 struct WardDestroyed {
+    /// combat-log timestamp (game clock, from 0:00, differs from raw by per-match
+    /// pre-game/pause offset) — keep for reference.
     t: f64,
+    /// raw world second (tick/TICK_RATE), same clock as placed/entity snapshots.
+    /// Authoritative for Q5 destroy timing so deward/expire can be bound to the
+    /// exact ward entity without two-clock confusion.
+    t_tick: Option<f64>,
     ward_type: &'static str,
     unit: String,
     actor: Option<String>,
     self_expired: bool,
-    team_code: Option<i32>,
+    team_code: Option<i32>,          // target_team = 被反眼自己的队 (2/3)
+    attacker_team: Option<i32>,      // 反眼英雄的队 (2/3)
+    /// stable per-ward entity index when resolvable; None when inferred from
+    /// combat-log death alone
+    entity_index: Option<u32>,
+    /// position at the moment of disappearance (from the per-entity tracker)
+    x: Option<f64>,
+    y: Option<f64>,
 }
 
 fn ward_class_type(class: &str) -> Option<&'static str> {
@@ -321,6 +353,32 @@ fn ward_class_type(class: &str) -> Option<&'static str> {
         "CDOTA_NPC_Observer_Ward_TrueSight" => Some("sentry"),
         _ => None,
     }
+}
+
+// ---- GamerulesProxy 官方时钟字段读取 (精确 tick↔cle) ----
+fn gr_field_i64(e: &Entity, path: &str) -> Option<f64> {
+    for f in e.fields() {
+        if f.name != path { continue; }
+        return match &f.value {
+            Some(FieldValue::Signed32(v)) => Some(f64::from(*v)),
+            Some(FieldValue::Unsigned32(v)) => Some(f64::from(*v)),
+            Some(FieldValue::Signed64(v)) => Some(*v as f64),
+            Some(FieldValue::Unsigned64(v)) => Some(*v as f64),
+            _ => None,
+        };
+    }
+    None
+}
+fn gr_field_float(e: &Entity, path: &str) -> Option<f64> {
+    for f in e.fields() {
+        if f.name != path { continue; }
+        return match &f.value {
+            Some(FieldValue::Float(v)) => Some(f64::from(*v)),
+            Some(FieldValue::Signed32(v)) => Some(f64::from(*v)),
+            _ => None,
+        };
+    }
+    None
 }
 
 #[observer]
@@ -346,19 +404,145 @@ impl WardExtractor {
         let (Some(x), Some(y)) = (x, y) else {
             return Ok(());
         };
+        let tick_sec = f64::from(ctx.tick()) / f64::from(TICK_RATE);
+        let cle = tick_sec - (self.cum_paused_ticks / f64::from(TICK_RATE));
         self.placed.push(WardPlaced {
-            t: f64::from(ctx.tick()) / f64::from(TICK_RATE),
+            t: tick_sec,
+            cle,
             ward_type,
             class: class.to_string(),
             x,
             y,
             team_code: try_property!(entity, i32, "m_iTeamNum"),
+            entity_index: entity.index(),
         });
         Ok(())
     }
 
+    #[on_tick_start]
+    fn on_tick_start(&mut self, ctx: &Context) -> ObserverResult {
+        // 采集 CDOTAGamerulesProxy 官方时钟(精确 tick↔cle)。
+        for entity in ctx.entities().iter() {
+            if entity.class().name() != "CDOTAGamerulesProxy" { continue; }
+            if let Some(g) = gr_field_float(entity, "m_pGameRules.m_flGameStartTime") {
+                if g > 0.0 { self.gst_base = g; }
+            }
+            if let Some(p) = gr_field_i64(entity, "m_pGameRules.m_nTotalPausedTicks") {
+                self.cum_paused_ticks = p;
+            }
+            if let Some(b) = gr_field_i64(entity, "m_pGameRules.m_bGamePaused") {
+                self.game_paused = b != 0.0;
+            }
+        }
+        let tick = ctx.tick();
+        let t = i64::from(tick / TICK_RATE);
+        if t == self.last_sec {
+            return Ok(());
+        }
+        self.last_sec = t;
+        let mut present: Vec<u32> = Vec::new();
+        for entity in ctx.entities().iter() {
+            let class = entity.class().name();
+            let Some(ward_type) = ward_class_type(class) else {
+                continue;
+            };
+            let x = cell_to_world(
+                try_property!(entity, u32, "CBodyComponent.m_skeletonInstance.m_vecOrigin.m_cellX"),
+                try_property!(entity, f32, "CBodyComponent.m_skeletonInstance.m_vecOrigin.m_vecX"),
+            );
+            let y = cell_to_world(
+                try_property!(entity, u32, "CBodyComponent.m_skeletonInstance.m_vecOrigin.m_cellY"),
+                try_property!(entity, f32, "CBodyComponent.m_skeletonInstance.m_vecOrigin.m_vecY"),
+            );
+            let (Some(x), Some(y)) = (x, y) else {
+                continue;
+            };
+            let idx = entity.index();
+            present.push(idx);
+            let team = try_property!(entity, i32, "m_iTeamNum");
+            self.samples.entry(t).or_default().insert(idx, WardSample {
+                t,
+                x,
+                y,
+                team,
+                class: ward_type,
+            });
+            // per-index tracking maps (for disappearance detection)
+            self.idx_class.insert(idx, ward_type);
+            self.idx_team.insert(idx, team);
+            self.idx_npc.entry(idx).or_insert_with(|| match ward_type {
+                "sentry" => "npc_dota_sentry_wards".to_string(),
+                _ => "npc_dota_observer_wards".to_string(),
+            });
+            self.last_seen.insert(idx, (t, x, y));
+        }
+        // Disappearance detection: an index present last second but absent now
+        // means the ward died (dewarded or expired). Emit event at its last
+        // seen instant with its real coordinate — no LIFO needed.
+        if let Some(prev) = self.last_sec_present.take() {
+            for idx in prev {
+                if !present.contains(&idx) {
+                    if let Some((lt, lx, ly)) = self.last_seen.get(&idx).copied() {
+                        let wt = self.idx_class.get(&idx).copied().unwrap_or("observer");
+                        self.destroyed.push(WardDestroyed {
+                            t: lt as f64,
+                            t_tick: Some(lt as f64),
+                            ward_type: wt,
+                            unit: self.idx_npc.get(&idx).cloned().unwrap_or_else(|| "npc_dota_sentry_wards".to_string()),
+                            actor: None,
+                            self_expired: false,
+                            team_code: self.idx_team.get(&idx).copied().flatten(),
+                            attacker_team: None,
+                            entity_index: Some(idx),
+                            x: Some(lx),
+                            y: Some(ly),
+                        });
+                    }
+                }
+            }
+        }
+        self.last_sec_present = Some(present);
+        Ok(())
+    }
+
     #[on_combat_log]
-    fn on_combat_log(&mut self, _ctx: &Context, cle: &CombatLogEntry) -> ObserverResult {
+    fn on_combat_log(&mut self, ctx: &Context, cle: &CombatLogEntry) -> ObserverResult {
+        // GAME_IN_PROGRESS (DotaCombatlogGameState val=5) = 游戏时钟 0:00 锚点。
+        if cle.r#type() == DotaCombatlogTypes::DotaCombatlogGameState {
+            if cle.value().ok() == Some(5) {
+                if let Ok(ts) = cle.timestamp() {
+                    self.game_start_cl = Some(f64::from(ts));
+                }
+            }
+            return Ok(());
+        }
+        // 放置守卫(插眼/真眼/假眼): DotaCombatlogItem + inflictor=item_ward_sentry/observer + attacker=英雄。
+        // 记录 cle 时间(游戏时钟) + 插眼者 + 守卫类型。⚠️ 无坐标/无队伍/无 entity_index(见 Q5_RULES §7)。
+        if cle.r#type() == DotaCombatlogTypes::DotaCombatlogItem {
+            let inf = cle.inflictor_name().ok().map(str::to_string).unwrap_or_default();
+            let ward_type = match inf.as_str() {
+                "item_ward_sentry" => Some("sentry"),
+                "item_ward_observer" => Some("observer"),
+                _ => None,
+            };
+            if let Some(wt) = ward_type {
+                if cle.is_attacker_hero().unwrap_or(false) {
+                    // rule out "给队友"(uses ... Ward on <英雄>): target 非空 或 target_is_self==false
+                    // = 递给队友, 不是插眼。仅保留真插眼(target 空 且 target_is_self==true)。
+                    let tgt = cle.target_name().ok().map(str::to_string).unwrap_or_default();
+                    let tgt_self = cle.target_is_self().ok().unwrap_or(false);
+                    if !tgt.is_empty() || !tgt_self {
+                        return Ok(());
+                    }
+                    self.ward_use.push(WardUse {
+                        t: cle.timestamp().unwrap_or_default() as f64,
+                        actor: cle.attacker_name().ok().map(str::to_string),
+                        ward_type: wt,
+                        attacker_team: cle.attacker_team().ok().map(|v| v as i32),
+                    });
+                }
+            }
+        }
         if cle.r#type() != DotaCombatlogTypes::DotaCombatlogDeath {
             return Ok(());
         }
@@ -374,13 +558,20 @@ impl WardExtractor {
         let self_expired = actor.as_deref() == Some(unit.as_str());
         // target_team = the ward's own team (DOTA_TEAM code 2/3 when present)
         let team_code = cle.target_team().ok().map(|v| v as i32);
+        let attacker_team = cle.attacker_team().ok().map(|v| v as i32);
+        let t_tick = Some(f64::from(ctx.tick()) / f64::from(TICK_RATE));
         self.destroyed.push(WardDestroyed {
             t: cle.timestamp().unwrap_or_default() as f64,
+            t_tick,
             ward_type,
             unit,
             actor,
             self_expired,
             team_code,
+            attacker_team,
+            entity_index: None,
+            x: None,
+            y: None,
         });
         Ok(())
     }
@@ -546,6 +737,392 @@ impl BuildingExtractor {
         }
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// jungle / economy extractor (野怪击杀 + 逐玩家金币事件)
+// ---------------------------------------------------------------------------
+
+/// A neutral camp kill (a `CDOTA_BaseNPC_Creep_Neutral` / Roshan died).
+struct JungleKill {
+    t: i64,
+    x: f64,
+    y: f64,
+    kind: &'static str, // "neutral" | "roshan"
+}
+
+/// A combat-log `Gold` event: a hero earned gold (kill bounty, creep, passive,
+/// etc.). `value` is the gold amount, `reason` the Dota gold-reason code.
+struct GoldEvent {
+    t: f64,
+    hero: String,
+    value: i64,
+    reason: Option<u32>,
+    x: Option<f64>,
+    y: Option<f64>,
+}
+
+/// Jungle extractor:
+///  * snapshots neutral creep / Roshan entities each whole second (position +
+///    hp, tracked per entity index) and emits `neutral_kill` / `roshan_kill`
+///    when one dies (hp <= 0, or it vanished from the entity list while alive).
+///    This gives the "刷野活动热区" by position, with no parser schema change.
+///  * mirrors combat-log `DotaCombatlogGold` into `gold` events (per-player
+///    gold income with value/reason/location) for team gold_adv aggregation.
+///
+/// Kill *attribution* (which hero cleared the camp) is joined later by matching
+/// the combat-log Death (target = neutral unit) with these positioned kills.
+struct JungleExtractor {
+    /// entity index -> (x, y, hp, alive, last_seen_sec)
+    units: HashMap<u32, (f64, f64, i64, bool, i64)>,
+    kills: Vec<JungleKill>,
+    golds: Vec<GoldEvent>,
+    last_sec: i64,
+}
+
+impl Default for JungleExtractor {
+    fn default() -> Self {
+        JungleExtractor {
+            units: HashMap::new(),
+            kills: Vec::new(),
+            golds: Vec::new(),
+            last_sec: i64::MIN,
+        }
+    }
+}
+
+fn jungle_kind(class: &str) -> Option<&'static str> {
+    match class {
+        "CDOTA_BaseNPC_Creep_Neutral" => Some("neutral"),
+        "CDOTA_Unit_Roshan" => Some("roshan"),
+        _ => None,
+    }
+}
+
+#[observer]
+#[uses_all]
+impl JungleExtractor {
+    #[on_tick_start]
+    fn on_tick_start(&mut self, ctx: &Context) -> ObserverResult {
+        let tick = ctx.tick();
+        let t = i64::from(tick / TICK_RATE);
+        if t == self.last_sec {
+            return Ok(());
+        }
+        self.last_sec = t;
+        let mut present: Vec<u32> = Vec::new();
+        for entity in ctx.entities().iter() {
+            let class = entity.class().name();
+            let Some(kind) = jungle_kind(class) else {
+                continue;
+            };
+            let idx = entity.index();
+            let x = cell_to_world(
+                try_property!(entity, u32, "CBodyComponent.m_skeletonInstance.m_vecOrigin.m_cellX"),
+                try_property!(entity, f32, "CBodyComponent.m_skeletonInstance.m_vecOrigin.m_vecX"),
+            );
+            let y = cell_to_world(
+                try_property!(entity, u32, "CBodyComponent.m_skeletonInstance.m_vecOrigin.m_cellY"),
+                try_property!(entity, f32, "CBodyComponent.m_skeletonInstance.m_vecOrigin.m_vecY"),
+            );
+            let (Some(x), Some(y)) = (x, y) else { continue };
+            let hp = try_property!(entity, i32, "m_iHealth").map(i64::from);
+            present.push(idx);
+            if let Some((_, _, old_hp, alive, _)) = self.units.get_mut(&idx) {
+                let new_hp = hp.unwrap_or(0);
+                if *alive && new_hp <= 0 {
+                    self.kills.push(JungleKill { t, x, y, kind });
+                }
+                self.units.insert(idx, (x, y, new_hp, new_hp > 0, t));
+            } else {
+                let h = hp.unwrap_or(0);
+                self.units.insert(idx, (x, y, h, h > 0, t));
+            }
+        }
+        // units that vanished from the entity list while alive are considered
+        // killed (neutral creeps are removed right after death).
+        let dead: Vec<u32> = self
+            .units
+            .iter()
+            .filter(|(idx, (_, _, _, alive, last_seen))| *alive && !present.contains(idx))
+            .filter_map(|(idx, (_, _, _, _, last_seen))| {
+                if *last_seen <= t - 2 {
+                    Some(*idx)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for idx in dead {
+            if let Some((x, y, _, _, last_seen)) = self.units.get(&idx).copied() {
+                self.kills.push(JungleKill {
+                    t: last_seen + 1,
+                    x,
+                    y,
+                    kind: "neutral",
+                });
+                self.units.remove(&idx);
+            }
+        }
+        Ok(())
+    }
+
+    #[on_combat_log]
+    fn on_combat_log(&mut self, _ctx: &Context, cle: &CombatLogEntry) -> ObserverResult {
+        if cle.r#type() != DotaCombatlogTypes::DotaCombatlogGold {
+            return Ok(());
+        }
+        let recipient = cle
+            .target_name()
+            .map(str::to_string)
+            .unwrap_or_default();
+        if recipient.is_empty() || !recipient.starts_with("npc_dota_hero_") {
+            return Ok(());
+        }
+        let value = cle.value().unwrap_or(0) as i64;
+        let reason = cle.gold_reason().ok();
+        let x = cle.location_x().ok().map(f64::from);
+        let y = cle.location_y().ok().map(f64::from);
+        self.golds.push(GoldEvent {
+            t: cle.timestamp().unwrap_or_default() as f64,
+            hero: recipient,
+            value,
+            reason,
+            x,
+            y,
+        });
+        Ok(())
+    }
+}
+
+/// Assemble `game_events` rows for jungle kills and gold events.
+fn build_jungle_event_rows(
+    kills: &[JungleKill],
+    golds: &[GoldEvent],
+) -> Vec<EventRow> {
+    let mut rows = Vec::new();
+    // (event_type, actor-group, second) -> next event_seq
+    let mut seq: HashMap<(&'static str, String, i64), i64> = HashMap::new();
+    for k in kills {
+        let key = ("neutral_kill", k.kind.to_string(), k.t);
+        let n = seq.entry(key).or_insert(0);
+        let event_seq = *n;
+        *n += 1;
+        rows.push(EventRow {
+            game_time_sec: k.t,
+            event_type: "neutral_kill",
+            actor_id: None,
+            target_id: Some(k.kind.to_string()),
+            x: Some(k.x),
+            y: Some(k.y),
+            properties: serde_json::json!({ "kind": k.kind }),
+            event_seq,
+        });
+    }
+    for g in golds {
+        let sec = g.t.floor() as i64;
+        let key = ("gold", g.hero.clone(), sec);
+        let n = seq.entry(key).or_insert(0);
+        let event_seq = *n;
+        *n += 1;
+        rows.push(EventRow {
+            game_time_sec: sec,
+            event_type: "gold",
+            actor_id: Some(g.hero.clone()),
+            target_id: None,
+            x: g.x,
+            y: g.y,
+            properties: serde_json::json!({
+                "value": g.value,
+                "reason": g.reason,
+            }),
+            event_seq,
+        });
+    }
+    rows
+}
+
+// ---------------------------------------------------------------------------
+// net worth extractor (逐玩家每分净值 / 现金, A1)
+// ---------------------------------------------------------------------------
+//
+// Per-player net worth + reliable/unreliable gold are broadcast on the
+// CDOTA_DataRadiant / CDOTA_DataDire entities, one sub-field per player:
+//   <index>.m_iNetWorth, <index>.m_iReliableGold, <index>.m_iUnreliableGold
+// Values are readable (verified): e.g. CDOTA_DataRadiant.0000.m_iNetWorth=8446.
+// Sampled on the same whole-second gate as heroes; emitted as entity_snapshots
+// rows of entity_type='networth' so it never collides with hero positions.
+
+#[derive(Clone)]
+struct NetWorthSample {
+    networth: i64,
+    reliable: Option<i64>,
+    unreliable: Option<i64>,
+}
+
+fn parse_index_suffix(field: &str) -> Option<(u32, &str)> {
+    let b = field.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i].is_ascii_digit() {
+            let start = i;
+            while i < b.len() && b[i].is_ascii_digit() {
+                i += 1;
+            }
+            let idx: u32 = field[start..i].parse().ok()?;
+            return Some((idx, &field[i..]));
+        }
+        i += 1;
+    }
+    None
+}
+
+struct NetWorthExtractor {
+    // entity_id ("nw:radiant:0") -> (second -> sample)
+    samples: HashMap<String, BTreeMap<i64, NetWorthSample>>,
+    // (team, minute) -> in-game team net worth (from CDOTASpectatorGraphManagerProxy)
+    team_networth: HashMap<(String, u32), i64>,
+    last_sec: i64,
+}
+
+impl Default for NetWorthExtractor {
+    fn default() -> Self {
+        NetWorthExtractor {
+            samples: HashMap::new(),
+            team_networth: HashMap::new(),
+            last_sec: i64::MIN,
+        }
+    }
+}
+
+fn data_team_of(class: &str) -> Option<&'static str> {
+    match class {
+        "CDOTA_DataRadiant" => Some("radiant"),
+        "CDOTA_DataDire" => Some("dire"),
+        _ => None,
+    }
+}
+
+#[observer]
+#[uses_all]
+impl NetWorthExtractor {
+    #[on_tick_start]
+    fn on_tick_start(&mut self, ctx: &Context) -> ObserverResult {
+        let t = i64::from(ctx.tick() / TICK_RATE);
+        if t == self.last_sec {
+            return Ok(());
+        }
+        self.last_sec = t;
+        for entity in ctx.entities().iter() {
+            let class = entity.class().name();
+            let Some(team) = data_team_of(class) else { continue };
+            let mut by_idx: HashMap<u32, NetWorthSample> = HashMap::new();
+            for f in entity.fields() {
+                let Some((idx, suffix)) = parse_index_suffix(&f.name) else { continue };
+                let val = match &f.value {
+                    Some(FieldValue::Signed32(v)) => i64::from(*v),
+                    _ => continue,
+                };
+                let e = by_idx
+                    .entry(idx)
+                    .or_insert(NetWorthSample { networth: 0, reliable: None, unreliable: None });
+                if suffix == ".m_iNetWorth" {
+                    e.networth = val;
+                } else if suffix.ends_with("m_iReliableGold") {
+                    e.reliable = Some(val);
+                } else if suffix.ends_with("m_iUnreliableGold") {
+                    e.unreliable = Some(val);
+                }
+            }
+            for (idx, s) in by_idx {
+                let entity_id = format!("nw:{team}:{idx}");
+                self.samples.entry(entity_id).or_default().insert(t, s);
+            }
+        }
+        // In-game TEAM net worth per minute (authoritative gold-adv source).
+        for entity in ctx.entities().iter() {
+            let class = entity.class().name();
+            if !class.contains("GraphManager") && !class.contains("GameRules") {
+                continue;
+            }
+            for f in entity.fields() {
+                let nm = f.name.as_str();
+                let nw = match &f.value {
+                    Some(FieldValue::Signed32(v)) => i64::from(*v),
+                    _ => continue,
+                };
+                // ...m_rgRadiantNetWorth.0042 / ...m_rgDireNetWorth.0042
+                let idx = if let Some(p) = nm.rfind("m_rgRadiantNetWorth.") {
+                    let rest = &nm[p + "m_rgRadiantNetWorth.".len()..];
+                    if let Ok(mm) = rest.parse::<u32>() {
+                        self.team_networth.insert(("radiant".to_string(), mm), nw);
+                        continue;
+                    } else {
+                        continue;
+                    }
+                } else if let Some(p) = nm.rfind("m_rgDireNetWorth.") {
+                    let rest = &nm[p + "m_rgDireNetWorth.".len()..];
+                    if let Ok(mm) = rest.parse::<u32>() {
+                        self.team_networth.insert(("dire".to_string(), mm), nw);
+                        continue;
+                    } else {
+                        continue;
+                    }
+                } else {
+                    continue;
+                };
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Assemble `entity_snapshots` rows for per-player net worth (entity_type='networth').
+fn build_networth_snapshot_rows(
+    samples: &HashMap<String, BTreeMap<i64, NetWorthSample>>,
+) -> Vec<SnapshotRow> {
+    let mut rows = Vec::new();
+    for (entity_id, per_sec) in samples {
+        for (t, s) in per_sec {
+            rows.push(SnapshotRow {
+                game_time_sec: *t,
+                entity_type: "networth",
+                entity_id: entity_id.clone(),
+                team: None,
+                x: 0.0,
+                y: 0.0,
+                hp: Some(s.networth),
+                extra: serde_json::json!({
+                    "networth": s.networth,
+                    "reliable": s.reliable,
+                    "unreliable": s.unreliable,
+                    "kind": "networth",
+                }),
+            });
+        }
+    }
+    rows
+}
+
+/// Assemble `entity_snapshots` rows for in-game team net worth per minute
+/// (entity_type='team_networth', entity_id='team:radiant').
+fn build_team_networth_rows(
+    team_networth: &HashMap<(String, u32), i64>,
+) -> Vec<SnapshotRow> {
+    let mut rows = Vec::new();
+    for ((team, minute), nw) in team_networth {
+        rows.push(SnapshotRow {
+            game_time_sec: i64::from(*minute) * 60,
+            entity_type: "team_networth",
+            entity_id: format!("team:{team}"),
+            team: None,
+            x: 0.0,
+            y: 0.0,
+            hp: Some(*nw),
+            extra: serde_json::json!({ "networth": nw, "kind": "team_networth" }),
+        });
+    }
+    rows
 }
 
 // ---------------------------------------------------------------------------
@@ -808,55 +1385,253 @@ fn build_building_event_rows(events: &[BuildingEvent]) -> Vec<EventRow> {
 }
 
 /// Assemble `game_events` rows for ward events.
-fn build_ward_event_rows(
-    placed: &[WardPlaced],
-    destroyed: &[WardDestroyed],
-) -> Vec<EventRow> {
+fn build_ward_event_rows(placed: &[WardPlaced], game_start_cl: Option<f64>) -> Vec<EventRow> {
     let mut rows = Vec::new();
-    // (event_type, actor-group, second) -> next event_seq
     let mut seq: HashMap<(&'static str, String, i64), i64> = HashMap::new();
+    let mut next_seq = |key: &(&'static str, String, i64)| -> i64 {
+        let n = seq.entry(key.clone()).or_insert(0);
+        let v = *n;
+        *n += 1;
+        v
+    };
+    // GAME_IN_PROGRESS 0:00 锚点: 一个 game_state 事件, 存 cle.timestamp (游戏时钟 0:00 基准)。
+    if let Some(gsc) = game_start_cl {
+        let sec = gsc.floor() as i64;
+        let event_seq = next_seq(&("game_state", String::new(), sec));
+        rows.push(EventRow {
+            game_time_sec: sec,
+            event_type: "game_state",
+            actor_id: None,
+            target_id: None,
+            x: None,
+            y: None,
+            properties: serde_json::json!({
+                "state": 5,
+                "game_start_cl": gsc,
+            }),
+            event_seq,
+        });
+    }
     for p in placed {
         let sec = p.t.floor() as i64;
-        let key = ("ward_placed", String::new(), sec);
-        let n = seq.entry(key).or_insert(0);
-        let event_seq = *n;
-        *n += 1;
+        let event_seq = next_seq(&("ward_placed", String::new(), sec));
         rows.push(EventRow {
             game_time_sec: sec,
             event_type: "ward_placed",
-            actor_id: None, // placer not resolvable from the ward entity yet
+            actor_id: None,
             target_id: Some(p.class.clone()),
             x: Some(p.x),
             y: Some(p.y),
             properties: serde_json::json!({
                 "ward_type": p.ward_type,
                 "team": p.team_code,
-            }),
-            event_seq,
-        });
-    }
-    for d in destroyed {
-        let sec = d.t.floor() as i64;
-        let key = ("ward_destroyed", d.actor.clone().unwrap_or_default(), sec);
-        let n = seq.entry(key).or_insert(0);
-        let event_seq = *n;
-        *n += 1;
-        rows.push(EventRow {
-            game_time_sec: sec,
-            event_type: "ward_destroyed",
-            actor_id: d.actor.clone(),
-            target_id: Some(d.unit.clone()),
-            x: None,
-            y: None,
-            properties: serde_json::json!({
-                "ward_type": d.ward_type,
-                "reason": if d.self_expired { "expired" } else { "dewarded" },
-                "team": d.team_code,
+                "entity_index": p.entity_index,
+                "entity_id": format!("ward:{}", p.entity_index),
+                "t_cle": p.cle,
+                "t_tick": p.t,
             }),
             event_seq,
         });
     }
     rows
+}
+
+/// Per-ward position snapshots -> `entity_snapshots` rows (entity_type='ward').
+/// entity_id = "ward:<index>", so each ward's true position + lifetime is
+/// reconstructed directly from the entity stream — no LIFO pairing.
+fn build_ward_snapshot_rows(samples: &HashMap<i64, HashMap<u32, WardSample>>) -> Vec<SnapshotRow> {
+    let mut rows = Vec::new();
+    for (t, per_sec) in samples {
+        for (idx, s) in per_sec {
+            // only emit coordinates once resolvable
+            if s.x == 0.0 && s.y == 0.0 {
+                continue;
+            }
+            rows.push(SnapshotRow {
+                game_time_sec: *t,
+                entity_type: "ward",
+                entity_id: format!("ward:{}", idx),
+                team: s.team.and_then(team_text).map(str::to_string),
+                x: s.x,
+                y: s.y,
+                hp: None,
+                extra: serde_json::json!({
+                    "ward_type": s.class,
+                    "entity_index": idx,
+                }),
+            });
+        }
+    }
+    rows
+}
+
+// ---------------------------------------------------------------------------
+// combat log extractor (通用 combat_log 表: 全类型全量, 不聚合不去重)
+// ---------------------------------------------------------------------------
+
+/// Map a `DOTA_COMBATLOG_TYPES` Debug name (e.g. "DotaCombatlogDamage") to the
+/// in-game toggle category (the `type_category` enum).
+fn type_category(ty: &str) -> &'static str {
+    match ty {
+        "DotaCombatlogDamage" | "DotaCombatlogManaDamage" | "DotaCombatlogCriticalDamage"
+        | "DotaCombatlogSpellAbsorb" | "DotaCombatlogPhysicalDamagePrevented"
+        | "DotaCombatlogAttackEvade" => "damage",
+        "DotaCombatlogHeal" | "DotaCombatlogManaRestored" | "DotaCombatlogBottleHealAlly" => "healing",
+        "DotaCombatlogAbility" | "DotaCombatlogAbilityTrigger" | "DotaCombatlogHeroLevelup"
+        | "DotaCombatlogInterruptChannel" => "ability",
+        "DotaCombatlogItem" | "DotaCombatlogPurchase" | "DotaCombatlogBuyback"
+        | "DotaCombatlogNeutralItemEarned" => "item",
+        "DotaCombatlogModifierAdd" | "DotaCombatlogModifierRemove"
+        | "DotaCombatlogModifierStackEvent" => "modifier",
+        "DotaCombatlogDeath" | "DotaCombatlogKillstreak" | "DotaCombatlogMultikill"
+        | "DotaCombatlogFirstBlood" | "DotaCombatlogTeamBuildingKill"
+        | "DotaCombatlogEndKillstreak" => "death",
+        "DotaCombatlogGold" => "gold",
+        "DotaCombatlogXp" => "xp",
+        "DotaCombatlogPlayerstats" => "playerstats",
+        "DotaCombatlogGameState" => "gamestate",
+        "DotaCombatlogLocation" => "location",
+        "DotaCombatlogPickupRune" => "rune",
+        "DotaCombatlogRevealedInvisible" => "revealed",
+        "DotaCombatlogSuccessfulScan" => "scan",
+        "DotaCombatlogAegisTaken" => "aegis",
+        "DotaCombatlogUnitSummoned" => "summoned",
+        "DotaCombatlogTreeCut" => "tree",
+        "DotaCombatlogKillEaterEvent" => "killeater",
+        _ => "other",
+    }
+}
+
+/// Captures every combat-log entry into the universal `combat_log` table.
+/// Records the GamerulesProxy `m_flGameStartTime` (0:00 horn base) and a dense
+/// raw-tick -> cle calibration (from all combat entries) so entity rows
+/// (ward_placed) can carry the same game-clock domain.
+struct CombatLogExtractor {
+    rows: Vec<CombatLogRow>,
+    seq: i64,
+    /// (raw tick/30, cle) samples from all combat entries — dense clock reference.
+    clock: Vec<(f64, f64)>,
+    /// GamerulesProxy `m_pGameRules.m_flGameStartTime` (horn base, cle scale).
+    game_start_cl: Option<f64>,
+}
+
+impl Default for CombatLogExtractor {
+    fn default() -> Self {
+        CombatLogExtractor {
+            rows: Vec::new(),
+            seq: 0,
+            clock: Vec::new(),
+            game_start_cl: None,
+        }
+    }
+}
+
+impl CombatLogExtractor {
+    /// Convert a raw tick/30 second to the game-clock (cle) domain, by
+    /// interpolation between the bracketing combat-entry samples. The clock vec
+    /// must be sorted by raw tick (done in `parse_replay`) before use.
+    fn cle_at(&self, tick_sec: f64) -> f64 {
+        let c = &self.clock;
+        if c.is_empty() {
+            return tick_sec;
+        }
+        match c.binary_search_by(|(t, _)| t.partial_cmp(&tick_sec).unwrap_or(std::cmp::Ordering::Equal)) {
+            Ok(i) => c[i].1,
+            Err(i) => {
+                if i == 0 {
+                    c[0].1
+                } else if i >= c.len() {
+                    c[c.len() - 1].1
+                } else {
+                    let (t0, c0) = c[i - 1];
+                    let (t1, c1) = c[i];
+                    let f = if (t1 - t0).abs() < 1e-9 { 0.0 } else { (tick_sec - t0) / (t1 - t0) };
+                    c0 + f * (c1 - c0)
+                }
+            }
+        }
+    }
+}
+
+#[observer]
+#[uses_all]
+impl CombatLogExtractor {
+    #[on_tick_start]
+    fn on_tick_start(&mut self, ctx: &Context) -> ObserverResult {
+        if self.game_start_cl.is_none() {
+            for e in ctx.entities().iter() {
+                if e.class().name().contains("GameRules") {
+                    if let Some(v) = try_property!(e, f32, "m_pGameRules.m_flGameStartTime") {
+                        self.game_start_cl = Some(f64::from(v));
+                    }
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[on_combat_log]
+    fn on_combat_log(&mut self, ctx: &Context, cle: &CombatLogEntry) -> ObserverResult {
+        let type_name = format!("{:?}", cle.r#type());
+        let t_cle = cle.timestamp().unwrap_or_default() as f64;
+        let t_tick = f64::from(ctx.tick()) / f64::from(TICK_RATE);
+        self.clock.push((t_tick, t_cle));
+        let log = cle.log();
+        let seq = self.seq;
+        self.seq += 1;
+        let attacker = cle.attacker_name().ok().map(str::to_string);
+        let target = cle.target_name().ok().map(str::to_string);
+        let damage_source = cle.damage_source_name().ok().map(str::to_string);
+        let inflictor = cle.inflictor_name().ok().map(str::to_string);
+        let value_name = cle.value_name().ok().map(str::to_string);
+        let assist = if log.assist_players.is_empty() {
+            None
+        } else {
+            Some(serde_json::json!(log.assist_players.iter().collect::<Vec<_>>()).to_string())
+        };
+        let raw_json = serde_json::json!({
+            "type": type_name.clone(),
+            "attacker": attacker.clone(), "target": target.clone(),
+            "damage_source": damage_source.clone(),
+            "inflictor": inflictor.clone(), "value_name": value_name.clone(),
+            "value": cle.value().ok(), "health": cle.health().ok(),
+            "location": [cle.location_x().ok(), cle.location_y().ok()],
+            "a_team": cle.attacker_team().ok(), "t_team": cle.target_team().ok(),
+        })
+        .to_string();
+        self.rows.push(CombatLogRow {
+            event_seq: seq,
+            t_cle,
+            t_tick,
+            type_category: type_category(&type_name),
+            type_name,
+            attacker,
+            target,
+            damage_source,
+            inflictor,
+            value_name,
+            value: cle.value().ok().map(i64::from),
+            health: cle.health().ok().map(i64::from),
+            location_x: cle.location_x().ok().map(f64::from),
+            location_y: cle.location_y().ok().map(f64::from),
+            a_team: cle.attacker_team().ok().map(i64::from),
+            t_team: cle.target_team().ok().map(i64::from),
+            stack_count: cle.stack_count().ok().map(i64::from),
+            modifier_duration: cle.modifier_duration().ok().map(f64::from),
+            modifier_elapsed: cle.modifier_elapsed_duration().ok().map(f64::from),
+            ability_level: cle.ability_level().ok().map(i64::from),
+            assist_players: assist,
+            gold_reason: cle.gold_reason().ok().map(i64::from),
+            xp_reason: cle.xp_reason().ok().map(i64::from),
+            event_location: cle.event_location().ok().map(i64::from),
+            is_attacker_hero: cle.is_attacker_hero().ok().map(|b| b as i64),
+            is_target_hero: cle.is_target_hero().ok().map(|b| b as i64),
+            is_target_building: cle.is_target_building().ok().map(|b| b as i64),
+            raw_json: Some(raw_json),
+        });
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -872,6 +1647,8 @@ pub struct ParsedReplay {
     pub identity_rows: Vec<PlayerIdentityRow>,
     pub snapshot_rows: Vec<SnapshotRow>,
     pub event_rows: Vec<EventRow>,
+    /// Universal combat-log narrative (all types, raw) -> `combat_log` table.
+    pub combat_rows: Vec<CombatLogRow>,
     /// (entity_id, sample count, first second, last second) for the log.
     pub entity_log: Vec<(String, usize, i64, i64)>,
 }
@@ -984,33 +1761,6 @@ fn build_snapshot_rows(
 }
 
 /// Assemble `game_events` rows for purchase events.
-fn build_event_rows(purchases: &[(f64, String, String, u32)]) -> Vec<EventRow> {
-    let mut rows = Vec::new();
-    // (event_type, actor, second) -> next event_seq
-    let mut seq: HashMap<(&'static str, &str, i64), i64> = HashMap::new();
-    for (t, buyer, item, raw_index) in purchases {
-        let sec = t.floor() as i64;
-        let key = ("purchase", buyer.as_str(), sec);
-        let n = seq.entry(key).or_insert(0);
-        let event_seq = *n;
-        *n += 1;
-        rows.push(EventRow {
-            game_time_sec: sec,
-            event_type: "purchase",
-            actor_id: Some(buyer.clone()),
-            target_id: None,
-            x: None,
-            y: None,
-            properties: serde_json::json!({
-                "item": item,
-                "item_index": raw_index, // combat-log internal item index, not gold cost
-            }),
-            event_seq,
-        });
-    }
-    rows
-}
-
 /// Parse one replay fully and return rows for all three tables.
 ///
 /// `fallback_match_id` is used only when the .dem header carries no match id
@@ -1034,11 +1784,23 @@ pub fn parse_replay(
     let interval_ticks = (TICK_RATE * interval_sec).max(1);
 
     // --- extractors ---
+    let combat = parser.register_observer::<CombatLogExtractor>();
     let position = parser.register_observer::<PositionExtractor>();
-    let purchase = parser.register_observer::<PurchaseExtractor>();
     let ward = parser.register_observer::<WardExtractor>();
     let building = parser.register_observer::<BuildingExtractor>();
+    let networth = parser.register_observer::<NetWorthExtractor>();
+    // Ability/item cooldown + knowledge layer. It was written for the Q5-era
+    // schema and left unregistered when combat narrative moved into
+    // `combat_log`; Q7's skill-cooldown panel needs it, and a freshly parsed
+    // personal replay has no legacy database to fall back on, so it is
+    // registered again. Events land in `game_events` as ability_known /
+    // ability_learn / ability_cd_start / ability_cd_end / item_* / smoke_count.
     let ability = parser.register_observer::<AbilityExtractor>();
+    // Jungle/gold layer (neutral kills + per-hero gold timeline). Also written for
+    // the Q5-era schema and left unregistered by the combat-log rewrite; needed so
+    // a freshly parsed replay is equivalent to the league corpus for the analyses
+    // that read game_events (gold timeline, neutral kills).
+    let jungle = parser.register_observer::<JungleExtractor>();
 
     // Sampling is gated on whole-second change inside the extractor, so no
     // interval injection is needed. (`interval_sec` is kept in the signature
@@ -1046,19 +1808,34 @@ pub fn parse_replay(
     let _ = interval_ticks;
 
     parser.run_to_end()?;
+    // sort the dense (raw tick -> cle) clock so ward_placed can map to cle.
+    combat
+        .borrow_mut()
+        .clock
+        .sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let combat = combat.borrow();
     let position = position.borrow();
-    let purchase = purchase.borrow();
     let ward = ward.borrow();
     let building = building.borrow();
+    let networth = networth.borrow();
     let ability = ability.borrow();
+    let jungle = jungle.borrow();
 
     // --- assemble ---
+    let combat_rows = combat.rows.clone();
+    let game_start_cl = combat.game_start_cl;
     let identity_rows = build_identity_rows(&players);
-    let snapshot_rows = build_snapshot_rows(&players, &position.samples);
-    let mut event_rows = build_event_rows(&purchase.purchases);
-    event_rows.extend(build_ward_event_rows(&ward.placed, &ward.destroyed));
+    let mut snapshot_rows = build_snapshot_rows(&players, &position.samples);
+    snapshot_rows.extend(build_networth_snapshot_rows(&networth.samples));
+    snapshot_rows.extend(build_team_networth_rows(&networth.team_networth));
+    snapshot_rows.extend(build_ward_snapshot_rows(&ward.samples));
+    // Combat narrative now lives in `combat_log` (all types). `game_events` keeps
+    // the entity-anchored space/state layer: ward_placed(实体) + building + 号角锚点,
+    // plus the ability/item cooldown + knowledge layer (Q7 技能 CD 面板要用).
+    let mut event_rows = build_ward_event_rows(&ward.placed, game_start_cl);
     event_rows.extend(build_building_event_rows(&building.events));
     event_rows.extend(build_ability_event_rows(&ability.events, &players));
+    event_rows.extend(build_jungle_event_rows(&jungle.kills, &jungle.golds));
 
     // entity-level counts (by resolved entity_id) for the console log
     let mut entity_log: Vec<(String, usize, i64, i64)> = Vec::new();
@@ -1089,6 +1866,7 @@ pub fn parse_replay(
         identity_rows,
         snapshot_rows,
         event_rows,
+        combat_rows,
         entity_log,
     })
 }

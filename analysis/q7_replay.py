@@ -419,10 +419,13 @@ def parse_match(db, match_id, league, with_detail=True):
 
     meta = match_meta(match_id)
     old_db = find_old_db(match_id)
-    cd = load_cd(old_db, match_id, CLK, players, t0, t1)
+    # CD 源：老库优先（联赛历史数据不变）；个人录像没有老库 → 用主库本身
+    # （2026 起 parser 重新产出 ability_cd_* / item_cd_*，主库里就有）
+    cd = load_cd(old_db or db, match_id, CLK, players, t0, t1)
     meta.update({
         "db": os.path.relpath(db, ROOT).replace("\\", "/"),
         "db_old": (os.path.relpath(old_db, ROOT).replace("\\", "/") if old_db else None),
+        "cd_src": (os.path.relpath(old_db or db, ROOT).replace("\\", "/") if cd else None),
         "league_id": int(league) if str(league).isdigit() else league,
         "horn_cle": round(horn_cle, 3),
         "horn_tt": round(horn_tt, 3),
@@ -681,7 +684,17 @@ def ability_class(key):
 
 
 def load_cd(old_db, mid, clk, players, t0, t1):
-    """技能/道具冷却区间（显示钟）。找不到旧库/无数据 → 返回 None（**不硬造**）。"""
+    """技能/道具冷却区间（显示钟）。
+
+    数据源：`game_events` 的 ability_cd_start/end + item_cd_* + ability_known/learn
+    （实体 `m_fCooldown` 派生的**真实剩余秒**，不需要冷却常量表）。
+
+    ★ 2026 起：**当前 parser 已重新产出这些事件**（见 dota_parse/src/parse.rs 里
+    `AbilityExtractor` 的重新注册），所以：
+      · 联赛场次仍优先读 Q5 版老库 `dems/db/<league>/<mid>.db`（历史数据不变）；
+      · **个人录像没有老库 → 退回读同一个主库**（`dems/db_full/...`，现在里面就有这些事件）。
+    两处都没有 → 返回 None（**不硬造**，页面显示"不提供"）。
+    """
     if not old_db or not os.path.exists(old_db):
         return None
     con = sqlite3.connect(old_db)
