@@ -466,6 +466,40 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
   ok(/\.tlrow\{[^}]*flex-wrap:\s*wrap/.test(css), "时间轴控制行窄屏会换行（不会挤出屏幕）");
 }
 
+/* ══ 3a0b. 文案守卫（owner：面向普通用户，不留内部讨论痕迹） ══ */
+{
+  // 先把"非文字"的部分剔掉：base64 图片、以及内嵌的数据块（纯随机 base64 里会偶然出现 Q7/Q6 这类字母组合）
+  const textOnly = raw
+    .replace(/data:[a-z/+.-]+;base64,[A-Za-z0-9+/=]+/g, "<image>")
+    .replace(/const DATA = \{[\s\S]*?\};\n/, "const DATA = {};\n")
+    .replace(/@@DICSS@@/g, "");
+  const stop = textOnly.indexOf("<script");
+  const markup = textOnly.slice(0, stop > 0 ? stop : textOnly.length);
+  const js = textOnly.slice(stop);
+  // 内部词：项目代号、开发过程用词、内部文件/表名、"我们讨论"的痕迹
+  const BANNED = ["owner", "定案", "口径", "不硬造", "如实回退", "Q5B", "Q6", "Q7", "本步",
+                  "仍未做", "占位图", "combat_log", "entity_snapshots", "dems/", "stats.db",
+                  "timebase", "parser", "COMBAT_LOG", "DEM_FORMAT", "§", "规则集", "回归测试",
+                  "lite 版", "combat log", "modifier 分给出"];
+  const hitM = BANNED.filter((k) => markup.indexOf(k) >= 0);
+  ok(hitM.length === 0, "页面可见文字没有内部词（命中：" + hitM.join(",") + "）");
+  // JS 里"会显示给用户"的字符串（含中文的字符串常量）也不能有内部词
+  const literals = [];
+  const re = /"((?:[^"\\\n]|\\.)*[\u4e00-\u9fff](?:[^"\\\n]|\\.)*)"|'((?:[^'\\\n]|\\.)*[\u4e00-\u9fff](?:[^'\\\n]|\\.)*)'/g;
+  let m;
+  while ((m = re.exec(js))) literals.push(m[1] || m[2]);
+  const hitJ = [];
+  literals.forEach((t) => BANNED.forEach((k) => { if (t.indexOf(k) >= 0) hitJ.push(k + "→" + t.slice(0, 40)); }));
+  ok(hitJ.length === 0, "JS 生成的用户文字没有内部词（命中：" + hitJ.slice(0, 3).join(" ; ") + "）");
+  // 面向用户该有的东西在不在
+  ok(/怎么用/.test(markup), "页首有『怎么用』引导");
+  ok(/使用说明与数据说明/.test(markup), "有面向用户的使用说明");
+  ok(markup.indexOf("第一步") < 0 && markup.indexOf("第二步") < 0 && markup.indexOf("第三步") < 0,
+     "没有『第一步/第二步/第三步』这类内部阶段说法");
+  ok(!/<code>python /.test(raw) && !/<code>analysis\//.test(raw),
+     "页面上没有让用户去跑命令行/看内部路径的说明");
+}
+
 /* ══ 3a1. 时间轴重大事件（图标版：阵亡英雄头像 / 建筑图标，上=天辉有利 下=夜魇有利） ══ */
 {
   const TL = S.tl || [];
@@ -717,8 +751,8 @@ if (!LITE) {
   ok(ld.n > 0, "该时刻窗口命中 " + ld.n + " 条（四类合计）");
   ok(ld.cnt.length === 4 && ld.cnt.reduce((a, b) => a + b, 0) === ld.n,
      "四类计数之和 == 命中条数（" + ld.cnt.join("/") + " == " + ld.n + "）");
-  ok(String(g("dsum").innerHTML).indexOf("窗口") >= 0 && String(g("dsum").innerHTML).indexOf("命中") >= 0,
-     "右栏汇总行显示窗口与命中数");
+  ok(String(g("dsum").innerHTML).indexOf("时间范围") >= 0 && String(g("dsum").innerHTML).indexOf("条") >= 0,
+     "右栏汇总行显示时间范围与条数");
   ok(String(g("#dtbl tbody").innerHTML).length > 0, "明细表渲染出行（tbody innerHTML 非空）");
 
   // --- 行内图标与列序（owner：时刻 ｜ 本英雄 ｜ 技能 ｜ 数值 ｜ 对象）---

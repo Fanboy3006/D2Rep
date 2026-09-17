@@ -98,6 +98,72 @@ def clean(s):
     return "".join(ch if (ch.isprintable() and ch != "\ufffd") else "?" for ch in str(s))
 
 
+def strip_comments(html):
+    """剥掉产出 HTML 里的注释（HTML `<!-- -->` / CSS 与 JS 的 `/* */`、`//`）。
+
+    为什么：模板里的注释是给维护者看的，但**产出文件是发给用户的成品** —— 里面不该留下
+    "owner/方案①/Q5B"这类内部讨论痕迹。源代码模板保留注释，只在构建时剥掉。
+
+    ★ 分段处理，避免误伤：
+      · `<style>` 段**只**去 `/* */`（CSS 里 `url(data:image/png;base64,…)` 的 base64 含 `/`，
+        若按 `//` 当行注释会把图片整个切掉 —— 第一版就踩了这个坑，页面从 9MB 掉到 6MB）；
+      · `<script>` 段用"是否在字符串里"的状态机去 `/* */` 与 `//`（支持 ' " ` 与转义），
+        并用"前一个非空字符"启发式区分正则字面量（`replace(/^npc_/, "")`）与除号；
+      · 其余（HTML）段只去 `<!-- -->`。
+    """
+    import re as _re
+    parts = _re.split(r"(?is)(<script\b[\s\S]*?</script>|<style\b[\s\S]*?</style>)", html)
+
+    def _js(code):
+        out, i, n, quote, prev_sig = [], 0, len(code), None, ""
+        while i < n:
+            ch, two = code[i], code[i:i + 2]
+            if quote:
+                out.append(ch)
+                if ch == "\\" and i + 1 < n:
+                    out.append(code[i + 1])
+                    i += 2
+                    continue
+                if ch == quote:
+                    quote = None
+                i += 1
+                continue
+            if two == "/*":
+                j = code.find("*/", i + 2)
+                i = n if j < 0 else j + 2
+                continue
+            if two == "//" and prev_sig not in ("(", ",", "=", ":", "[", "!", "&", "|", "?"):
+                # ↑ 只有在"正则字面量可能出现的位置"才不当注释。**不能**把 `}` `;` 也算进去：
+                #   行尾注释最常见的上下文就是 `}` / `;` 之后，把这两者列入白名单会漏掉一半注释
+                #   （第一版就是这么漏的）。本页 JS 里没有以 `//` 开头的正则字面量。
+                j = code.find("\n", i)
+                if j < 0:
+                    i = n
+                else:
+                    out.append("\n")
+                    i = j + 1
+                continue
+            if ch in "\"'`":
+                quote = ch
+            out.append(ch)
+            if not ch.isspace():
+                prev_sig = ch
+            i += 1
+        return "".join(out)
+
+    res = []
+    for p in parts:
+        if p[:7].lower() == "<script":
+            head = p[:p.index(">") + 1]
+            tail = p[-9:]
+            res.append(head + _js(p[len(head):-9]) + tail)
+        elif p[:6].lower() == "<style":
+            res.append(_re.sub(r"/\*[\s\S]*?\*/", "", p))          # CSS：只去块注释
+        else:
+            res.append(_re.sub(r"<!--[\s\S]*?-->", "", p))          # HTML 注释
+    return "".join(res)
+
+
 def decimate_keep(a, step):
     """按 step 抽稀：每个窗口取**最后一个非空值**（窗口全空则保留 None）。
 
@@ -308,8 +374,8 @@ def build(mid, outdir, lite=False, step=3, fetch_icons=True):
     blob = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).replace("</", "<\\/")
     map_b64 = b64_png_opt(MAP_PNG, 64, (448 if lite else None)) if lite else b64(MAP_PNG)
 
-    rname = m.get("radiant_team") or "天辉（stats.db 无队名）"
-    dname = m.get("dire_team") or "夜魇（stats.db 无队名）"
+    rname = m.get("radiant_team") or "天辉（未获取到队名）"
+    dname = m.get("dire_team") or "夜魇（未获取到队名）"
     win = m.get("radiant_win")
     win_txt = "—" if win is None else ("天辉胜" if win else "夜魇胜")
     league = m.get("league_id")
@@ -328,6 +394,10 @@ def build(mid, outdir, lite=False, step=3, fetch_icons=True):
         ("@@DB@@", m.get("db", "")),
         ("@@ENDRULE@@", m.get("end_source", "")),
         ("@@PAUSE@@", "%.1f" % (m.get("clock", {}).get("pause_sec_total") or 0)),
+        ("@@PAUSE_TXT@@", ("本场基本没有暂停"
+                           if abs(m.get("clock", {}).get("pause_sec_total") or 0) < 1
+                           else "本场共暂停 %.0f 秒，已折算回游戏内时间"
+                                % (m.get("clock", {}).get("pause_sec_total") or 0))),
         ("@@DELTA@@", "%.2f" % (m.get("clock", {}).get("delta_file") or 0)),
         ("@@ANCHORS@@", str(m.get("clock", {}).get("anchors", 0))),
         ("@@SRCJSON@@", "analysis/output_q7/q7_%s.json" % mid),
@@ -336,6 +406,8 @@ def build(mid, outdir, lite=False, step=3, fetch_icons=True):
 
     os.makedirs(outdir, exist_ok=True)
     out = os.path.join(outdir, "q7_replay_%s%s.html" % (mid, "_lite" if lite else ""))
+    # 产出文件是"成品"：剥掉所有注释（模板里的内部讨论痕迹不带出去）
+    html = strip_comments(html)
     with open(out, "w", encoding="utf-8") as f:
         f.write(html)
     print("wrote %s  size=%.2f MB  (icons %d%s)"
@@ -351,7 +423,7 @@ def dur(sec):
 
 
 HTML_TMPL = r"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
-<title>Q7 回放浏览器 · @@MID@@</title>
+<title>Dota 2 比赛回放 · @@MID@@</title>
 <style>
 :root{--bg:#0d1117;--pnl:#161b22;--pnl2:#21262d;--bd:#30363d;--fg:#e6edf3;--dim:#8b949e;
       --rad:#4aa564;--dire:#d24b4b;--acc:#1f6feb;--gold:#e3b341}
@@ -514,7 +586,7 @@ details{margin-top:8px;font-size:12px;color:var(--dim)}
 details summary{cursor:pointer;color:#79c0ff}
 details p{line-height:1.75;margin:6px 0}
 code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
-/* ---------- combat log 行内图标（背景图写在 @@DICSS@@ 里，按名字一类一张）---------- */
+/* ---------- combat log 行内图标（背景图由构建脚本注入到独立的 style 块，按名字一类一张）---------- */
 .di{display:inline-block;width:22px;height:22px;background-size:cover;background-position:center;
     background-color:#15181d;border:1px solid #30363d;border-radius:4px;vertical-align:middle;flex:0 0 auto}
 .di.self{border-radius:50%;border-color:#8b949e}
@@ -531,26 +603,27 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
 <style id="dicss">@@DICSS@@</style>
 </head><body>
 
-<h1>Q7 · 全盘复现交互 UI（回放浏览器）— match <span id="mid">@@MID@@</span>
-  <span class="sub" style="font-weight:400">联赛 @@LEAGUE@@ ｜ <b>@@RNAME@@</b> vs <b>@@DNAME@@</b> ｜ 结果 @@WIN@@ ｜ 游戏时长 @@DUR@@
-  ｜ 显示时钟（0:00=号角）｜ 暂停 @@PAUSE@@s ｜ 数据源 <code>@@DB@@</code></span></h1>
+<h1>Dota 2 比赛回放浏览器
+  <span class="sub" style="font-weight:400"><b>@@RNAME@@</b> vs <b>@@DNAME@@</b> ｜ @@WIN@@ ｜ 时长 @@DUR@@
+  ｜ 比赛编号 @@MID@@</span></h1>
+<div class="tip" style="margin:0 0 6px">怎么用：<b>拖动时间轴</b>或按 <b>▶ 播放</b> 看比赛回放；<b>点地图上的英雄</b>（或右下表格里的任意一行）→ 右栏换成这名英雄的战斗记录与技能冷却；时间轴上的图标可以直接点，跳到那一刻。</div>
 
 <div id="top">
   <div class="stat clock"><div class="k">当前时刻</div><div class="v" id="vClock">0:00</div>
     <div class="s" id="vPhase">—</div></div>
-  <div class="stat"><div class="k">经济差（净值 · m_iNetWorth）★主显</div><div class="v" id="vNw">—</div>
-    <div class="s">天辉 − 夜魇 · 标准"经济差"口径（<b>owner 2026 定案主显此列</b>）</div></div>
-  <div class="stat"><div class="k">经济差（combat-log 累加）</div><div class="v" id="vCg">—</div>
-    <div class="s">= 累计获取金币差（含消耗品支出，非净值）</div></div>
-  <div class="stat"><div class="k">经验差（combat-log 累加）</div><div class="v" id="vCx">—</div>
-    <div class="s">天辉 − 夜魇 · 无独立源可校验</div></div>
-  <div class="stat"><div class="k">胜率（状态胜率 · 派生模型）</div><div class="v" id="vWp">—</div>
-    <div class="s" id="vWpNote">未拟合</div></div>
+  <div class="stat"><div class="k">经济差（净值）</div><div class="v" id="vNw">—</div>
+    <div class="s">天辉 − 夜魇 ｜ 两队总资产之差（现金 + 装备），最直观的经济形势</div></div>
+  <div class="stat"><div class="k">经济差（累计获取）</div><div class="v" id="vCg">—</div>
+    <div class="s">天辉 − 夜魇 ｜ 从击杀、补刀等<b>赚到的</b>金币之差（已扣阵亡损失，不扣买装备的支出）</div></div>
+  <div class="stat"><div class="k">经验差</div><div class="v" id="vCx">—</div>
+    <div class="s">天辉 − 夜魇 ｜ 从战斗记录累加得到的经验差，可作等级形势参考</div></div>
+  <div class="stat"><div class="k">当前胜率（天辉）</div><div class="v" id="vWp">—</div>
+    <div class="s" id="vWpNote">—</div></div>
   <div id="sparkwrap">
     <canvas id="spark" width="1200" height="78"></canvas>
-    <div class="sparkhint"><span>全场走势（点/拖此条可直接定位）</span>
+    <div class="sparkhint"><span>全场走势（点一下或拖动，可直接跳到那一刻）</span>
       <span style="display:flex;gap:6px;align-items:center">
-        <span>火花线口径</span>
+        <span>显示</span>
         <button class="btn ebtn active" data-e="nw" onclick="setEntDiff('nw')">净值差</button>
         <button class="btn ebtn" data-e="cg" onclick="setEntDiff('cg')">累计金币差</button>
         <button class="btn ebtn" data-e="cx" onclick="setEntDiff('cx')">经验差</button>
@@ -606,7 +679,7 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
       <button class="btn" onclick="resetZoom()">↺ 全图</button>
       <button class="btn" onclick="clearSel()">取消选中</button>
       <span class="sep">｜</span>
-      <span id="mapInfo">滚轮缩放 · 拖拽平移 · 点英雄标记选中</span>
+      <span id="mapInfo">滚轮缩放 · 拖拽平移 · 点英雄圆点选中</span>
       <label style="margin-left:auto"><input type="checkbox" id="showBld" checked> 建筑</label>
       <label><input type="checkbox" id="showRoute" checked> 轨迹(最近40s)</label>
       <label><input type="checkbox" id="showName" checked> 名字</label>
@@ -621,18 +694,18 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
 
 <div class="right panel">
   <div id="paneList">
-    <div class="kv" id="selinfo"><b>明细表</b>（默认：双方 10 英雄 KDA + 正反补）</div>
+    <div class="kv" id="selinfo">双方 <b>10 名英雄</b>的 K/D/A、正补/反补，以及<b>当前时刻</b>各自的净值、累计金币、经验与血量</div>
     <div style="overflow:visible">
     <table id="tbl"><thead><tr>
       <th>英雄</th><th>队</th><th>K</th><th>D</th><th>A</th><th>正补</th><th>反补</th>
       <th>净值@t</th><th>累计金币@t</th><th>经验@t</th><th>HP</th>
     </tr></thead><tbody></tbody></table>
     </div>
-    <div class="tip" id="liteNote" style="display:none"><b>这是 lite（精简）版</b>：为压体积，
-      逐秒数据抽稀到每 <b id="liteStep">3</b> 秒一格、<b>不含 ±45s combat log 明细与技能图标</b>；
-      地图/表格/胜率/眼位/烟雾/技能 CD 三态都保留。完整版见同目录 <code>q7_replay_&lt;match&gt;.html</code>。</div>
-    <div class="tip"><b>点任意英雄</b>（表格行 / 头像 / 地图上的标记）→ 本栏切到该英雄的
-      <b>±45s combat log</b>（4 个类别开关 + <b>隐藏小兵/中立/召唤</b>，每行带技能/对方英雄图标）+ <b>技能 CD</b>。</div>
+    <div class="tip" id="liteNote" style="display:none"><b>这是精简版页面</b>：为了减小体积，
+      地图上的逐秒数据每 <b id="liteStep">3</b> 秒取一格，并且<b>不含逐条战斗记录与技能图标</b>；
+      地图、表格、胜率、眼位、烟雾、技能冷却都在。想看逐条战斗记录，请打开同一文件夹里的<b>完整版</b>页面。</div>
+    <div class="tip"><b>点任意英雄</b>（表格行 / 地图上方的头像 / 地图上的标记）→ 这里换成这名英雄的
+      <b>战斗记录</b>（当前时刻前后各 45 秒）和<b>技能冷却</b>。</div>
   </div>
 
   <div id="paneHero" style="display:none">
@@ -640,66 +713,64 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
     <div class="tglrow">
       <button class="btn" onclick="clearSel()">↩ 返回 10 英雄表</button>
       <span class="sep"></span>
-      <label class="toggle"><input type="checkbox" id="tc0" checked onchange="renderDetail()">给出的 modifier</label>
-      <label class="toggle"><input type="checkbox" id="tc1" checked onchange="renderDetail()">收到的 modifier</label>
-      <label class="toggle"><input type="checkbox" id="tc2" checked onchange="renderDetail()">造成伤害</label>
-      <label class="toggle"><input type="checkbox" id="tc3" checked onchange="renderDetail()">收到伤害</label>
-      <label class="toggle"><input type="checkbox" id="tfold" checked onchange="renderDetail()">折叠连续同项</label>
-      <label class="toggle" title="隐藏"对象/来源"是**非英雄、非建筑**的行（小兵 / 中立 / 召唤物 / 肉山）；英雄与塔·兵营·基地仍然保留"><input type="checkbox" id="tnc" onchange="renderDetail()">隐藏小兵/中立/召唤</label>
-      <label class="toggle"><input type="checkbox" id="tcdall" onchange="renderCD()">显示天赋/空槽</label>
+      <label class="toggle"><input type="checkbox" id="tc0" checked onchange="renderDetail()">施加的状态</label>
+      <label class="toggle"><input type="checkbox" id="tc1" checked onchange="renderDetail()">受到的状态</label>
+      <label class="toggle"><input type="checkbox" id="tc2" checked onchange="renderDetail()">造成的伤害</label>
+      <label class="toggle"><input type="checkbox" id="tc3" checked onchange="renderDetail()">受到的伤害</label>
+      <label class="toggle"><input type="checkbox" id="tfold" checked onchange="renderDetail()">合并连续相同项</label>
+      <label class="toggle" title="只隐藏“对手是小兵 / 中立生物 / 召唤物 / 肉山”的行；英雄与塔·兵营·基地照常显示"><input type="checkbox" id="tnc" onchange="renderDetail()">隐藏小兵/中立/召唤</label>
+      <label class="toggle" title="显示还没学习、或者没买到的技能与道具栏位"><input type="checkbox" id="tcdall" onchange="renderCD()">显示未学/未拥有</label>
     </div>
     <div class="dsum" id="dsum">—</div>
     <div class="dwrap" id="dwrap"><table id="dtbl"><thead><tr>
       <th>时刻</th><th>本英雄</th><th>技能 / 事件</th><th>数值</th><th>对象</th>
     </tr></thead><tbody></tbody></table></div>
 
-    <div class="cdhead">技能冷却（三态：冷却中=灰+剩余秒 ｜ 未学未拥有=锁 ｜ 就绪）</div>
+    <div class="cdhead">技能与道具冷却（灰 = 冷却中并显示剩余秒 ｜ 锁 = 未学习 / 未拥有 ｜ 绿框 = 可用）</div>
     <div id="cdboard"></div>
     <div class="tip" id="cdnote"></div>
   </div>
 
-  <div class="todo" id="todobox">本版已实现：① ±45s combat log 四 toggle（逐行技能/对方英雄图标）② 技能 CD（三态 + BKB/刷新球/TP）
-    ③ 状态胜率。<b>仍未做</b>：眼位/烟雾图层、多场切换、移动端 lite 版。</div>
+  <div class="todo" id="todobox">这个页面能做什么：<b>看回放</b>（地图上 10 个人的走位、血量、装备与经济）·
+    <b>看局势</b>（经济差 / 经验差 / 当前胜率 / 全场走势）·
+    <b>看大事件</b>（击杀、推塔、肉山都在时间轴上）·
+    <b>看细节</b>（点某个英雄，查他每一秒在做什么、技能什么时候冷却好）· <b>看视野</b>（眼位与烟雾）。</div>
 
-  <details open><summary>口径与已知边界（坦诚说明 · 请务必先读）</summary>
-    <p><b>① 时间口径</b>：0:00 = 号角（<code>combat_log gamestate value=5</code> 的 <code>t_cle</code>）；
-      出门 = −1:30（实测初始金 600 事件恰在 −1:29.9）。所有展示时刻都是这条轴。
-      <code>entity_snapshots</code> / <code>dems/db</code> 的 CD 事件是<b>回放钟</b>（<code>tick/30</code>）→
-      经 <code>analysis/timebase.py</code> 的暂停感知折算（本场暂停 @@PAUSE@@s）。</p>
-    <p><b>② ±45s 明细</b>全部来自 <code>combat_log</code>（4 类：<code>modifier</code> 按 attacker/target 分给出/收到、
-      <code>damage</code> 同理）。窗口 = <b>当前播放时刻 ±45s</b>（owner 2026 定案）。逐条内嵌、无采样丢失；
-      列序 = <b>时刻 ｜ 本英雄 ｜ 技能/事件 ｜ 数值 ｜ 对象</b>；每行的图标是<b>名字 → 官方图的映射</b>（英雄短名→该英雄头像、技能/道具→官方图标、建筑→塔/兵营字形、"普通攻击"→自绘 UI 字形），映射靠名字匹配（去 <code>modifier_</code>/<code>item_</code> 前缀、去尾部词、召唤物归到所属英雄），<b>解析不到就不画图标（文字照旧，绝不拿占位图冒充）</b>；取图带本地缓存（<code>analysis/detail_icons.py</code>，<code>--no-fetch</code> 可离线构建）。
-      "折叠连续同项"只是在显示层把同名称/同类别/同数值且时间相邻(≤1.2s)的条目并成一行（括号里是区间精确条数）。</p>
-    <p><b>③ 技能 CD</b>来自 <code>dems/db/&lt;league&gt;/&lt;match&gt;.db</code> 的
-      <code>ability_cd_start/end</code> + <code>ability_known/learn</code> + <code>item_cd_*</code> + <code>item_known</code>
-      （combat_log 版库里没有这些：CD 是<b>实体派生</b>、不是 combat 条目）。
-      <b>不需要任何冷却常量表</b> —— <code>properties.remaining</code> 就是实体 <code>m_fCooldown</code> 的
-      <b>实际剩余冷却秒</b>（含等级/天赋/减CD），区间 = <code>[cd_start, cd_end]</code>（有 end 用真实 end）。
-      <b>TP</b> 是充能制、库内无 CD/充能事件 → 只显示"使用时刻 + 次数"（如实标注，不硬造三态）。</p>
-    <p><b>④ 胜率是派生模型，不是 combat log</b>：<code>P(天辉胜 | 净值差, 经验差, t)</code> 逻辑回归，
-      在 <b id="wpN">—</b> 场上拟合，<b>按 match 划分训练/测试</b>防泄漏；特征只用 t 时刻可观测的量，
-      <b>绝不使用最终结果</b>。标签 = 远古被摧毁（badguys_fort 死→天辉胜）。验证：<b id="wpAuc">—</b>。
-      它是"历史上处于这种局面的队最终赢了多少"的统计映射，<b>不是这场比赛的预测</b>。
-      模型形态 = <b>分时间桶的逻辑回归 + 桶间系数线性插值</b>（对 t 连续）；分桶 AUC 见上。
-      ⚠️ 经济差与经验差<b>实测正相关 r=0.52</b> → <b>单个系数的符号不具解释意义</b>，
-      模型只在两者联合的实测分布上有意义（页面喂的就是实测值）。</p>
-    <p><b>⑤ 两个"经济差"是两套源，别混</b>：
-      <span class="dr">净值差（m_iNetWorth）</span>= 标准经济差（现金+装备，非 combat log，项目内对账 OpenDota 0.000%）
-      —— <b>已由 owner 定案为本页主显口径</b>；
-      <span class="dr">combat-log 累加</span>= 累计<b>获取</b>金币差（已按 <code>gold_reason=1</code> 扣死亡损失；
-      但买装备/消耗品不减 → 与净值差会随比赛拉大，实测本场末秒两者差 <b id="gapEnd">—</b>）。
-      胜率模型用的是<b>净值差</b>口径。</p>
-    <p><b>⑥ 经验差</b>只有 combat-log 一条源（库内无经验快照）→ 无法交叉校验，仅作参考。</p>
-    <p><b>⑦ 正反补</b>= <code>death</code> 条目里 attacker 为英雄、target 为线上兵；敌方兵=正补、己方兵=反补。
-      <code>assist_players</code> 的值是<b>头部玩家索引</b>且<b>含击杀者本人</b>（已剔除）。</p>
-    <p><b>⑧ 位置</b>是解析层 1Hz 采样（偶有缺秒）→ 页面按"沿用上一秒"补齐（无位置则该英雄不画）。</p>
-    <p><b>⑨ 眼位图层</b>：<b>完全复用 Q5B 的权威口径</b>（`analysis/q5_ward.py::parse_match` —— 同一份代码、
-      同一套裁定）：判型=实体类名、放置=combat item use（±35s PVS 容差）、到期=<code>attacker==target</code>、
-      销毁与眼"一一对应"、右删失=比赛结束时仍存活（标"截断"）。页面上只画<b>当前时刻存活</b>的眼；
-      点/悬停眼标记可看 放置→销毁、存活秒数、到期/被反/截断。真眼真视半径 1050（未画圈）。</p>
-    <p><b>⑩ 烟雾图层</b>：使用时刻来自 <code>combat_log</code> 的 <code>item_smoke_of_deceit</code>
-      （item use），紫圈=开启后 20s 内；英雄紫环=<code>modifier_smoke_of_deceit</code> 的 Add→Remove 区间
-      （未见 Remove 的按最长 45s 截断，如实标注）。</p>
+  <details open><summary>使用说明与数据说明（第一次用建议先看这里）</summary>
+    <p><b>① 时间轴怎么读</b>：横轴是比赛时间，<b>0:00 = 号角响起</b>（出兵前 90 秒是选人/出门期，所以横轴左侧是负时间）。
+      上方那条是<b>全场进度</b>，下方那条是<b>±60 秒微调</b>：拖微调条时画面实时跟着走，松手后全场进度推进、微调条回到中间。
+      快捷键：<b>空格</b>=播放/暂停，<b>← →</b>=前后 5 秒。速度可切 1×/2×/4×。</p>
+    <p><b>② 时间轴上的图标</b>：<b>轴上方 = 对天辉有利</b>、<b>轴下方 = 对夜魇有利</b>；
+      图标画的是"发生了什么"（阵亡英雄的头像、被摧毁的塔/兵营/基地、肉山）；
+      图标外圈的<b>颜色是它属于哪一方</b>（绿=天辉、红=夜魇、灰=无主，例如肉山）。
+      <b>点一下图标</b>即可跳到那一刻；播放头附近的图标会高亮。想看具体时间，勾"时间戳文字"；只想看推塔和肉山，勾"只标建筑/肉山"。</p>
+    <p><b>③ 地图</b>：滚轮缩放、拖拽平移、双击回到全图；每个英雄是一个带队伍颜色的圆点，<b>阵亡时会变灰</b>，
+      最近 40 秒有轨迹；<b>点圆点</b>就是选中这名英雄。建筑被摧毁会在图上打叉；眼位（假眼/真眼）和烟雾也画在图上，
+      鼠标移上去能看到详细信息。上方一排开关可以分别隐藏：建筑、轨迹、名字、眼位、烟雾。</p>
+    <p><b>④ 右侧表格</b>：<b>K/D/A</b>=击杀/阵亡/助攻，<b>正补/反补</b>=补掉对方/己方小兵的数量；
+      <b>净值</b>=现金+装备总价值，<b>累计金币</b>=从击杀补刀等赚到的钱，<b>经验</b>=累计获得的经验值，<b>HP</b>=此刻血量。
+      带 <b>@t</b> 的列会随着播放时刻一起变化。</p>
+    <p><b>⑤ 战斗记录（点英雄后）</b>：列顺序是 <b>时刻 ｜ 本英雄 ｜ 技能/事件 ｜ 数值 ｜ 对象</b>，
+      所以"对方是谁"永远在最右边。默认显示当前时刻<b>前后各 45 秒</b>的条目，四类内容（施加的状态、受到的状态、
+      造成的伤害、受到的伤害）可以分别关掉；<b>合并连续相同项</b>把连续重复的同类条目合成一行（后面的 ×N 是次数）；
+      <b>隐藏小兵/中立/召唤</b>只留英雄与建筑相关的条目，团战混乱时特别好用。
+      每行的图标是"技能/单位/英雄"的示意图，<b>文字名称一直保留</b>。</p>
+    <p><b>⑥ 技能冷却</b>：显示该英雄每个技能与常用道具此刻是冷却中（灰底 + 剩余秒）、可用，还是未学习/未拥有（锁）。
+      灰色数字来自录像中技能的<b>真实剩余冷却</b>（已含等级与减 CD 效果），所以不需要另配一张冷却时间表。
+      <b>回城卷轴（TP）</b>是充能制，录像里没有它的冷却/充能数据，因此只列出<b>使用时刻与次数</b>，不硬凑状态。</p>
+    <p><b>⑦ 数字从哪来</b>：全部来自这一场比赛的录像解析（位置、血量、经济、战斗事件、眼位、技能状态）。
+      录像里的时间有两种：游戏内时间会因暂停而停住，回放时间不会；本页统一换算成<b>游戏内时间</b>并显示，
+      所以你看到的时刻就是选手看到的时刻（@@PAUSE_TXT@@）。</p>
+    <p><b>⑧ 读数字时的几点注意</b>：
+      · "<b>经济差（净值）</b>"与"<b>经济差（累计获取）</b>"的算法不同：前者含装备与存款、后者只算赚到的钱，
+      两者随比赛推进会越差越多（本场结束时的差距：<b id="gapEnd">—</b>）；
+      · <b>经验差</b>只有一条数据来源，无法交叉校验，作趋势参考；
+      · <b>当前胜率</b>是把"历史上处于同样经济/经验局面的队伍最终赢了多少"统计出来的参考值（基于 <b id="wpN">—</b>），
+      <b>不是对这场比赛的预测</b>，也不代表必然结果；该统计的区分度：<b id="wpAuc">—</b>；
+      · 地图位置按每秒采样、偶尔会有缺格，缺格时沿用上一秒的位置（hover 会标注）；
+      · 小兵、中立生物、召唤物这类单位<b>没有官方头像</b>，页面上用简笔图标表示类别（士兵/弓箭/攻城车/旗手/野兽爪印/召唤物），
+      具体名字在文字里写着；
+      · 中途开始录制的比赛，时间轴会带上偏移，此时画面上的开场不等于 0:00。</p>
   </details>
 </div>
 </div>
@@ -733,7 +804,8 @@ function isSmoked(npc, t) {
   for (let i = 0; i < a.length; i++) { if (t >= a[i][0] && t <= a[i][1]) return true; }
   return false;
 }
-const CATNAME = ["给出的 modifier", "收到的 modifier", "造成伤害", "收到伤害"];
+const CATNAME = ["施加的状态", "受到的状态", "造成的伤害", "受到的伤害"];
+const CATCHIP = ["施加", "受到", "造成", "受伤"];   // 表格里的小标签（两字，避免"受到"撞车）
 const MINKIND = ["Add", "Remove", "Stack", ""];
 const DMGKIND = ["", "暴击", "魔法伤害", "吸收"];
 const MAP_HALF = 8600;
@@ -1250,7 +1322,7 @@ function renderHeroHead() {
   }).join(" ｜ ")) : "";
   document.getElementById("herotop").innerHTML =
     '<b style="color:' + (p.team === 2 ? "#4aa564" : "#d24b4b") + '">' + p.short.replace(/_/g, " ")
-    + "</b>（" + (p.team === 2 ? "天辉" : "夜魇") + " · " + esc(p.name) + " · steam " + p.steam + "）"
+    + "</b>（" + (p.team === 2 ? "天辉" : "夜魇") + " · " + esc(p.name) + "）"
     + ' ｜ KDA <b>' + k.k + "/" + k.d + "/" + k.a + "</b> ｜ 正/反补 <b>" + k.lh + "/" + k.dn + "</b>"
     + " ｜ 净值 <b>" + (valAt(NW, p.npc, tCur) === null ? "—" : Math.round(valAt(NW, p.npc, tCur)).toLocaleString("en-US")) + "</b>"
     + (q ? (" ｜ HP <b>" + (q.hp > 0 ? q.hp + " / " + (hpMaxAt(p.npc, tCur) || "?") : "阵亡") + "</b>") : " ｜ 未出场")
@@ -1337,21 +1409,20 @@ function renderDetail(force) {
                  tMax: picked.length ? picked[picked.length - 1].t : null };
   document.getElementById("dsum").innerHTML =
     "<b>" + p.short.replace(/_/g, " ") + "</b>（" + (p.team === 2 ? "天辉" : "夜魇") + " · " + p.name + "）"
-    + " ｜ 窗口 <b>" + fmt(tCur, true) + " ± " + DET_WIN + "s</b>（" + fmt(lo) + " → " + fmt(hi) + "）"
-    + " ｜ 命中 <b>" + picked.length + "</b> 条"
-    + (fold && seq.length !== picked.length ? "（折叠后 " + seq.length + " 行）" : "")
+    + " ｜ 时间范围 <b>" + fmt(lo) + " → " + fmt(hi) + "</b>（当前时刻前后各 " + DET_WIN + " 秒）"
+    + " ｜ 共 <b>" + picked.length + "</b> 条"
+    + (fold && seq.length !== picked.length ? "（合并后 " + seq.length + " 行）" : "")
     + (hideCrit ? " ｜ 已隐藏小兵/中立/召唤 <b>" + crit + "</b> 条" : "")
-    + "<br>四类条数：" + CATNAME.map(function (c, i) { return c + " <b>" + cnt[i] + "</b>"; }).join(" ｜ ");
+    + "<br>分类条数：" + CATNAME.map(function (c, i) { return c + " <b>" + cnt[i] + "</b>"; }).join(" ｜ ");
   const tb = document.querySelector("#dtbl tbody");
   const selfK = SELFICONS[p.npc] || "";
   const selfTag = selfK ? '<i class="di self big ' + selfK + '"></i>' : "";
   const emptyMsg = !seq.length ? ((!rows.length && DATA.lite)
-      ? '<b style="color:#d29922">本页是 lite 版，不含 ±' + DET_WIN + "s combat log 明细</b>（lite 省掉了逐条明细）。"
-        + "看明细请构建完整版：<code>python analysis/q7_replay.py " + DATA.mid
-        + "</code> → <code>python analysis/build_q7_html.py " + DATA.mid + "</code>"
-      : (!rows.length ? "该英雄没有明细数据（数据缺失）"
-                      : (hideCrit ? "该窗口内没有命中（4 类 toggle 或『隐藏小兵/中立/召唤』把它们都过滤掉了）"
-                                  : "该窗口内没有命中（可能该英雄此时不在场/无事件，或 4 个 toggle 都被关掉了）"))) : "";
+      ? '<b style="color:#d29922">这是精简版页面，不含逐条战斗记录</b>'
+        + "（为了减小体积，精简版省略了这一部分）。想看逐条记录，请打开同一文件夹里的<b>完整版</b>页面。"
+      : (!rows.length ? "这场比赛没有这名英雄的战斗记录。"
+                      : (hideCrit ? "这一段没有可显示的内容（被上方的类别开关或『隐藏小兵/中立/召唤』过滤掉了）。"
+                                  : "这一段没有可显示的内容（可能这名英雄当时不在场，或上方的类别开关被全部关掉了）。"))) : "";
   /* ★ 虚拟滚动：±45s 的窗口在团战期可能上千行（本场实测最多 1785 行），
      一次性塞进 DOM 会卡（每行还带 3 个图标）。这里只画视口附近的 ~160 行，
      上下用等高占位行撑出滚动条；行高固定 24px（CSS 里写死，见 #dtbl tbody tr）。 */
@@ -1377,7 +1448,7 @@ function detRowHTML(r, tNow) {
   return '<tr class="' + now + '"><td>' + ttxt + "</td>"
     + '<td class="dc">' + detSelf + "</td>"
     + '<td class="dn2"><div class="dirow">' + diTag(r.nid) + '<span class="txt">'
-    + '<span class="chip c' + r.cat + '">' + CATNAME[r.cat].slice(0, 2) + "</span> "
+    + '<span class="chip c' + r.cat + '">' + CATCHIP[r.cat] + "</span> "
     + esc(r.nm) + (kk ? ' <span class="dfold">[' + kk + ']</span>' : "")
     + (r.n > 1 ? ' <b class="dfold">×' + r.n + "</b>" : "")
     + "</span></div></td>"
@@ -1442,15 +1513,14 @@ function renderCD() {
   const p = PL[selIdx], npc = p.npc;
   const board = document.getElementById("cdboard"), note = document.getElementById("cdnote");
   if (!CD) {
-    board.innerHTML = '<div class="tip">本场没有技能/道具 CD 数据（<code>dems/db/&lt;league&gt;/&lt;match&gt;.db</code> 缺失）'
-      + " → <b>如实回退</b>，不硬造三态。</div>";
+    board.innerHTML = '<div class="tip">这场比赛没有技能冷却数据，因此这一栏暂时为空。</div>';
     note.textContent = "";
     return;
   }
   const abs = [];
   (CD.ab[npc] || []).forEach(function (e) { abs.push({ key: e[0], known: (e[2] !== null ? e[2] : e[1]), ivs: e[3] || [], item: false }); });
   (CD.it[npc] || []).forEach(function (e) { abs.push({ key: e[0], known: e[1], ivs: e[3] || [], item: true }); });
-  // 关键道具（BKB/刷新球）即使未拥有也显示（locked）——owner 点名追踪
+  // 关键道具（BKB/刷新球）即使未拥有也显示为锁定态
   (CD.track || []).forEach(function (k) {
     if (abs.some(function (x) { return x.key === k; })) return;
     abs.push({ key: k, known: null, ivs: [], item: true, tracked: true });
@@ -1478,15 +1548,13 @@ function renderCD() {
     + '<div class="box"><span class="fb">TP</span></div><div class="cap">TP 卷轴</div>'
     + '<div class="st">' + tp.length + " 次</div></div>";
   board.innerHTML = html;
-  note.innerHTML = "数据源 <code>" + esc(CD.src) + "</code>（<b>" + esc(CD.time_axis || "") + "</b>）："
-    + "<code>ability_cd_start/end</code> + <code>ability_known/learn</code> + <code>item_cd_start/end</code> + <code>item_known</code>。"
-    + "冷却区间 = <code>[cd_start, cd_end]</code>（有真实 end 用 end，否则 <code>start + properties.remaining</code>）——"
-    + "<b>remaining 是实体 m_fCooldown 的实际剩余秒（含等级/天赋/减CD），所以本页不需要任何冷却常量表</b>。"
-    + "金框 = owner 点名追踪的关键道具。<b>TP 是充能制</b>：库内没有 TP 的 CD/充能事件，"
-    + "故只显示使用时刻与次数（当前英雄：" + stTp + "），<b>不伪造三态</b>。"
-    + "未学/未拥有的技能与道具显示为锁定态（灰 + 🔒）。";
-    + (hidden > 0 ? "已隐藏 <b>" + hidden + "</b> 项天赋/空槽占位（勾『显示天赋/空槽』可展开）。" : "")
-    + " 名称形如 <code>Xxx_Yyy</code> 的是 <b>Devour 等吃来的中立生物技能</b>（前缀即来源单位），不是 bug。";
+  note.innerHTML = "每一段灰色 = 技能/道具的一次真实冷却，灰色上的秒数就是那一刻的<b>剩余冷却时间</b>"
+    + "（直接取自录像里的技能状态，已含等级与减 CD 效果）。"
+    + "<b>回城卷轴（TP）</b>是充能制，录像里没有它的冷却/充能数据，所以只显示使用时刻与次数"
+    + "（这名英雄：" + stTp + "）。"
+    + "还没学习或还没拥有的技能/道具显示为锁定态（灰 + 🔒）。"
+    + (hidden > 0 ? "另有 <b>" + hidden + "</b> 个天赋/空槽栏位按默认隐藏（勾『显示未学/未拥有』可展开）。" : "")
+    + " 名字里带下划线的（如 <code>BlackDragon_Fireball</code>）是<b>从中立生物处获得的技能</b>，前缀就是来源单位。";
 }
 function clearSel() { if (selIdx >= 0) selectHero(selIdx); }
 function buildTable() {
@@ -1531,11 +1599,11 @@ function refresh(t) {
   if (pw === null) {
     wpEl.textContent = "—";
     wpEl.className = "v zero";
-    document.getElementById("vWpNote").textContent = WP ? "该时刻无数据" : "模型未拟合（先跑 q7_winprob.py）";
+    document.getElementById("vWpNote").textContent = WP ? "这一时刻没有可用的胜率数据" : "本页没有附带胜率数据";
   } else {
     wpEl.textContent = fmtPct(pw);
     wpEl.className = "v " + (pw > 0.52 ? "rad" : (pw < 0.48 ? "dir" : "zero"));
-    document.getElementById("vWpNote").textContent = "天辉胜率（给定 t 时刻的经济/经验差）";
+    document.getElementById("vWpNote").textContent = "按历史同局面统计的参考值，不是本场预测";
   }
 
   for (let i = 0; i < PL.length; i++) {
@@ -1570,10 +1638,10 @@ function refresh(t) {
         + (q ? (" ｜ HP " + (q.hp > 0 ? q.hp + " / " + (hpMaxAt(p.npc, t) || "?") : "阵亡")) : " ｜ 未出场");
     }
   }
-  document.getElementById("biglabel").textContent = "大条（已提交）= " + fmt(tBig, true)
+  document.getElementById("biglabel").textContent = "全场进度 = " + fmt(tBig, true)
     + "（" + Math.round(tBig) + "s / " + T1 + "s）";
-  document.getElementById("smalllabel").textContent = "小条偏移 = " + (sVal > 0 ? "+" : "") + sVal
-    + "s → 实际时刻 " + fmt(tCur, true) + (Math.abs(sVal) < 0.01 ? "（已归零）" : "");
+  document.getElementById("smalllabel").textContent = "微调 = " + (sVal > 0 ? "+" : "") + sVal
+    + "s → 当前时刻 " + fmt(tCur, true) + (Math.abs(sVal) < 0.01 ? "（已归零）" : "");
   if (selIdx >= 0) { renderHeroHead(); renderDetail(); renderCD(); }
   paintSpark();
   draw();
@@ -1630,7 +1698,7 @@ function paintSpark() {
     sctx.fillStyle = "#fff"; sctx.beginPath(); sctx.arc(t.X(kc), t.Y(t.a[kc] || 0), 3.4, 0, Math.PI * 2); sctx.fill();
   }
   document.getElementById("spTitle").textContent =
-    (entDiff === "nw" ? "净值差" : (entDiff === "cg" ? "combat-log 累计金币差" : "combat-log 经验差"))
+    (entDiff === "nw" ? "净值差" : (entDiff === "cg" ? "累计金币差" : "经验差"))
     + " ｜ 峰值 ±" + Math.round(sparkMax).toLocaleString("en-US");
 }
 let sparkDrag = false;
@@ -1820,16 +1888,13 @@ document.getElementById("dwrap").onscroll = detOnScroll;    // 虚拟滚动：�
   const a = DIFF.nw[D - 1], b = DIFF.cg[D - 1];
   if (g && a !== null && b !== null) g.textContent = Math.abs(a - b).toLocaleString("en-US") + "（净值 " + fmtNum(a) + " vs 累计 " + fmtNum(b) + "）";
   if (WP) {
-    document.getElementById("wpN").textContent = WP.n_match + " 场 / " + WP.n_train + " 训练样本";
+    document.getElementById("wpN").textContent = WP.n_match + " 场比赛统计";
     document.getElementById("wpAuc").textContent =
-      "测试集 AUC " + (WP.auc_test === null ? "—" : WP.auc_test.toFixed(3)) + "（训练 " +
-      (WP.auc_train === null ? "—" : WP.auc_train.toFixed(3)) + "，Brier " + WP.brier_test.toFixed(3) + "）"
-      + "；分桶 AUC " + (WP.buckets || []).map(function (b) {
-        return (b.lo / 60) + "-" + (b.hi ? (b.hi / 60) : "+") + "分 " + (b.auc_test === null ? "—" : b.auc_test.toFixed(2));
-      }).join(" / ");
+      "区分度 " + (WP.auc_test === null ? "—" : WP.auc_test.toFixed(2))
+      + "（1.00 = 完全分得开、0.50 = 与瞎猜无异）";
   } else {
-    document.getElementById("wpN").textContent = "未拟合";
-    document.getElementById("wpAuc").textContent = "先跑 python analysis/q7_winprob.py";
+    document.getElementById("wpN").textContent = "无数据";
+    document.getElementById("wpAuc").textContent = "本页未附带胜率统计";
   }
   if (DATA.lite) {
     document.getElementById("liteNote").style.display = "";
