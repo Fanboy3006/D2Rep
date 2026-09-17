@@ -132,7 +132,7 @@ const g = (id) => mkEl(id);
 const fmtSec = (s) => (s < 0 ? "-" : "") + Math.floor(Math.abs(s) / 60) + ":" + String(Math.abs(Math.round(s)) % 60).padStart(2, "0");
 
 /* 桩不解析 HTML → 勾选框的初始 checked 必须照 HTML 属性同步，否则默认态与浏览器不一致 */
-["showBld", "showRoute", "showName", "showWard", "showSmoke", "showTL", "tlBld", "tc0", "tc1", "tc2", "tc3", "tfold", "tcdall"].forEach((id) => {
+["showBld", "showRoute", "showName", "showWard", "showSmoke", "showTL", "tlBld", "tc0", "tc1", "tc2", "tc3", "tfold", "tcdall", "tnc"].forEach((id) => {
   const m = raw.match(new RegExp('<input[^>]*id="' + id + '"[^>]*>'));
   mkEl(id).checked = !!(m && /\bchecked\b/.test(m[0]));
 });
@@ -163,6 +163,7 @@ eval(src + `
   wards: WARDS, smoke: SMOKE, smoked: SMOKED, wicons: WICONS,
   iconsq: ICONSQ, tlicons: TLICONS, tlIconSrc: tlIconSrc,
   dicons: DICONS, selficons: SELFICONS, diTag: diTag, DETWIN: DET_WIN,
+  isCritter: isCritter, isBldName: isBldName,
   attr: ATTR, detLen: function(){ return detSeq.length; }, paintDet: function(){ paintDetRows(); }, detScroll: function(){ detOnScroll(); },
   tl: TL, buildTimelineEvents: function(){ buildTimelineEvents(); },
   markNear: function(){ markNear(); }, jumpTo: jumpTo, fmtTL: fmtTL,
@@ -773,6 +774,85 @@ if (!LITE) {
   ok(S.lastDetail().n === before, "关掉折叠 → 命中条数不变（" + S.lastDetail().n + "）");
   ok(S.lastDetail().shown >= shownFold, "关掉折叠 → 显示行数不减少（" + shownFold + " → " + S.lastDetail().shown + "）");
   g("tfold").checked = true; S.renderDetail();
+
+  // --- 「隐藏小兵/中立/召唤」开关（owner 2026）---
+  {
+    ok(/id="tnc"/.test(raw) && /隐藏小兵\/中立\/召唤/.test(raw),
+       "右栏有『隐藏小兵/中立/召唤』开关");
+    ok(/<input[^>]*id="tnc"[^>]*>/.test(raw) && !/<input[^>]*id="tnc"[^>]*checked/.test(raw),
+       "该开关默认关（默认行为与以前一致）");
+    // 判定规则：英雄/建筑 → 保留；小兵/中立/召唤/肉山/无 → 小怪
+    const sh0 = PL[0].short;
+    ok(S.isCritter(sh0) === false, "英雄不算小怪（" + sh0 + "）");
+    ok(S.isCritter("creep_goodguys_melee") && S.isCritter("creep_badguys_ranged_upgraded_mega"),
+       "近战/远程小兵算小怪");
+    ok(S.isCritter("neutral_black_drake") && S.isCritter("miniboss") && S.isCritter("roshan"),
+       "中立/小野怪/肉山算小怪");
+    ok(S.isCritter("lone_druid_bear1") && S.isCritter("unit_undying_zombie_torso")
+       && S.isCritter("invoker_forged_spirit"), "召唤物算小怪");
+    ok(!S.isCritter("goodguys_tower1_mid") && !S.isCritter("badguys_tower3_bot")
+       && !S.isCritter("goodguys_fort") && !S.isCritter("dota_fountain"),
+       "塔/兵营/基地/泉水不算小怪（保留）");
+    ok(S.isCritter("") === false, "没有对手方（other=-1）的行保留");
+
+    // 本场自动挑"明细最多"的英雄 + 一个"小怪很多"的时刻（不写死某场某英雄，两场都能跑）
+    const pick = (function () {
+      let bi = 0, bn = -1;
+      PL.forEach((q, i) => { const n = (S.det[q.npc] || []).length; if (n > bn) { bn = n; bi = i; } });
+      const rows = S.det[PL[bi].npc] || [], seq = [];
+      let t = 0;
+      rows.forEach((r, i) => { t = (i === 0) ? r[0] : t + r[0]; seq.push({ t: t, r: r }); });
+      const hit = (T) => {
+        let c = 0, tot = 0;
+        for (let i = 0; i < seq.length; i++) {
+          if (seq[i].t < T - 45 || seq[i].t > T + 45) continue;
+          tot += 1;
+          const onm = seq[i].r[3] >= 0 ? (S.dnames[seq[i].r[3]] || "") : "";
+          if (S.isCritter(onm)) c += 1;
+        }
+        return { crit: c, tot: tot };
+      };
+      const step = Math.max(1, Math.floor(seq.length / 80));
+      for (let i = 0; i < seq.length; i += step) {
+        const T = Math.round(seq[i].t);
+        const h = hit(T);
+        if (h.crit > 20) return { i: bi, T: T, crit: h.crit, tot: h.tot };
+      }
+      const T = Math.round((T0 + T1) / 2);
+      const h = hit(T);
+      return { i: bi, T: T, crit: h.crit, tot: h.tot };
+    })();
+    const T = pick.T, sel0 = pick.i;
+    S.clearSel(); g("big").value = T; g("big").oninput();
+    g("tnc").checked = false; S.select(sel0);
+    const nOff = S.lastDetail().n;
+    g("tnc").checked = true; S.renderDetail();
+    const ld = S.lastDetail();
+    ok(ld.hideCrit === true, "开关打开 → lastDetail.hideCrit=true（" + PL[sel0].short + " @ " + T + "s）");
+    ok(ld.crit > 0, "该窗口隐藏了小怪相关 " + ld.crit + " 条");
+    ok(ld.n < nOff && ld.n + ld.crit === nOff,
+       "开/关命中数守恒：" + ld.n + " + " + ld.crit + " == " + nOff);
+    // 独立复算：同一个窗口按同一规则在小工具里再数一遍
+    ok(pick.crit === ld.crit && pick.tot === nOff,
+       "独立复算一致：小怪 " + pick.crit + " 条 / 窗口 " + pick.tot + " 条（页面报 " + ld.crit + " / " + nOff + "）");
+    // DOM 里不该再出现"对象是小怪"的行
+    const tb = String(g("#dtbl tbody").innerHTML);
+    {
+      const objs = [];
+      const re = /<td class="do"><div class="dirow">(?:<i class="di[^"]*"><\/i>)?<span class="txt">([^<]*)<\/span>/g;
+      let m2;
+      while ((m2 = re.exec(tb))) objs.push(m2[1]);
+      const bad = objs.filter((x) => x && S.isCritter(x));
+      ok(objs.length > 10 && bad.length === 0,
+         "渲染出的行里没有小怪对象（检查 " + objs.length + " 行，小怪 " + bad.length + " 个）");
+      ok(objs.some((x) => x && !S.isCritter(x)),
+         "英雄/建筑对象仍在（样例 " + [...new Set(objs)].slice(0, 5).join(",") + "）");
+    }
+    ok(/已隐藏小兵\/中立\/召唤/.test(String(g("dsum").innerHTML)),
+       "汇总行写明隐藏了多少条");
+    g("tnc").checked = false; S.renderDetail();
+    ok(S.lastDetail().n === nOff && S.lastDetail().hideCrit === false, "关掉开关 → 恢复原来的命中数");
+  }
 
   // --- 窗口随时间移动 ---
   g("big").value = 2000; g("big").oninput();
