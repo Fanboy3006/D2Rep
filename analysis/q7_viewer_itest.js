@@ -910,14 +910,14 @@ if (process.argv[3] && process.argv[3].indexOf("dump=") === 0) {
     [["evUp", "▲ 天辉有利（轴上方）"], ["evDn", "▼ 夜魇有利（轴下方）"]].forEach(function (pair) {
       const kids = g(pair[0]).children;
       const ticks = kids.filter(c => String(c.className).indexOf("evt") === 0);
-      const labs = kids.filter(c => String(c.className).indexOf("ev ") === 0);
-      console.log("   " + pair[1] + "：刻度 " + ticks.length + " 个，时间戳 " + labs.length + " 个");
+      const labs = kids.filter(c => String(c.className).indexOf("evm") === 0);
+      const withT = labs.filter(c => c.children.some(x => String(x.className) === "t"));
+      console.log("   " + pair[1] + "：刻度 " + ticks.length + " 个，图标 " + labs.length
+                  + " 个（带 mm:ss 的 " + withT.length + " 个）");
       const rows = {};
       labs.forEach(c => { const o = c.style.bottom || c.style.top || "0"; rows[o] = (rows[o] || 0) + 1; });
       console.log("     错行分布 " + JSON.stringify(rows) + " ｜ 样例 " +
-        labs.slice(0, 14).map(c => c.textContent + (String(c.className).indexOf("bld") > 0 ? "*" : "")).join(" "));
-      const b = labs.filter(c => String(c.className).indexOf("bld") > 0).slice(0, 5);
-      if (b.length) console.log("     建筑类时间戳：" + b.map(c => c.textContent + " [" + String(c.title).slice(0, 32) + "]").join(" ｜ "));
+        labs.slice(0, 10).map(c => String(c.title).slice(0, 30)).join(" ｜ "));
     });
   });
 }
