@@ -285,6 +285,7 @@ def build(mid, outdir, lite=False, step=3, fetch_icons=True):
         "dnames": ([] if lite else dat.get("detail_names", [])),
         "dicons": dicons,
         "selficons": self_icons,
+        "attr": (dat.get("attr_check") or []),
         "cd": cd,
         "tp": dat.get("tp", {}),
         "wp": wp,
@@ -1253,6 +1254,7 @@ function renderHeroHead() {
 let lastDetail = null;   // 最近一次渲染的窗口（供回归测试/排查）
 const DET_WIN = 45;      // combat log 窗口：当前时刻 ±45s（owner 2026 定案）
 const DICONS = DATA.dicons || [], SELFICONS = DATA.selficons || {};
+const ATTR = DATA.attr || [];      // 构建期用 DB 做的"英雄↔英雄归属"对账结果（自检用）
 let _detKey = "", _detAt = 0, _detTimer = null;
 /* 图标：名字下标 → CSS 类（一类一张背景图）。没有图标就返回空串，单元格留白。 */
 function diTag(idx, cls) {

@@ -163,7 +163,7 @@ eval(src + `
   wards: WARDS, smoke: SMOKE, smoked: SMOKED, wicons: WICONS,
   iconsq: ICONSQ, tlicons: TLICONS, tlIconSrc: tlIconSrc,
   dicons: DICONS, selficons: SELFICONS, diTag: diTag, DETWIN: DET_WIN,
-  detLen: function(){ return detSeq.length; }, paintDet: function(){ paintDetRows(); }, detScroll: function(){ detOnScroll(); },
+  attr: ATTR, detLen: function(){ return detSeq.length; }, paintDet: function(){ paintDetRows(); }, detScroll: function(){ detOnScroll(); },
   tl: TL, buildTimelineEvents: function(){ buildTimelineEvents(); },
   markNear: function(){ markNear(); }, jumpTo: jumpTo, fmtTL: fmtTL,
   evEls: function(){ return evEls; },
@@ -653,6 +653,39 @@ if (!LITE) {
   });
   ok(okShape && lastDtNeg === 0, "明细字段形状合法（[Δdt, code, name, other(, val)]，Δdt≥0；共 " + nAll + " 条）");
   ok(nAll > 50000, "逐条内嵌条数 " + nAll + "（无采样丢弃）");
+
+  /* ★ 归属：英雄↔英雄的事件必须记进**双方**日志（owner 2026 实测抓到过：
+     英雄打英雄只进攻击者一侧 → 受害者"收到伤害"里只剩小兵/中立/塔）。 */
+  {
+    const sh = new Set(PL.map((p) => p.short));
+    let noHeroTaken = [];
+    PL.forEach((p) => {
+      const rows = S.det[p.npc] || [];
+      const c3 = rows.filter((r) => (r[1] >> 2) === 3 && r[3] >= 0 && sh.has(S.dnames[r[3]]));
+      const c1 = rows.filter((r) => (r[1] >> 2) === 1 && r[3] >= 0 && sh.has(S.dnames[r[3]]));
+      if (!c3.length || !c1.length) noHeroTaken.push(p.short);
+      else if (c3.length < 50 || c1.length < 50) noHeroTaken.push(p.short + "(少)");
+    });
+    ok(noHeroTaken.length === 0,
+       "每个英雄的『收到伤害/收到的 modifier』里都有英雄来源（缺 " + noHeroTaken.join(",") + "）");
+    // 攻击者一侧也必须有对应条目（不能只补一边）
+    let noHeroGiven = [];
+    PL.forEach((p) => {
+      const rows = S.det[p.npc] || [];
+      const c2 = rows.filter((r) => (r[1] >> 2) === 2 && r[3] >= 0 && sh.has(S.dnames[r[3]]));
+      const c0 = rows.filter((r) => (r[1] >> 2) === 0 && r[3] >= 0 && sh.has(S.dnames[r[3]]));
+      if (c2.length < 50 || c0.length < 50) noHeroGiven.push(p.short);
+    });
+    ok(noHeroGiven.length === 0,
+       "每个英雄的『造成伤害/给出的 modifier』里都有英雄目标（缺 " + noHeroGiven.join(",") + "）");
+    // 构建期拿 DB 做的对账结果（真值来自库里逐条 count）必须一致
+    ok(Array.isArray(S.attr) && S.attr.length === 2, "载荷带构建期归属对账结果（" + (S.attr || []).length + " 项）");
+    (S.attr || []).forEach((c) => {
+      ok(c.ok === true && c.expect === c.payload,
+         "归属对账·" + c.what + "：库里英雄→英雄 " + c.db_hero_to_hero + " − 赛后窗口外 "
+         + c.after_end + " = " + c.expect + " ｜ 载荷 " + c.payload + " → 一致");
+    });
+  }
   ok(Array.isArray(S.dnames) && S.dnames.length > 50, "名称字典 " + S.dnames.length + " 项");
   ok(!!S.cd && !!S.cd.keys && Object.keys(S.cd.keys).length > 10,
      "技能/道具 CD 数据存在（键 " + (S.cd ? Object.keys(S.cd.keys).length : 0) + " 个，源 " + (S.cd ? S.cd.src : "-") + "）");

@@ -367,14 +367,18 @@ def parse_match(db, match_id, league, with_detail=True):
             buildings.append([round(x, 1), round(y, 1), team, kind or "building",
                               int(round(disp_of_tt(tt)))])
 
-    # 2e. 该英雄 ±10s 的 combat log 明细（4 类）+ 关键道具 TP 使用时刻
+    # 2e. 该英雄 ±45s 的 combat log 明细（4 类）+ 关键道具 TP 使用时刻
     #     载荷优化：把「同英雄 · 同类别 · 同 kind · 同名称 · 同数值 · 同对手 · 时间相邻(≤1.2s)」
     #     的连续条目**折叠成一个区间**（保留条数 n 与首末时刻）——逐条渲染 12.9 万行既没人看、
     #     单文件也装不下；折叠后显示内容等价（区间 + ×N + 首末时刻）。
     if with_detail:
         detail, names = build_combat_detail(con, players, horn_cle, t0, t1)
+        # ★ 归属对账（防"英雄打英雄只进攻击者日志"这类静默丢条目，owner 2026 实测抓到过）：
+        #   载荷里"收到伤害/收到的 modifier 且 other 是英雄"的条数，必须等于库里
+        #   target=英雄 且 attacker=另一英雄 的条数（自己打自己按设计只记"造成"一侧）。
+        attr_check = check_detail_attribution(con, detail, names, players, horn_cle, t0, t1)
     else:
-        detail, names = {}, []
+        detail, names, attr_check = {}, [], []
     tpu = {p["npc"]: [] for p in players}
     for r in con.execute(
         "SELECT t_cle, attacker FROM combat_log WHERE type_category='item' AND inflictor='item_tpscroll'"
@@ -445,6 +449,7 @@ def parse_match(db, match_id, league, with_detail=True):
         "buildings": buildings,
         "detail": detail,
         "detail_names": names,
+        "attr_check": attr_check,
         "cd": cd,
         "tp": tpu,
         "wards": wards,
@@ -456,7 +461,7 @@ def parse_match(db, match_id, league, with_detail=True):
     }
 
 
-# ──────────────────────── 2b. combat log 明细（±10s 面板用） ────────────────────────
+# ──────────────────────── 2b. combat log 明细（±45s 面板用） ────────────────────────
 #   4 类：给出的 modifier / 收到的 modifier / 造成伤害 / 收到伤害（Q7_REPLAY_UI.md §4.2）
 #   折叠规则见 parse_match 里的注释；`n` = 该区间内的原始条目数（不隐藏任何条目，只是合并显示）
 MOD_KIND = {"DotaCombatlogModifierAdd": 0, "DotaCombatlogModifierRemove": 1,
@@ -466,6 +471,56 @@ DMG_KIND = {"DotaCombatlogDamage": 0, "DotaCombatlogCriticalDamage": 1,
 RUN_GAP = 1.2      # 相邻条目间隔 ≤ 该秒数 → 视为同一"连续区间"
 
 
+def check_detail_attribution(con, detail, names, players, horn_cle, t0, t1):
+    """归属对账：载荷里「收到伤害 / 收到的 modifier 且 other 是英雄」的条数，
+    必须等于库里 `target=某英雄 且 attacker=另一英雄` 的条数（减去窗口外）。
+
+    为什么要它：owner 2026 实测发现"收到攻击时只看得到被小怪打"——
+    `build_combat_detail` 早期用 if/elif 二选一给事件定归属，英雄打英雄只进了**攻击者**的日志，
+    受害者一侧永远是空的（并且不会报错、不会有 NaN）。这条对账把这种"静默丢半边"钉死。
+    差值只允许来自两处，且都要报出来：
+      · 自己打自己 / 自己给自己上 modifier（按设计只记"造成/给出"一侧）；
+      · 比赛结束（远古被摧毁）之后的结算残留（窗口外，页面本来就不显示）。
+    """
+    hero_set = {p["npc"]: p for p in players}
+    short = {p["npc"]: p["short"] for p in players}
+    hero_shorts = set(short.values())
+    hs = list(hero_set)
+    inlist = ",".join("?" * len(hs))
+    out = []
+    for label, cat, tc in (("收到伤害", 3, "damage"), ("收到的 modifier", 1, "modifier")):
+        pred_all = self_all = outside = got = 0
+        for npc in hero_set:
+            # 库里：目标=该英雄、攻击者=**另一个英雄**
+            pred_all += con.execute(
+                "SELECT COUNT(*) n FROM combat_log WHERE type_category=? AND target=? "
+                "AND attacker IN (%s) AND attacker<>?" % inlist, (tc, npc) + tuple(hs) + (npc,)
+            ).fetchone()["n"]
+            # 库里：自己打自己 / 自己给自己上 modifier（按设计只记"造成/给出"一侧）
+            self_all += con.execute(
+                "SELECT COUNT(*) n FROM combat_log WHERE type_category=? AND target=? AND attacker=?",
+                (tc, npc, npc)).fetchone()["n"]
+            # 库里：上面那些里落在显示窗口之外的（比赛结束后结算残留，页面本来就不显示）
+            for r in con.execute(
+                "SELECT t_cle FROM combat_log WHERE type_category=? AND target=? "
+                "AND attacker IN (%s) AND attacker<>?" % inlist, (tc, npc) + tuple(hs) + (npc,)
+            ):
+                t = float(r["t_cle"]) - horn_cle
+                if t < t0 - 1 or t > t1 + 1:
+                    outside += 1
+        # 载荷：该类里 other 是英雄的条数
+        for npc, rows in detail.items():
+            for r in rows:
+                if (r[1] >> 2) == cat and r[3] >= 0 and names[r[3]] in hero_shorts:
+                    got += 1
+        # 注意：pred_all 里已经用 attacker<>该英雄 排除了"自己打自己"，所以这里只减"窗口外"
+        pred = pred_all - outside
+        out.append({"what": label, "db_hero_to_hero": pred_all, "self": self_all,
+                    "after_end": outside, "expect": pred, "payload": got,
+                    "ok": pred == got})
+    return out
+
+
 def build_combat_detail(con, players, horn_cle, t0, t1):
     """返回 (detail, names)：
     detail[npc] = [[dt, cat, kind, name_idx, val, other_idx], ...]
@@ -473,7 +528,8 @@ def build_combat_detail(con, players, horn_cle, t0, t1):
       cat = 0 给出的 modifier ｜ 1 收到的 modifier ｜ 2 造成伤害 ｜ 3 收到伤害
       kind= modifier: 0 Add / 1 Remove / 2 Stack ；damage: 0 Damage / 1 Critical / 2 ManaDamage / 3 SpellAbsorb
       other_idx = 对手/来源名索引（-1 = 无）
-    ★ 逐条保留（不预折叠）：折叠交给 UI 的"折叠连续同项"开关做，保证 ±10s 窗口内的计数是精确的。
+    ★ 逐条保留（不预折叠）：折叠交给 UI 的"折叠连续同项"开关做，保证 ±45s 窗口内的计数是精确的。
+    ★ **英雄↔英雄的事件同时记进双方的日志**（攻击者=造成/给出，受害者=收到）：见下面 push() 的注释。
     names = 名称字典（modifier inflictor / damage inflictor / damage_source / 单位名）
     """
     hdr_of = {p["npc"]: p["i"] for p in players}
@@ -488,34 +544,46 @@ def build_combat_detail(con, players, horn_cle, t0, t1):
         return nidx[s]
 
     raw = collections.defaultdict(list)
+
+    def push(hero, t, cat, kind, nm, val, other):
+        raw[hero].append((int(round(t)), cat, kind, nid(nm), int(val or 0),
+                          nid(other) if other else -1))
+
     for r in con.execute(
         "SELECT t_cle, type_category c, type, attacker, target, inflictor, damage_source, "
         "COALESCE(value,0) v FROM combat_log "
         "WHERE type_category IN ('modifier','damage') ORDER BY t_cle, event_seq"
     ):
         a, tg, c = r["attacker"], r["target"], r["c"]
-        if a in hero_set and c == "modifier":
-            cat, hero, other, nm = 0, a, tg, r["inflictor"]
-        elif tg in hero_set and c == "modifier":
-            cat, hero, other, nm = 1, tg, a, r["inflictor"]
-        elif a in hero_set:
-            cat, hero, other = 2, a, tg
-            nm = r["inflictor"] or r["damage_source"] or ""
-            if not nm or nm == a:
-                nm = "普通攻击"          # inflictor 缺省且来源=自己 → 右键平A
-        elif tg in hero_set:
-            cat, hero, other = 3, tg, a
-            nm = r["inflictor"] or r["damage_source"] or ""
-            if not nm or nm == a:
-                nm = "普通攻击"
-        else:
+        ah, th = a in hero_set, tg in hero_set
+        if not ah and not th:
             continue
         kind = (MOD_KIND if c == "modifier" else DMG_KIND).get(r["type"], 0)
         t = float(r["t_cle"]) - horn_cle
         if t < t0 - 1 or t > t1 + 1:
             continue
-        raw[hero].append((int(round(t)), cat, kind, nid(nm), int(r["v"] or 0),
-                          nid(other) if other else -1))
+        if c == "modifier":
+            nm = r["inflictor"]
+        else:
+            nm = r["inflictor"] or r["damage_source"] or ""
+            if not nm or nm == a:
+                nm = "普通攻击"          # inflictor 缺省且来源=自己 → 右键平A
+        val = int(r["v"] or 0)
+        # ★ 英雄↔英雄的条目要记两边：攻击者记"造成/给出"，受害者记"收到/被造成"。
+        #   旧写法是 if/elif 二选一 → 英雄打英雄只进了攻击者的日志，受害者的
+        #   "收到伤害 / 收到的 modifier" 里永远只有小兵·中立·塔（owner 2026 实测发现：
+        #   tusk 收到伤害库里 497 条来自英雄，页面载荷里 0 条，而来自非英雄的 185 条一条不差）。
+        #   自己对自己的（a == tg，如自身增益）只记一条，避免同一条在自己日志里出现两次。
+        if c == "modifier":
+            if ah:
+                push(a, t, 0, kind, nm, 0, tg)
+            if th and not (ah and tg == a):
+                push(tg, t, 1, kind, nm, 0, a)
+        else:
+            if ah:
+                push(a, t, 2, kind, nm, val, tg)
+            if th and not (ah and tg == a):
+                push(tg, t, 3, kind, nm, val, a)
 
     detail = {}
     for npc, rows in raw.items():
@@ -897,7 +965,7 @@ def selfcheck(dat):
     msgs.append("建筑 %d 座（已摧毁 %d）" % (len(bld), sum(1 for b in bld if b[4] is not None)))
     det = dat.get("detail", {})
     nraw = sum(len(v) for v in det.values())
-    msgs.append("±10s 明细：逐条 %d 条（Δ编码）｜名称字典 %d ｜ JSON 内占比见文件大小"
+    msgs.append("±45s 明细：逐条 %d 条（Δ编码）｜名称字典 %d ｜ JSON 内占比见文件大小"
                 % (nraw, len(dat.get("detail_names", []))))
     cd = dat.get("cd")
     if cd:
@@ -923,6 +991,14 @@ def selfcheck(dat):
     else:
         msgs.append("眼位：无（解析失败或本场无数据）")
     tls = dat.get("tl", [])
+    ac = dat.get("attr_check") or []
+    if ac:
+        for c in ac:
+            msgs.append(
+                "★ 归属对账·%s：库里「英雄→另一英雄」%d 条 − 赛后窗口外 %d = 应有 %d ｜ 载荷 %d → %s"
+                "（另有自己打自己/自身 modifier %d 条，按设计只记「造成/给出」一侧）"
+                % (c["what"], c["db_hero_to_hero"], c["after_end"], c["expect"],
+                   c["payload"], "一致" if c["ok"] else "★不一致，必须查！", c["self"]))
     if tls:
         up = sum(1 for e in tls if e[1] == 2)
         ick = {}
@@ -961,7 +1037,7 @@ def main():
     ap.add_argument("match", help="match_id（如 8955197224）或 .db 路径")
     ap.add_argument("--out", default=None)
     ap.add_argument("--lite", action="store_true",
-                    help="精简切片：跳过 ±10s combat log 明细（体积/耗时的大头），供 lite viewer / 批量构建")
+                    help="精简切片：跳过 ±45s combat log 明细（体积/耗时的大头），供 lite viewer / 批量构建")
     ap.add_argument("--no-write", action="store_true", help="只跑自检，不落盘")
     args = ap.parse_args()
 
