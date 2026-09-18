@@ -18,6 +18,7 @@ import argparse
 import glob
 import json
 import os
+import shutil
 import sqlite3
 import sys
 import time
@@ -196,16 +197,19 @@ a{color:#58a6ff;text-decoration:none}a:hover{text-decoration:underline}
 #cmd{width:100%;height:76px;background:#0d1117;color:#7ee787;border:1px solid #30363d;border-radius:4px;font-family:ui-monospace,Consolas,monospace;font-size:11px}
 </style></head><body>
 <h1>私人录像索引 —— 本地录像 <span id="nn">@@N@@</span> 场<span id="nun"></span></h1>
-<div class="warn"><b>这个页面只在本地看</b>：它会列出玩家名（个人数据），<b>不要发布到公网</b>。
-公网那份是联赛索引 <code>q7_index.html</code>。</div>
+<div class="warn"><b>这一页会列出玩家名</b>（个人数据）。链接是发给朋友的，<b>别往公开场合贴</b>。
+联赛场次的回放索引在这里：<a href="https://bigfatblackwhale.github.io/DSH-Dota2/q7_index.html" target="_blank">q7_index.html</a>。</div>
 <div class="sub">
-  录像放这里 → <code>dems/local/&lt;scope&gt;/&lt;match_id&gt;.dem</code>（scope 是你自己的分组名，如 scrim / team_ts / 2026q1）。
-  录入 + 解析：<code>python scheduler/intake_local.py --scope &lt;名&gt;</code>；用 <code>--rescan</code> 重新扫过本页。
+  <b>只想看比赛</b>：直接点下面"已生成页面"里的芯片，或表格里"打开"。
+  <br><b>加新录像（自己的机器上）</b>：把 <code>&lt;match_id&gt;.dem</code> 放进
+  <code>dems/local/&lt;scope&gt;/</code>（scope 是分组名，如 scrim / team_ts / 2026q1），然后
+  <code>python scheduler/intake_local.py --scope &lt;名&gt;</code> 录入解析，最后
+  <code>python analysis/build_q7b_index.py --rescan --publish</code> 刷新并发布本页。
   <br>「时长 / 结果」由<b>录像本身</b>推出：号角 → 远古被摧毁，被摧毁的是哪一方的远古就判哪一方输
   （本地场次没有外部战绩可比对，所以这里不写"已核对"）。
-  已生成页面的场次点<b>打开</b>即可；没生成的会给你一条命令。已生成：<span class="tag full">完整 @@NFULL@@</span>
+  已生成：<span class="tag full">完整 @@NFULL@@</span>
   <span class="tag lite">lite @@NLITE@@</span>。索引生成于 @@WHEN@@。
-  <br>想发朋友：直接把 <code>analysis/output_review/q7_replay_&lt;match_id&gt;.html</code> 发过去就行（单文件，双击即开）。
+  <br>想发给朋友：把表格里"打开"的链接发过去就行（单文件页面，点开即看）。
 </div>
 <div class="bar" style="background:#1c2333;border-color:#1f6feb">
   <label><b style="color:#79c0ff">已生成页面</b></label><span id="chips"></span>
@@ -363,12 +367,48 @@ initSel(); renderChips(); render();
 """
 
 
+def publish(rows):
+    """把索引页 + 它引用的本地 viewer 拷到 publish_repo/q7b/（站点上的 Q7B 目录）。
+
+    站点结构：`publish_repo/q7b/index.html`（本索引）+ `q7b/q7_replay_<mid>[_lite].html`。
+    索引里的链接是相对路径，所以放同一个目录就能直接点开。
+    """
+    dst = os.path.join(ROOT, "publish_repo", "q7b")
+    os.makedirs(dst, exist_ok=True)
+    n = 0
+    shutil.copyfile(OUT, os.path.join(dst, "index.html"))
+    for r in rows:
+        if not r.get("registered"):
+            continue
+        for suffix in (("", "_lite") if r.get("full") and r.get("lite") else
+                       (("",) if r.get("full") else (("_lite",) if r.get("lite") else ()))):
+            f = os.path.join(REVIEW, "q7_replay_%s%s.html" % (r["mid"], suffix))
+            if os.path.exists(f):
+                shutil.copyfile(f, os.path.join(dst, os.path.basename(f)))
+                n += 1
+    print("published → %s（索引 + %d 个页面）" % (os.path.relpath(dst, ROOT), n))
+    print("公网地址：https://bigfatblackwhale.github.io/DSH-Dota2/q7b/index.html")
+    print("记得 push：git -C publish_repo add -A; git -C publish_repo commit -m \"...\"; "
+          "git -C publish_repo push origin main")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Q7B 私人录像索引页生成器")
     ap.add_argument("--rescan", action="store_true", help="顺带扫 dems/local/*/ 把未录入的 .dem 也列出来")
+    ap.add_argument("--publish", action="store_true",
+                    help="同时拷到 publish_repo/q7b/（站点目录；索引与本地 viewer 一起）")
     ap.add_argument("--open", action="store_true", help="构建完打印文件路径")
     args = ap.parse_args()
     out = build(rescan=args.rescan)
+    if args.publish:
+        con = cat.connect()
+        cat.ensure_schema(con)
+        rows = cat.list_rows(con, source="local")
+        full, lite = built_viewers()
+        payload = [{"mid": r["match_id"], "registered": True,
+                    "full": 1 if r["match_id"] in full else 0,
+                    "lite": 1 if r["match_id"] in lite else 0} for r in rows]
+        publish(payload)
     if args.open:
         print(out)
 

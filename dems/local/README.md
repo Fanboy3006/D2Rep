@@ -42,14 +42,17 @@ python scheduler\catalog.py list --source local      # 直接查 catalog
 ## 索引页（挑场次用）
 
 ```powershell
-python analysis\build_q7b_index.py --rescan      # 生成/刷新索引
-# → analysis/output_review/q7b_index.html（双击打开）
+python analysis\build_q7b_index.py --rescan      # 生成/刷新索引 → output_review/q7b_index.html（双击打开）
+python analysis\build_q7b_index.py --rescan --publish   # 同时发布到公网 /q7b/（索引 + 本地 viewer）
 node analysis\q7b_index_itest.js                  # 索引页功能回归
 ```
 
+发布后地址：`https://bigfatblackwhale.github.io/DSH-Dota2/q7b/index.html`
+（拷贝到 `publish_repo/q7b/`，推 `publish_repo` 即上线）。
+
 索引页只列本地场次（`source=local`）：按 scope 分组筛选、按 match_id / 英雄 / 玩家名 / 备注搜索、
 按列排序；已生成页面的行直接给"打开"链接（完整 / lite），没生成的给一条可复制的命令。
-**这个页面含玩家名，只在本地看，不要发布到公网**（公网那份是联赛索引 `q7_index.html`）。
+**这个页面含玩家名**：owner 2026-09 决定原样发布到 `/q7b/`（给朋友看），但页面顶部保留了提醒——链接别往公开场合贴。联赛那份索引仍在站点根目录 `q7_index.html`。
 
 ## 与联赛场次的关系
 

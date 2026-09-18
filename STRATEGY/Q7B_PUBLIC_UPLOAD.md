@@ -30,6 +30,7 @@
 | catalog | ✅ 主键改成 **(source, scope, match_id)** 复合键（`matches.db`，自动迁移旧表）；`source` 增加 `local` |
 | 录入工具 | ✅ `scheduler/intake_local.py`：扫 `dems/local/<scope>/` → sha256 → 读录像头 → 登记 → 全量解析到主库；幂等、可 `--no-parse`、可 `--move`；**支持直接丢 .bz2/.zst 自动解压** |
 | Q7 侧 | ✅ `find_db` 递归 glob 天然认 `db_full/local/<scope>/`；`find_old_db` 加了 local 分支；无战绩数据时**用录像本身判定胜负**（哪方远古被摧毁），页面标注"按远古被摧毁判定" |
+| **公网发布（owner 2026-09 选择"原样发布，含玩家名"）** | ✅ 站点新增 `q7b/` 目录：`https://bigfatblackwhale.github.io/DSH-Dota2/q7b/index.html`（索引）＋ `q7b/q7_replay_9001661796.html`（5.07MB 完整版）/ `_lite.html`（0.52MB）。一条命令发布：`python analysis/build_q7b_index.py --rescan --publish`（索引 + 它引用的所有本地 viewer 一起拷进 `publish_repo/q7b/`）。⚠️ 页面顶部仍写明"会列出玩家名、链接是发给朋友的、别往公开场合贴" |
 | 索引页 | ✅ `python analysis/build_q7b_index.py [--rescan]` → `analysis/output_review/q7b_index.html`：只列 `source=local` 的场次，按 scope 分组可筛、可按 match_id/英雄/玩家名/备注搜、可排序、已生成页面的直接给"打开"链接、没生成的给一条命令；**页面上明确写着"只在本地看、不要发布"**（含玩家名）。测试：`node analysis/q7b_index_itest.js`（28 项） |
 | 首个录入样本 | ✅ **9001661796**（练习房 lobby_type=1，35:17，夜魇胜）：86 MB dem → 76 MB 库，解析 61s；页面 `analysis/output_review/q7_replay_9001661796.html`（5.3 MB）+ lite（0.55 MB） |
 

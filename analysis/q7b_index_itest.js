@@ -162,7 +162,9 @@ console.log("[Q7B 私人录像索引 · 功能回归] 场次 " + S.ROWS.length);
 
 /* ⑥ 页面说明与提醒 */
 {
-  ok(/不要发布到公网/.test(raw), "页面上有「只在本地看、不要发布」的提醒");
+  ok(/会列出玩家名/.test(raw) && /别往公开场合贴/.test(raw),
+     "页面上有「含玩家名 / 别往公开场合贴」的提醒（owner 选择原样发布，但提醒保留）");
+  ok(/q7_index\.html/.test(raw), "页面上有去联赛索引的链接");
   ok(/dems\/local/.test(raw) && /intake_local\.py/.test(raw), "说明了目录约定与录入命令");
   ok(!/<code>@@/.test(raw) && raw.indexOf("@@") < 0, "占位符全部替换完（无残留 @@）");
 }
