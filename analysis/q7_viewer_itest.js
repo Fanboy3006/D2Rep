@@ -625,12 +625,17 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
   }
   // 击杀图标就是阵亡英雄的头像
   const k0 = kills[0];
-  const kMark = upMark.concat(dnMark).filter(c => String(c.title).indexOf(k0[3].slice(0, 6)) >= 0)[0];
+  // 用「<阵亡者> 被 」精确定位（只搜前 6 个字符会误匹配到"阵亡者当凶手"的那条，
+  // 换成另一批英雄的场次就会误报 —— 私人录像 9001661796 上就这么露过一次）
+  const wantVictim = " " + k0[4].slice(2) + " 被 ";
+  const kMark = upMark.concat(dnMark).filter(c => String(c.title).indexOf(wantVictim) >= 0)[0];
   ok(!!kMark, "能找到某条击杀事件的标记（" + k0[3] + "）");
   if (kMark) {
     const im0 = kMark.children.filter(x => String(x.className) === "ico")[0];
     ok(String(im0.src) === String(S.iconsq[k0[4].slice(2)]),
-       "阵亡英雄（" + k0[4].slice(2) + "）头像用的就是该英雄的小头像");
+       "阵亡英雄（" + k0[4].slice(2) + "）头像用的就是该英雄的小头像"
+       + "（标记图标 " + String(im0.src).length + "B / iconsq " + String(S.iconsq[k0[4].slice(2)]).length + "B"
+       + " ｜ 标记 title=" + String(kMark.title).slice(0, 40) + "）");
   }
   // 建筑图标带 bld 类
   ok(upMark.concat(dnMark).filter(c => String(c.className).indexOf("bld") > 0).length === blds.length,

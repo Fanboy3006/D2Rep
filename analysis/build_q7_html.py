@@ -377,7 +377,21 @@ def build(mid, outdir, lite=False, step=3, fetch_icons=True):
     rname = m.get("radiant_team") or "天辉（未获取到队名）"
     dname = m.get("dire_team") or "夜魇（未获取到队名）"
     win = m.get("radiant_win")
-    win_txt = "—" if win is None else ("天辉胜" if win else "夜魇胜")
+    win_from = "战绩数据" if win is not None else None
+    if win is None:
+        # 个人/练习房录像没有外部战绩数据 → 用**录像本身**判定：远古（基地）被摧毁即分出胜负。
+        # 时间轴里的基地事件 own = 被摧毁的基地属于哪一方：夜魇基地被毁 → 天辉胜。
+        for e in dat.get("tl", []):
+            if e[2] == 3 and e[5] in (2, 3):
+                win = (e[5] == 3)
+                win_from = "远古被摧毁"
+                break
+    if win is None:
+        win_txt = "—"
+    elif win_from == "远古被摧毁":
+        win_txt = ("天辉胜" if win else "夜魇胜") + "（按远古被摧毁判定）"
+    else:
+        win_txt = "天辉胜" if win else "夜魇胜"
     league = m.get("league_id")
 
     html = HTML_TMPL

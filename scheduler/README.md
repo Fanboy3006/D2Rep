@@ -39,3 +39,19 @@ python scheduler/intake_private.py --note "备注" --move
 
 catalog 的 `source` 已支持 `'public'`，公开赛事字段占位进 metadata_json；
 实际 OpenDota 拉取/批量下载逻辑后续作为 `source='public'` 的生产者接入同一 catalog。
+
+## 本地 / 私人录像（Q7B，`scheduler/intake_local.py`）
+
+`intake_private.py` 是第 1 层的老实验（`dems/private/` → `dems/db/<id>.db`）。
+**Q7B 用新的 `intake_local.py`**：目录按 scope 分组，产物直接落进 Q7 读的主库。
+
+```powershell
+python scheduler/intake_local.py --scope scrim   # 扫 dems/local/scrim/（自动读头、幂等、解析）
+python scheduler/intake_local.py --list          # 列已录入的本地场次
+python scheduler/intake_local.py --move          # 处理完把 .dem 挪到 <scope>/registered/
+```
+
+- 目录：`dems/local/<scope>/<mid>.dem` → `dems/db_full/local/<scope>/<mid>.db`（详见 `dems/local/README.md`）。
+- 支持直接放入 `.bz2` / `.zst`：自动解压并校验 `PBDEMS2` 魔数（Valve 的 replay_url 现在实际是 zstd）。
+- catalog 主键已改为 **(source, scope, match_id)**，`source` 取值 `local | private | public`；
+  同一场比赛在联赛与本地各存一份不会互相覆盖。旧表会自动迁移。

@@ -78,8 +78,15 @@ def find_db(match_id):
 
 
 def find_old_db(match_id):
-    """Q5 版库（dems/db/）——技能/道具 CD 数据只在这里。缺失返回 None（不硬造）。"""
+    """Q5 版库（`dems/db/`）——散装 extractor 数据（技能/道具 CD 等）的老来源。
+
+    联赛：`dems/db/<league>/<mid>.db`；本地/私人（Q7B）：`dems/db/local/<scope>/<mid>.db`。
+    两个都没有也可以：2026 起当前 parser 重新产出了 `ability_cd_*` / `item_cd_*`，
+    主库 `dems/db_full/...` 里就有 → `parse_match` 会回退用主库当 CD 源。
+    """
     hits = glob.glob(os.path.join(DBOLD, "*", "%s.db" % match_id))
+    if not hits:
+        hits = glob.glob(os.path.join(DBOLD, "local", "*", "%s.db" % match_id))
     return hits[0] if hits else None
 
 
@@ -962,6 +969,14 @@ def build_timeline(con, match_id, players, kills, horn_cle, t0, t1):
         who = short.get(r["attacker"], r["attacker"] or "?")
         out.append([d, side, TL_ROSHAN, "肉山 被 " + who + " 击杀", "roshan", 0])
     out.sort(key=lambda e: e[0])
+    # 只保留页面时间轴范围内的：轴是 [t0, t1]，范围外的事件画不上去（练习房等场次可能出现
+    # 号角前的击杀 —— 号角前 90 秒是本页轴的最左端，更早的事件如实丢弃并在自检里报数）
+    before = sum(1 for e in out if e[0] < t0)
+    after = sum(1 for e in out if e[0] > t1)
+    out = [e for e in out if t0 <= e[0] <= t1]
+    if before or after:
+        print("  [timeline] 丢弃轴外事件：早于轴 %d 条 / 晚于轴 %d 条（轴 = [%d, %d]）"
+              % (before, after, t0, t1))
     return out
 
 
