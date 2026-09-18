@@ -30,13 +30,14 @@
 | catalog | ✅ 主键改成 **(source, scope, match_id)** 复合键（`matches.db`，自动迁移旧表）；`source` 增加 `local` |
 | 录入工具 | ✅ `scheduler/intake_local.py`：扫 `dems/local/<scope>/` → sha256 → 读录像头 → 登记 → 全量解析到主库；幂等、可 `--no-parse`、可 `--move`；**支持直接丢 .bz2/.zst 自动解压** |
 | Q7 侧 | ✅ `find_db` 递归 glob 天然认 `db_full/local/<scope>/`；`find_old_db` 加了 local 分支；无战绩数据时**用录像本身判定胜负**（哪方远古被摧毁），页面标注"按远古被摧毁判定" |
+| 索引页 | ✅ `python analysis/build_q7b_index.py [--rescan]` → `analysis/output_review/q7b_index.html`：只列 `source=local` 的场次，按 scope 分组可筛、可按 match_id/英雄/玩家名/备注搜、可排序、已生成页面的直接给"打开"链接、没生成的给一条命令；**页面上明确写着"只在本地看、不要发布"**（含玩家名）。测试：`node analysis/q7b_index_itest.js`（28 项） |
 | 首个录入样本 | ✅ **9001661796**（练习房 lobby_type=1，35:17，夜魇胜）：86 MB dem → 76 MB 库，解析 61s；页面 `analysis/output_review/q7_replay_9001661796.html`（5.3 MB）+ lite（0.55 MB） |
 
 **踩到的坑（留档）**：Valve 的 `replay_url` 现在**实际给的是 zstd**（魔数 `28 b5 2f fd`），
 后缀却仍写 `.dem.bz2` —— 按 bz2 解会报 `Invalid data stream`。`intake_local.py` 已按魔数/后缀自动识别
 （bz2 / zst / zstd），解压后照例校验头 8 字节 `PBDEMS2\0` 才算拿到可解析的录像。
 
-**还没做（owner 没要，先记着）**：本地场次的独立索引页、给朋友的传输方式（现在直接把那个 HTML 发过去即可）、
+**还没做（owner 没要，先记着）**：给朋友的传输方式（现在直接把那个 HTML 发过去即可）、
 清理/保留策略（磁盘紧张时按 `scope` 整批删）。
 
 ---

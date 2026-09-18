@@ -49,7 +49,8 @@ python analysis/ward_analysis.py 8592126358.db 8979891001.db [--team 2|3|all]
   实体类名判型 / use 为放置时刻 / 到期 `attacker==target` / 销毁一一对应 / 右删失）；
   烟雾来自 `combat_log` 的 `item_smoke_of_deceit`（使用时刻）+ `modifier_smoke_of_deceit`（在烟雾中的区间）。
 - **私人 / 本地录像（Q7B）**：录像放 `dems/local/<scope>/`，跑 `python scheduler/intake_local.py --scope <名>` 登记并解析到 `dems/db_full/local/<scope>/<mid>.db`，然后照常用 `q7_replay.py` + `build_q7_html.py` 出页面；
-  本地场次没有 stats.db 战绩 → 页面**按录像本身判定胜负**（哪方远古被摧毁）并标注来源。详见 `dems/local/README.md`、`STRATEGY/Q7B_PUBLIC_UPLOAD.md`。
+  本地场次没有 stats.db 战绩 → 页面**按录像本身判定胜负**（哪方远古被摧毁）并标注来源。
+  挑场次用 **私人录像索引** `python analysis/build_q7b_index.py [--rescan]` → `output_review/q7b_index.html`（只列本地场次、按 scope 筛选；含玩家名，**不发布**）；回归 `node analysis/q7b_index_itest.js`。详见 `dems/local/README.md`、`STRATEGY/Q7B_PUBLIC_UPLOAD.md`。
 - **多场切换**：`python analysis/build_q7_index.py` 生成 `q7_index.html`（**970 场**可搜可筛、按列排序、
   勾选后一键生成整批构建命令）；`--batch league:19719|spread:8|hero:axe|ids:...|top:20`（加 `--full` 建完整版）；
   `--publish` 复制到 publish_repo。索引的胜负/时长由 combat_log 推出：**415 场对账 OpenDota 时长中位差 0.0s、胜负 0 冲突**。
