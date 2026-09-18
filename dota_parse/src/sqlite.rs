@@ -393,6 +393,7 @@ pub struct WriteStats {
     pub snapshots: u64,
     pub events: u64,
     pub players: u64,
+    pub combat: u64,
 }
 
 /// Transactional writer for the three §6.2 tables.
@@ -404,6 +405,7 @@ pub struct PreparedWriter<'a> {
     ins_snapshot: Statement<'a>,
     ins_event: Statement<'a>,
     ins_player: Statement<'a>,
+    ins_combat: Statement<'a>,
     stats: WriteStats,
 }
 
@@ -416,7 +418,8 @@ impl<'a> PreparedWriter<'a> {
             let del_snapshot = db.prepare("DELETE FROM entity_snapshots WHERE match_id = ?1")?;
             let del_event = db.prepare("DELETE FROM game_events WHERE match_id = ?1")?;
             let del_player = db.prepare("DELETE FROM player_identity WHERE match_id = ?1")?;
-            for del in [&del_snapshot, &del_event, &del_player] {
+            let del_combat = db.prepare("DELETE FROM combat_log WHERE match_id = ?1")?;
+            for del in [&del_snapshot, &del_event, &del_player, &del_combat] {
                 del.bind_int64(1, match_id)?;
                 if del.step()? != Step::Done {
                     bail!("unexpected row from DELETE statement");
@@ -438,11 +441,22 @@ impl<'a> PreparedWriter<'a> {
                  (match_id, player_slot, steam_id, player_name, hero_name, hero_id, team_id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )?;
+        let ins_combat = db.prepare(
+            "INSERT INTO combat_log
+                 (match_id, event_seq, t_cle, t_tick, type_category, type, attacker, target,
+                  damage_source, inflictor, value_name, value, health, location_x, location_y,
+                  a_team, t_team, stack_count, modifier_duration, modifier_elapsed,
+                  ability_level, assist_players, gold_reason, xp_reason, event_location,
+                  is_attacker_hero, is_target_hero, is_target_building, raw_json)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,
+                     ?21,?22,?23,?24,?25,?26,?27,?28,?29)",
+        )?;
         Ok(PreparedWriter {
             db,
             ins_snapshot,
             ins_event,
             ins_player,
+            ins_combat,
             stats: WriteStats::default(),
         })
     }
@@ -528,6 +542,42 @@ impl<'a> PreparedWriter<'a> {
         Ok(())
     }
 
+    pub fn insert_combat_log(&mut self, match_id: i64, row: &crate::model::CombatLogRow) -> Result<()> {
+        let s = &self.ins_combat;
+        s.bind_int64(1, match_id)?;
+        s.bind_int64(2, row.event_seq)?;
+        s.bind_double(3, row.t_cle)?;
+        s.bind_double(4, row.t_tick)?;
+        s.bind_text(5, row.type_category)?;
+        s.bind_text(6, &row.type_name)?;
+        bind_opt_str(s, 7, row.attacker.as_deref())?;
+        bind_opt_str(s, 8, row.target.as_deref())?;
+        bind_opt_str(s, 9, row.damage_source.as_deref())?;
+        bind_opt_str(s, 10, row.inflictor.as_deref())?;
+        bind_opt_str(s, 11, row.value_name.as_deref())?;
+        bind_opt_i64(s, 12, row.value)?;
+        bind_opt_i64(s, 13, row.health)?;
+        bind_opt_f64(s, 14, row.location_x)?;
+        bind_opt_f64(s, 15, row.location_y)?;
+        bind_opt_i64(s, 16, row.a_team)?;
+        bind_opt_i64(s, 17, row.t_team)?;
+        bind_opt_i64(s, 18, row.stack_count)?;
+        bind_opt_f64(s, 19, row.modifier_duration)?;
+        bind_opt_f64(s, 20, row.modifier_elapsed)?;
+        bind_opt_i64(s, 21, row.ability_level)?;
+        bind_opt_str(s, 22, row.assist_players.as_deref())?;
+        bind_opt_i64(s, 23, row.gold_reason)?;
+        bind_opt_i64(s, 24, row.xp_reason)?;
+        bind_opt_i64(s, 25, row.event_location)?;
+        bind_opt_i64(s, 26, row.is_attacker_hero)?;
+        bind_opt_i64(s, 27, row.is_target_hero)?;
+        bind_opt_i64(s, 28, row.is_target_building)?;
+        bind_opt_str(s, 29, row.raw_json.as_deref())?;
+        self.step_done(&s, "combat_log")?;
+        self.stats.combat += 1;
+        Ok(())
+    }
+
     fn step_done(&self, s: &Statement<'_>, table: &str) -> Result<()> {
         match s.step()? {
             Step::Done => Ok(()),
@@ -539,5 +589,26 @@ impl<'a> PreparedWriter<'a> {
     pub fn commit(&mut self) -> Result<WriteStats> {
         self.db.exec("COMMIT")?;
         Ok(self.stats)
+    }
+}
+
+fn bind_opt_str(s: &Statement<'_>, idx: c_int, v: Option<&str>) -> Result<()> {
+    match v {
+        Some(t) => s.bind_text(idx, t),
+        None => s.bind_null(idx),
+    }
+}
+
+fn bind_opt_i64(s: &Statement<'_>, idx: c_int, v: Option<i64>) -> Result<()> {
+    match v {
+        Some(x) => s.bind_int64(idx, x),
+        None => s.bind_null(idx),
+    }
+}
+
+fn bind_opt_f64(s: &Statement<'_>, idx: c_int, v: Option<f64>) -> Result<()> {
+    match v {
+        Some(x) => s.bind_double(idx, x),
+        None => s.bind_null(idx),
     }
 }

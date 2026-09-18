@@ -106,3 +106,49 @@ pub fn snapshot_extra(
     );
     Value::Object(m)
 }
+
+/// One row of the universal `combat_log` table. A single row == one combat-log
+/// entry of any `DOTA_COMBATLOG_TYPES`, tagged by [`CombatLogRow::type_category`]
+/// (the in-game toggle dimension). All types captured raw — no aggregation, no
+/// de-duplication.
+#[derive(Debug, Clone)]
+pub struct CombatLogRow {
+    /// Disambiguator among entries sharing (match, t_cle, type_category, ...).
+    pub event_seq: i64,
+    /// `cle.timestamp()` — game clock (authoritative narrative axis; freezes on pause).
+    pub t_cle: f64,
+    /// `ctx.tick()/30` — replay clock (entity axis; never pauses).
+    pub t_tick: f64,
+    /// In-game toggle category: damage/healing/ability/item/modifier/death/...
+    pub type_category: &'static str,
+    /// Raw `DOTA_COMBATLOG_TYPES` name (Debug repr, e.g. "DotaCombatlogDamage").
+    pub type_name: String,
+    pub attacker: Option<String>,
+    pub target: Option<String>,
+    pub damage_source: Option<String>,
+    pub inflictor: Option<String>,
+    pub value_name: Option<String>,
+    /// Meaning depends on `type_name`: damage amount / gold amount / item index / ...
+    pub value: Option<i64>,
+    /// Hit-point before/after for damage entries.
+    pub health: Option<i64>,
+    pub location_x: Option<f64>,
+    pub location_y: Option<f64>,
+    pub a_team: Option<i64>,
+    pub t_team: Option<i64>,
+    pub stack_count: Option<i64>,
+    pub modifier_duration: Option<f64>,
+    pub modifier_elapsed: Option<f64>,
+    pub ability_level: Option<i64>,
+    /// Kill-assist list, JSON array string.
+    pub assist_players: Option<String>,
+    pub gold_reason: Option<i64>,
+    pub xp_reason: Option<i64>,
+    /// Enum value, not coordinates.
+    pub event_location: Option<i64>,
+    pub is_attacker_hero: Option<i64>,
+    pub is_target_hero: Option<i64>,
+    pub is_target_building: Option<i64>,
+    /// Curated raw JSON of the entry (schema-evolution safety net).
+    pub raw_json: Option<String>,
+}

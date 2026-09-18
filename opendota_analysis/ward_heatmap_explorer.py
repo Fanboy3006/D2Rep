@@ -2,6 +2,11 @@
 # -*- coding: utf-8 -*-
 """ward_heatmap_explorer.py - Module A interactive HTML heatmap explorer.
 
+!!! DEPRECATED / 已废弃 (2026-09) !!!
+  与 ward_survival_heatmap.py 同源: 依赖已不存在的 `ward_destroyed` 事件 + FIFO 配对, 跑不出结果。
+  眼位分析请统一走 `analysis/q5_ward.py`(Q5/Q5B) 与 Q6 分析器; 口径见
+  `STRATEGY/DEM_FORMAT.md` §C6/§C6.9, 交互规范见 `STRATEGY/INTERACTIVE_MAP_PATTERN.md`。
+
 Single self-contained page (double-click to open, no server): shared map
 background + every observer ward instance (x, y, lifetime, dewarded/expired)
 from all parsed matches. Two range sliders bound the survival window

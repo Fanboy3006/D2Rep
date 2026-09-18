@@ -42,46 +42,70 @@ def world_to_px(x, y, size):
     """
     return CALIB_OFFX + CALIB_K * x, CALIB_REF_Y - CALIB_K * y
 
-# (x, y, neutralType, pullType, triggerName) — neutralType 0..3, the two
-# type==3 camps are the ANCIENT camps (one per side). Coordinates are the
-# `npc_dota_neutral_spawner` entity origins (the spawn point inside each camp
-# trigger), paired to the camp trigger by nearest distance. triggerName uses
-# the real map targetname (neutralcamp_good_N / neutralcamp_evil_N).
+# (x, y, neutralType, pullType, triggerName)
+#   x, y        : npc_dota_neutral_spawner ORIGIN = the camp centre (where the
+#                 neutrals actually stand). Canonical camp position used by all
+#                 map tooling. Verified 28/28 equal to real spawner origins.
+#   neutralType : authoritative spawner.neutraltype (0..3). On this (7.37) map the
+#                 four type==3 camps are good_8 / good_10 / evil_8 / evil_10.
+#                 NOTE: the two ANCIENT camps are NOT good_3 / good_12 (those are
+#                 actually type 1 / type 2) - the old "ancient one per side" guess
+#                 was wrong.
+#   pullType    : authoritative spawner.pulltype.
+#   triggerName : the camp's real targetname (neutralcamp_good_N / neutralcamp_evil_N).
+#
+# PAIRING spawner<->trigger is joined by spawner.volumename == trigger.targetname
+# (the reliable key). `hammeruniqueid` is NOT usable here - spawner/trigger ids are
+# not consecutive on this map (would break 23 of 28 pairs; see .tmp/diag_camps.py).
+# The old "nearest distance" pairing happened to agree with volumename for every
+# camp (0 mismatches) but is fragile to map reworks; volumename is now authoritative.
 NEUTRAL_CAMPS = [
-    (3712.0, -5376.0, 0, 0, "neutralcamp_good_1"),
-    (4800.0, -3776.0, 2, 3, "neutralcamp_good_2"),
-    (2816.0, -3072.0, 3, 1, "neutralcamp_good_3"),   # ancient camp (radiant side)
-    (512.0, -3840.0, 1, 1, "neutralcamp_good_4"),
-    (128.0, -2176.0, 1, 1, "neutralcamp_good_5"),
-    (-3840.0, 1125.0, 1, 0, "neutralcamp_good_7"),
-    (-4928.0, -96.0, 2, 1, "neutralcamp_good_8"),
-    (-2304.0, -4160.0, 1, 1, "neutralcamp_good_9"),
-    (8320.0, -1088.0, 2, 0, "neutralcamp_good_10"),
-    (-192.0, -7616.0, 1, 0, "neutralcamp_good_11"),
-    (-2368.0, -8384.0, 3, 1, "neutralcamp_good_12"),
-    (1664.0, -8448.0, 1, 0, "neutralcamp_good_13"),
-    (4032.0, -8256.0, 0, 0, "neutralcamp_good_14"),
-    (4800.0, -7296.0, 2, 1, "neutralcamp_good_15"),
-    (-4800.0, 4032.0, 0, 0, "neutralcamp_evil_1"),
-    (-3520.0, 4800.0, 0, 2, "neutralcamp_evil_2"),
-    (-2496.0, 3584.0, 2, 2, "neutralcamp_evil_3"),
+    (3712.0, -5376.0, 0, 1, "neutralcamp_good_1"),
+    (4800.0, -3776.0, 2, 2, "neutralcamp_good_2"),
+    (2816.0, -3072.0, 1, 0, "neutralcamp_good_3"),
+    (512.0, -3840.0, 1, 2, "neutralcamp_good_4"),
+    (128.0, -2176.0, 2, 0, "neutralcamp_good_5"),
+    (-3840.0, 1125.0, 2, 0, "neutralcamp_good_7"),
+    (-4928.0, -96.0, 3, 2, "neutralcamp_good_8"),
+    (-2304.0, -4160.0, 2, 2, "neutralcamp_good_9"),
+    (8320.0, -1088.0, 3, 4, "neutralcamp_good_10"),
+    (-192.0, -7616.0, 1, 1, "neutralcamp_good_11"),
+    (-2368.0, -8384.0, 2, 0, "neutralcamp_good_12"),
+    (1664.0, -8448.0, 2, 3, "neutralcamp_good_13"),
+    (4032.0, -8256.0, 0, 3, "neutralcamp_good_14"),
+    (4800.0, -7296.0, 1, 1, "neutralcamp_good_15"),
+    (-4800.0, 4032.0, 2, 5, "neutralcamp_evil_1"),
+    (-3520.0, 4800.0, 0, 1, "neutralcamp_evil_2"),
+    (-2496.0, 3584.0, 1, 0, "neutralcamp_evil_3"),
     (1344.0, 4224.0, 1, 1, "neutralcamp_evil_4"),
     (192.0, 2752.0, 2, 1, "neutralcamp_evil_5"),
-    (-1408.0, 5056.0, 1, 1, "neutralcamp_evil_6"),
-    (4352.0, 48.0, 3, 0, "neutralcamp_evil_8"),      # ancient camp (dire side)
-    (3392.0, -1408.0, 2, 1, "neutralcamp_evil_9"),
-    (-8576.0, 768.0, 2, 0, "neutralcamp_evil_10"),
-    (320.0, 7616.0, 1, 0, "neutralcamp_evil_11"),
-    (2701.1, 8307.7, 2, 0, "neutralcamp_evil_12"),
-    (-1408.0, 8256.0, 1, 0, "neutralcamp_evil_13"),
-    (-3456.0, 8448.0, 2, 0, "neutralcamp_evil_14"),
-    (-4288.0, 7488.0, 2, 0, "neutralcamp_evil_15"),
+    (-1408.0, 5056.0, 2, 0, "neutralcamp_evil_6"),
+    (4352.0, 48.0, 3, 0, "neutralcamp_evil_8"),
+    (3392.0, -1408.0, 2, 0, "neutralcamp_evil_9"),
+    (-8576.0, 768.0, 3, 4, "neutralcamp_evil_10"),
+    (320.0, 7616.0, 1, 3, "neutralcamp_evil_11"),
+    (2701.1, 8307.7, 2, 1, "neutralcamp_evil_12"),
+    (-1408.0, 8256.0, 2, 0, "neutralcamp_evil_13"),
+    (-3456.0, 8448.0, 0, 0, "neutralcamp_evil_14"),
+    (-4288.0, 7488.0, 1, 1, "neutralcamp_evil_15"),
 ]
 
 # Roshan pit spawn point (single spawner for the current map). The two pit
 # triggers are roshan_location (radiant) and roshan_location_2 (dire); pit
 # spawn is the single npc_dota_roshan_spawner.
 ROSHAN = (7872.0, -7808.0)
+
+# --- rune spawners (from default_ents.vents, dota_item_rune_spawner_*) ---
+# (type, x, y, name)  type: 'bounty' = 赏金符(橙色漩涡), 'powerup' = 幻象/加速/双倍,
+# 'xp' = 智慧/经验符.  Coordinates are the spawner origins (authoritative).
+RUNE_SPAWNS = [
+    ("bounty", -1536.0, 3456.0, "bounty_rune_radiant"),
+    ("bounty", 2179.4, -3907.3, "bounty_rune_dire"),
+    ("powerup", -1640.0, 1112.0, "powerup_rune_radiant"),
+    ("powerup", 1180.0, -1216.0, "powerup_rune_dire"),
+    ("xp", 8320.0, 256.0, "xp_rune_dire"),
+    ("xp", -8128.0, -320.0, "xp_rune_radiant"),
+]
 
 # --- authoritative extra map features (all world units from default_ents) ---
 

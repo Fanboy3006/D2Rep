@@ -3,7 +3,14 @@
 """ward_survival_heatmap.py - Module A: Observer Ward survival / dewarded
 heatmap across all parsed matches.
 
-Pipeline:
+!!! DEPRECATED / 已废弃 (2026-09) !!!
+  本脚本依赖旧解析产物 `game_events.event_type='ward_destroyed'` + FIFO 配对;
+  新架构 (dems/db_full, combat_log 通用表 + 实体空间层) 里 **ward_destroyed 事件已不存在**,
+  本脚本跑不出任何结果。眼位分析请统一走 `analysis/q5_ward.py`(Q5/Q5B) 与 Q6 分析器:
+  口径见 `STRATEGY/DEM_FORMAT.md` §C6 + §C6.9, 交互规范见 `STRATEGY/INTERACTIVE_MAP_PATTERN.md`。
+  FIFO 配对**已彻底废弃**(会把相邻同队同型眼的死亡互相抢走)。
+
+Pipeline (历史):
   1. enumerate every parsed match db under dems/db
   2. extract observer ward_placed (sec, team, x, y) and ward_destroyed
      (sec, team, reason=dewarded|expired) - team comes from the enriched

@@ -69,4 +69,44 @@ CREATE TABLE IF NOT EXISTS player_identity (
 
 CREATE INDEX IF NOT EXISTS idx_entity_snapshots_type ON entity_snapshots (match_id, entity_type, team);
 CREATE INDEX IF NOT EXISTS idx_game_events_type     ON game_events (match_id, event_type);
+
+-- Universal combat-log narrative table: one row == one combat entry, tagged by
+-- type_category (the in-game toggle dimension). All types captured raw, no
+-- aggregation, no de-duplication. The entity stream (entity_snapshots) provides
+-- the spatial layer; combat_log provides the what/when/who.
+CREATE TABLE IF NOT EXISTS combat_log (
+    match_id           INTEGER NOT NULL,
+    event_seq          INTEGER NOT NULL,
+    t_cle              REAL    NOT NULL,   -- cle.timestamp() game clock (narrative axis)
+    t_tick             REAL    NOT NULL,   -- ctx.tick()/30 replay clock (entity axis)
+    type_category      TEXT    NOT NULL,   -- damage/healing/ability/item/modifier/death/...
+    type               TEXT    NOT NULL,   -- raw DOTA_COMBATLOG_TYPES name
+    attacker           TEXT,
+    target             TEXT,
+    damage_source      TEXT,
+    inflictor          TEXT,
+    value_name         TEXT,
+    value              INTEGER,
+    health             INTEGER,
+    location_x         REAL,
+    location_y         REAL,
+    a_team             INTEGER,
+    t_team             INTEGER,
+    stack_count        INTEGER,
+    modifier_duration  REAL,
+    modifier_elapsed   REAL,
+    ability_level      INTEGER,
+    assist_players     TEXT,
+    gold_reason        INTEGER,
+    xp_reason          INTEGER,
+    event_location     INTEGER,
+    is_attacker_hero   INTEGER,
+    is_target_hero     INTEGER,
+    is_target_building INTEGER,
+    raw_json           TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_combat_log ON combat_log (match_id, t_cle);
+CREATE INDEX IF NOT EXISTS idx_combat_log_cat ON combat_log (match_id, type_category);
+CREATE INDEX IF NOT EXISTS idx_combat_log_type ON combat_log (match_id, type);
+CREATE INDEX IF NOT EXISTS idx_combat_log_infl ON combat_log (match_id, type_category, inflictor);
 "#;

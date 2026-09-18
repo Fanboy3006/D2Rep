@@ -191,10 +191,13 @@ fn run() -> Result<()> {
     for row in &p.event_rows {
         writer.insert_event(p.match_id, row)?;
     }
+    for row in &p.combat_rows {
+        writer.insert_combat_log(p.match_id, row)?;
+    }
     let stats = writer.commit().context("committing write transaction")?;
     println!(
-        "[db]     committed: {} snapshots, {} events, {} identity rows (match_id={})",
-        stats.snapshots, stats.events, stats.players, p.match_id
+        "[db]     committed: {} snapshots, {} events, {} combat, {} identity rows (match_id={})",
+        stats.snapshots, stats.events, stats.combat, stats.players, p.match_id
     );
 
     // ------------------------------------------------------------------
@@ -217,6 +220,7 @@ fn verify_from_db(db: &Db, match_id: i64) -> Result<()> {
         ("entity_snapshots", "SELECT COUNT(*) FROM entity_snapshots WHERE match_id = ?1"),
         ("game_events", "SELECT COUNT(*) FROM game_events WHERE match_id = ?1"),
         ("player_identity", "SELECT COUNT(*) FROM player_identity WHERE match_id = ?1"),
+        ("combat_log", "SELECT COUNT(*) FROM combat_log WHERE match_id = ?1"),
     ];
     for (name, sql) in counts {
         let st = db.prepare(sql)?;
@@ -224,6 +228,16 @@ fn verify_from_db(db: &Db, match_id: i64) -> Result<()> {
         match st.step()? {
             Step::Row => println!("[verify] {name:<16} rows = {}", st.column_i64(0)),
             Step::Done => println!("[verify] {name:<16} rows = 0"),
+        }
+    }
+    // combat_log by type_category (= in-game toggle).
+    println!("[verify] combat_log by type_category:");
+    {
+        let sql = "SELECT type_category, COUNT(*) FROM combat_log WHERE match_id = ?1 GROUP BY type_category ORDER BY COUNT(*) DESC";
+        let st = db.prepare(sql)?;
+        st.bind_int64(1, match_id)?;
+        while st.step()? == Step::Row {
+            println!("    {:<14} n={}", st.column_str(0), st.column_i64(1));
         }
     }
 
