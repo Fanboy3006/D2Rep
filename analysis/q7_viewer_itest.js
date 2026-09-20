@@ -1240,12 +1240,16 @@ drawImgs.length = 0;
 S.draw();
 {
   const heroDraws = drawImgs.filter((a) => a.length === 9 && a[7] === a[8] && a[3] === a[4]);
-  ok(heroDraws.length === 10, "10 个英雄头像都按「正方形源区域」绘制（" + heroDraws.length + " 次）");
-  ok(heroDraws.every((a) => Math.abs(a[3] - 72) < 1e-9),
-     "裁出的源正方形边长 = 卡片高度 72px（实际 " + (heroDraws[0] ? heroDraws[0][3] : "-") + "）");
-  ok(heroDraws.every((a) => Math.abs(a[1] - 28) < 1e-9 && Math.abs(a[2]) < 1e-9),
-     "源裁剪从 128×72 的横向居中开始（sx=" + (heroDraws[0] ? heroDraws[0][1] : "-")
-     + "，sy=" + (heroDraws[0] ? heroDraws[0][2] : "-") + "）");
+  /* 9 参数绘制 = 头像与 TP 徽标两类（都取正方形源区域）。用**目标边长**区分：
+     头像 = 2R（未放大时 R=13 → 26），TP 徽标内层 ≈ 17−2.8 ≈ 14。 */
+  const avD = heroDraws.filter((a) => a[7] > 20), tpD = heroDraws.filter((a) => a[7] <= 20);
+  ok(avD.length === 10, "10 个英雄头像都按「正方形源区域」绘制（" + avD.length + " 次）");
+  ok(avD.every((a) => Math.abs(a[3] - 72) < 1e-9),
+     "裁出的源正方形边长 = 卡片高度 72px（实际 " + (avD[0] ? avD[0][3] : "-") + "）");
+  ok(avD.every((a) => Math.abs(a[1] - 28) < 1e-9 && Math.abs(a[2]) < 1e-9),
+     "源裁剪从 128×72 的横向居中开始（sx=" + (avD[0] ? avD[0][1] : "-")
+     + "，sy=" + (avD[0] ? avD[0][2] : "-") + "）");
+  ok(tpD.length >= 10, "地图上给每个英雄画了 TP 图标徽标（" + tpD.length + " 个）");
   const old = drawImgs.filter((a) => a.length === 9 && a[3] === 128 && a[4] === 72);
   ok(old.length === 0, "不存在「整张 128×72 塞进正方形」的老写法（" + old.length + " 次）");
 }
@@ -1314,7 +1318,10 @@ S.draw();
     const s1 = S.tpStateOf(PL[tpn.i].npc, use + 10);
     ok(s1.st === "cd" && s1.left > 0 && s1.left < 80, "刚用过 TP → 推算冷却中（剩 "
        + (s1.left || 0).toFixed(0) + "s）");
-    ok(g('.hero[data-i="' + tpn.i + '"]').classList.contains("tp-cd"), "TP 小圆点/环上了「冷却中」的色");
+    ok(g('.hero[data-i="' + tpn.i + '"]').classList.contains("tp-cd"), "TP 徽标上了「冷却中」的样式");
+    /* 桩里 el.querySelector(".tpcd") 返回的是 `mkEl(el.id + "_q")`，所以这样读同一个元素 */
+    const tcd = String(g('.hero[data-i="' + tpn.i + '"]' + "_q").textContent);
+    ok(/^\d+$/.test(tcd) && +tcd > 0 && +tcd <= 80, "TP 徽标上写出剩余秒数（" + tcd + "s）");
     /* ★ 不能拿"第一次使用 + 200s"当"可用"：两次 TP 间隔常常短于 200s（推完一波又回家）。
        所以在使用时刻序列里现搜一个真的可用的时刻。 */
     const okT = tpn.arr.map((u) => u + 90).find((t) => t > T0 && t < T1 - 5
@@ -1323,7 +1330,9 @@ S.draw();
     if (okT !== undefined) {
       S.commit(okT);
       ok(S.tpStateOf(PL[tpn.i].npc, okT).st === "ok", "超过固定冷却之后 → TP 可用（" + Math.round(okT) + "s）");
-      ok(g('.hero[data-i="' + tpn.i + '"]').classList.contains("tp-ok"), "TP 状态色切到「可用」");
+      ok(g('.hero[data-i="' + tpn.i + '"]').classList.contains("tp-ok"), "TP 状态切到「可用」");
+      ok(String(g('.hero[data-i="' + tpn.i + '"]' + "_q").textContent) === "",
+         "可用时徽标上不显示数字（图标亮着即可）");
     }
     ok(/TP 冷却中约|TP 可用/.test(String(g('.hero[data-i="' + tpn.i + '"]').title)),
        "头像 hover 文案带 TP 状态：" + String(g('.hero[data-i="' + tpn.i + '"]').title).slice(-46));
@@ -1333,6 +1342,14 @@ S.draw();
   S.setFrameMode("ult");
   ok(S.getFrameMode() === "ult" && g("avatars").className === "f-ult", "模式=大招（" + g("avatars").className + "）");
   ok(/大招就绪/.test(g("fleg").innerHTML), "图例写明大招三态");
+  /* TP 徽标改成图标 + 冷却秒数（owner：不要小色点，用 TP 图标、稍微大一点） */
+  ok(typeof S.DATA.tpicon === "string" && S.DATA.tpicon.indexOf("data:image/png;base64,") === 0,
+     "载荷内嵌回城卷轴图标（" + (S.DATA.tpicon ? Math.round(S.DATA.tpicon.length / 1024) + " KB" : "缺") + "）");
+  /* 头像元素是 buildAvatars 用 createElement 造出来的，桩里不在 getElementById 表里，
+     所以直接查桩的 created 列表（本文件自己维护的）。 */
+  ok(created.some((e) => String(e.innerHTML).indexOf('alt="TP"') >= 0),
+     "头像条上的 TP 徽标用的是图标而不是色块");
+  ok(/TP 图标/.test(g("fleg").innerHTML), "图例说明了 TP 图标怎么读");
   /* ★ 静态守卫：状态环的配色规则必须挂在模式类下面。
      否则 .hero.tp-ok .ring 会盖掉 .hero.ult-ready .ring（同特异性、后者在前），
      表现成"大招模式里所有环都是 TP 蓝" —— 第一版实测就是这样，光靠 JS 断言看不出来。 */
@@ -1344,7 +1361,10 @@ S.draw();
     ok(/#avatars\.f-ult \.hero\.ult-cool \.ring/.test(css), "大招模式：冷却色规则存在");
     ok(/#avatars\.f-tp \.hero\.tp-ok \.ring/.test(css), "TP 模式：可用色规则存在");
     ok(/#avatars\.f-team \.ring\{display:none\}/.test(css), "队伍模式：不画状态环");
-    ok(/#avatars\.f-tp \.tppip\{display:none\}/.test(css), "TP 模式：TP 小圆点不重复显示");
+    ok(!/\.tppip/.test(css), "旧的小色点样式（.tppip）已移除");
+    const bm = css.match(/\.hero \.tpbadge\{[^}]*width:(\d+)px/);
+    ok(bm && +bm[1] >= 20, "TP 徽标比原来的 9px 小点大（" + (bm ? bm[1] : "?") + "px）");
+    ok(/\.hero\.tp-cd \.tpcd\{display:block\}/.test(css), "TP 冷却中会显示秒数小牌");
   }
   S.setFrameMode("tp");
   ok(g("avatars").className === "f-tp" && /可用/.test(g("fleg").innerHTML), "模式=TP：图例写明可用/冷却");

@@ -33,6 +33,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 Q7DIR = os.path.join(ROOT, "analysis", "output_q7")
 REVIEW = os.path.join(ROOT, "analysis", "output_review")
 AB_ICON_DIR = os.path.join(ROOT, "opendota_analysis", "assets", "ability_icons")
+ITEM_ICON_DIR = os.path.join(ROOT, "opendota_analysis", "assets", "item_icons")
 WARD_ICON_DIR = os.path.join(ROOT, "opendota_analysis", "assets", "ward_icons")
 TL_ICON_DIR = os.path.join(ROOT, "opendota_analysis", "assets", "tl_icons")
 ICON_DIR = os.path.join(ROOT, "opendota_analysis", "assets", "hero_icons")
@@ -237,6 +238,12 @@ def build(mid, outdir, lite=False, step=3, fetch_icons=True):
         if os.path.exists(fp):
             ab_icons[base] = "data:image/png;base64," + b64_png_opt(fp, 64)
 
+    # ---- 回城卷轴（TP）图标：头像框与地图上的 TP 徽标用它（一张 64×64 的道具图）----
+    tp_icon = ""
+    tp_fp = os.path.join(ITEM_ICON_DIR, "tpscroll.png")
+    if os.path.exists(tp_fp):
+        tp_icon = "data:image/png;base64," + b64_png_opt(tp_fp, 64)
+
     # ---- 战斗日志（±45s 明细）每行的小图标：名字 → CSS 类（一张 28px PNG）----
     #   英雄短名 → 方头像；技能/道具 → 官方图；建筑 → tl_icons 字形（按阵营上色）；
     #   "普通攻击" → 自绘 UI 字形；解析不到 → 该行不画图标（文字照旧）。
@@ -369,6 +376,7 @@ def build(mid, outdir, lite=False, step=3, fetch_icons=True):
         "attr": (dat.get("attr_check") or []),
         "cd": cd,
         "tp": dat.get("tp", {}),
+        "tpicon": tp_icon,
         "wp": wp,
         "tl": dat.get("tl", []),
         "wards": dat.get("wards", []),
@@ -525,13 +533,25 @@ h1{font-size:15px;margin:0;flex:0 0 auto}
 #avatars.f-ult .hero.ult-none .ring{box-shadow:inset 0 0 0 3px #30363d80}
 #avatars.f-tp .hero.tp-ok .ring{box-shadow:inset 0 0 0 3px #58a6ff}
 #avatars.f-tp .hero.tp-cd .ring{box-shadow:inset 0 0 0 3px #d29922}
-.hero .tppip{position:absolute;right:3px;top:5px;width:9px;height:9px;border-radius:50%;
-             border:2px solid #0d1117;display:none}
-.hero.tp-ok .tppip{display:block;background:#58a6ff}
-.hero.tp-cd .tppip{display:block;background:#d29922}
-/* 模式：队伍＝不画状态环；TP＝环已表示 TP，小圆点多余 */
+/* TP 徽标：回城卷轴的**图标**（不是色块小点）+ 冷却剩余秒。
+   图标一直在（一眼看出是 TP）；冷却中把图标压暗，并在右下角挂一个小秒数牌。
+   ★ 徽标与秒数牌都必须在头像框**内部**：.hero 是 overflow:hidden（用来裁圆角头像），
+     挂到框外会被裁掉（第一版把秒数牌挂到右下角外侧，数字被切了一半）。 */
+.hero .tpbadge{position:absolute;right:3px;top:2px;width:24px;height:24px;border-radius:6px;
+               background:#0d1117;border:2px solid #0d1117;box-sizing:border-box;
+               display:none;align-items:center;justify-content:center;box-shadow:0 1px 4px #000b}
+.hero .tpbadge img{width:100%;height:100%;display:block;border-radius:4px}
+.hero .tpcd{position:absolute;right:-1px;bottom:-2px;display:none;min-width:12px;padding:0 3px;
+            border-radius:7px;background:#0b0e13;border:1px solid #000;color:#ffd479;
+            font-size:10px;line-height:14px;font-weight:700;text-align:center;
+            font-variant-numeric:tabular-nums}
+.hero.tp-ok .tpbadge{display:flex}
+.hero.tp-cd .tpbadge{display:flex;filter:grayscale(.7) brightness(.6)}
+.hero.tp-cd .tpcd{display:block}
+.hero.tp-none .tpbadge{display:none}
+/* 模式：队伍＝不画状态环（TP 徽标照旧显示）；TP 模式＝环也表示 TP */
 #avatars.f-team .ring{display:none}
-#avatars.f-tp .tppip{display:none}
+/* 队伍模式照样显示 TP 徽标（它现在带图标和秒数，本身就是信息） */
 .fleg{font-size:11px;color:#8b949e;white-space:nowrap}
 .fleg i{display:inline-block;width:9px;height:9px;border-radius:3px;vertical-align:middle;margin:0 3px 0 6px}
 /* 矮屏：头像缩一档，保证 5 个一列仍然塞得进左栏高度 */
@@ -809,8 +829,9 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
       <b>点一下图标</b>即可跳到那一刻；播放头附近的图标会高亮。想看具体时间，勾"时间戳文字"；只想看推塔和肉山，勾"只标建筑/肉山"。</p>
     <p><b>③ 地图</b>：滚轮缩放、拖拽平移、双击回到全图；每个英雄是一个圆点，<b>外圈的颜色是队伍</b>（绿=天辉、红=夜魇），
       圆点里那一道<b>内环是状态</b>：<b>绿=大招就绪</b>、<b>灰=大招冷却中</b>、<b>深灰=这一时刻没有数据</b>；
-      右上角的小圆点表示 <b>TP</b>（蓝=可用、橙=冷却中）。地图下方工具条上的 <b>大招 / TP / 队伍</b>三个按钮
-      可以切换内环表示什么（选"队伍"就不画内环）。地图右侧那一列头像用的是完全相同的配色，鼠标移上去有文字说明。
+      右上角那个小方块是<b>回城卷轴的图标（TP）</b>：<b>亮着＝可用</b>，<b>压暗并显示数字＝冷却中（数字是还剩几秒）</b>。
+      地图下方工具条上的 <b>大招 / TP / 队伍</b>三个按钮可以切换内环表示什么（选"队伍"就不画内环，TP 图标照常显示）。
+      地图右侧那一列头像用的是完全相同的配色与 TP 图标，鼠标移上去有文字说明。
       <b>阵亡时会变灰</b>，最近 40 秒有轨迹；<b>点圆点</b>就是选中这名英雄。建筑被摧毁会在图上打叉；
       眼位（假眼/真眼）和烟雾也画在图上，鼠标移上去能看到详细信息。
       上方一排开关可以分别隐藏：建筑、轨迹、名字、眼位、烟雾。</p>
@@ -856,6 +877,7 @@ const POS = DATA.pos, HPM = DATA.hpm || {}, NW = DATA.nw, CG = DATA.cg, CX = DAT
 const KILLSX = DATA.kills, BLD = DATA.buildings, KDA = DATA.kda;
 const DET = DATA.detail || {}, DNAMES = DATA.dnames || [];
 const CD = DATA.cd || null, TPUT = DATA.tp || {}, WP = DATA.wp || null, ABICONS = DATA.abicons || {};
+const TPICON = DATA.tpicon || "";     // 回城卷轴图标（必须在建 Image 之前就绪）
 const WARDS = DATA.wards || [], SMOKE = DATA.smoke || [], SMOKED = DATA.smoked || {}, WICONS = DATA.wicons || {};
 const WARDNAME = ["假眼 Observer（寿命 360s）", "真眼 Sentry（寿命 420s，真视 1050）"];
 const WREASON = ["自然到期", "被反/被摧毁", "被比赛结束截断", "赛后残留", "—"];
@@ -1046,6 +1068,58 @@ const imgs = {};
 Object.keys(ICONS).forEach(function (k) { const im = new Image(); im.src = ICONS[k]; imgs[k] = im; });
 const wimgs = {};
 Object.keys(WICONS).forEach(function (k) { const im = new Image(); im.src = WICONS[k]; wimgs[k] = im; });
+const tpImg = (function () {          // 回城卷轴图标（地图上的 TP 徽标）
+  const im = new Image();
+  if (TPICON) im.src = TPICON;
+  return im;
+})();
+/* 圆角矩形路径（ctx.roundRect 不是处处都有；自己画一个，回归测试的桩里也能跑） */
+function rrect(ctx, x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y); ctx.arcTo(x + w, y, x + w, y + r, r);
+  ctx.lineTo(x + w, y + h - r); ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+  ctx.lineTo(x + r, y + h); ctx.arcTo(x, y + h, x, y + h - r, r);
+  ctx.lineTo(x, y + r); ctx.arcTo(x, y, x + r, y, r);
+  ctx.closePath();
+}
+/* TP 徽标（地图上的英雄圆点右上角）：回城卷轴图标 + 冷却剩余秒。
+   图标一直在（可用＝正常、蓝边；冷却中＝压暗、灰边），冷却中在右下角挂一个小秒数牌
+   —— 这样"是不是 TP"和"还差几秒"同时看得见。 */
+function drawTpBadge(ctx, cx, cy, size, ts) {
+  const h = size / 2;
+  ctx.save();
+  rrect(ctx, cx - h, cy - h, size, size, 4);
+  ctx.fillStyle = "#0d1117"; ctx.fill();
+  ctx.lineWidth = 1.2;
+  ctx.strokeStyle = (ts.st === "ok") ? "#58a6ff" : "#6e7681";
+  ctx.stroke();
+  ctx.globalAlpha = (ts.st === "ok") ? 1 : 0.55;
+  if (tpImg && tpImg.complete && tpImg.naturalWidth) {
+    const ss = Math.min(tpImg.naturalWidth, tpImg.naturalHeight);
+    const sx = (tpImg.naturalWidth - ss) / 2, sy = (tpImg.naturalHeight - ss) / 2;
+    ctx.save();
+    rrect(ctx, cx - h + 1.4, cy - h + 1.4, size - 2.8, size - 2.8, 3);
+    ctx.clip();
+    ctx.drawImage(tpImg, sx, sy, ss, ss, cx - h + 1.4, cy - h + 1.4, size - 2.8, size - 2.8);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+  if (ts.st !== "ok") {
+    const txt = String(Math.max(1, Math.ceil(ts.left)));
+    ctx.font = "bold 10px 'Segoe UI',sans-serif";
+    const tw = ctx.measureText(txt).width + 7, th = 13;
+    const px = cx + h - 3, py = cy + h - 3;      // 徽标右下角（略外挂）
+    rrect(ctx, px - tw / 2, py - th / 2, tw, th, 6);
+    ctx.fillStyle = "#0b0e13"; ctx.fill();
+    ctx.lineWidth = 1; ctx.strokeStyle = "#000"; ctx.stroke();
+    ctx.fillStyle = "#ffd479";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(txt, px, py + 0.5);
+  }
+  ctx.restore();
+}
 
 function markText(m) {
   if (m.kind === "ward") {
@@ -1234,14 +1308,14 @@ function render() {
         : (us.st === "ready" ? "#3fb950" : (us.st === "cool" ? "#8b949e" : "#30363d"));
       ctx.beginPath(); ctx.arc(c[0], c[1], R - 2.4, 0, Math.PI * 2);
       ctx.strokeStyle = col; ctx.lineWidth = 2.4; ctx.stroke();
-      if (frameMode === "ult") {      // TP 小圆点：TP 模式下环已表示 TP，不必重复
-        ctx.beginPath(); ctx.arc(c[0] + R * 0.72, c[1] - R * 0.72, 3.6, 0, Math.PI * 2);
-        ctx.fillStyle = ts.st === "ok" ? "#58a6ff" : "#d29922";
-        ctx.fill();
-        ctx.lineWidth = 1.4; ctx.strokeStyle = "#0d1117"; ctx.stroke();
-      }
     }
     ctx.restore();
+    /* TP 徽标：右上角一个**回城卷轴图标**（可用＝正常，冷却中＝压暗 + 剩余秒）。
+       和头像条上的徽标同一套语义；尺寸随圆点缩放，略大于半径的一半以便看清。 */
+    {
+      const ts = tpStateOf(p.npc, tCur);
+      drawTpBadge(ctx, c[0] + R * 0.72, c[1] - R * 0.72, Math.round(R * 1.45), ts);
+    }
     if (showName) {
       ctx.font = "bold 11px 'Segoe UI',sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
       const label = p.short.replace(/_/g, " ");
@@ -1368,7 +1442,9 @@ function buildAvatars() {
       d.setAttribute("data-i", i); d.title = p.short.replace(/_/g, " ") + "（" + p.name + "）";
       const im = ICONS[p.short];
       d.innerHTML = (im ? '<img src="' + im + '" alt="">' : "") +
-        '<div class="ring"></div><div class="tppip"></div>' +
+        '<div class="ring"></div>' +
+        '<div class="tpbadge">' + (TPICON ? '<img src="' + TPICON + '" alt="TP">' : "")
+        + '<b class="tpcd"></b></div>' +
         '<div class="nm">' + p.short.replace(/_/g, " ") + '</div>' +
         '<div class="hpbar" style="width:0%"></div>';
       d.onclick = function () { selectHero(i); };
@@ -1597,10 +1673,12 @@ const TPCOOL = DATA.tpcool || 80;
 let frameMode = "ult";
 const FRAME_LEGEND = {
   ult: '<i style="background:#3fb950"></i>大招就绪<i style="background:#8b949e"></i>冷却中'
-    + '<i style="background:#30363d"></i>未学/无数据',
+    + '<i style="background:#30363d"></i>未学/无数据'
+    + ' ｜ 右上角 TP 图标：亮＝可用、压暗＋数字＝冷却中',
   tp: '<i style="background:#58a6ff"></i>可用<i style="background:#d29922"></i>冷却中（按 '
-    + Math.round(TPCOOL) + ' 秒推算）',
+    + Math.round(TPCOOL) + ' 秒推算） ｜ 右上角 TP 图标上的数字＝还剩几秒',
   team: '<i style="background:#4aa564"></i>天辉<i style="background:#d24b4b"></i>夜魇'
+    + ' ｜ 右上角 TP 图标照常显示'
 };
 function ultKeyOwnedBy(key, npc) {
   /* 只认「这名英雄自己的」大招。两个理由：
@@ -1647,7 +1725,7 @@ function applyHeroFrames(t) {
     const p = PL[i];
     const el = document.querySelector('.hero[data-i="' + i + '"]');
     if (!el) continue;
-    el.classList.remove("ult-ready", "ult-cool", "ult-none", "tp-ok", "tp-cd", "dead");
+    el.classList.remove("ult-ready", "ult-cool", "ult-none", "tp-ok", "tp-cd", "tp-none", "dead");
     const q = posAt(p.npc, t);
     const dead = !!(q && q.hp !== null && q.hp !== undefined && q.hp <= 0);
     if (!q || dead) el.classList.add("dead");
@@ -1668,6 +1746,9 @@ function applyHeroFrames(t) {
       el.classList.add("tp-cd");
       tip += " ｜ TP 冷却中约 " + Math.ceil(ts.left) + "s（按 " + Math.round(TPCOOL) + " 秒共享冷却推算）";
     }
+    /* TP 徽标上的剩余秒：冷却中才显示数字（可用时留空，图标本身就说明了） */
+    const cdEl = el.querySelector(".tpcd");
+    if (cdEl) cdEl.textContent = (ts.st === "ok") ? "" : String(Math.max(1, Math.ceil(ts.left)));
     el.title = tip;
   }
 }
@@ -1739,7 +1820,8 @@ function renderCD() {
   const stTp = lastTp === null ? "无使用记录" : ("最近 " + fmt(lastTp) + "（" + Math.round(tCur - lastTp) + "s 前）");
   html += '<div class="cd track ' + (tps.st === "ok" ? "ready" : "cool")
     + '" title="回城卷轴：录像里只有使用时刻，冷却中与否按 ' + Math.round(TPCOOL) + ' 秒共享冷却推算">'
-    + '<div class="box"><span class="fb">TP</span></div><div class="cap">TP 卷轴</div>'
+    + '<div class="box">' + (TPICON ? '<img src="' + TPICON + '" alt="">' : '<span class="fb">TP</span>')
+    + '</div><div class="cap">TP 卷轴</div>'
     + '<div class="st">' + (tps.st === "ok" ? "可用" : ("冷却 " + Math.ceil(tps.left) + "s")) + "</div></div>";
   board.innerHTML = html;
   note.innerHTML = "每一段灰色 = 技能/道具的一次真实冷却，灰色上的秒数就是那一刻的<b>剩余冷却时间</b>"
