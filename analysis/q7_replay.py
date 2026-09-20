@@ -42,6 +42,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import timebase as tb   # noqa: E402  数据层共享时基（号角/结束/暂停感知折算 + gold int32 还原）
+import hero_ultimates as HU   # noqa: E402  英雄 → 大招（构建期资产，标记"大招就绪"用）
 
 DBFULL = os.path.join(ROOT, "dems", "db_full")
 DBOLD = os.path.join(ROOT, "dems", "db")          # Q5 版散装 extractor（技能/道具 CD 在这里）
@@ -464,6 +465,7 @@ def parse_match(db, match_id, league, with_detail=True):
         "attr_check": attr_check,
         "cd": cd,
         "tp": tpu,
+        "tpcool": float((HU.load() or {}).get("tp_cooldown") or 80.0),
         "wards": wards,
         "tl": tl,
         "smoke": smoke,
@@ -763,6 +765,8 @@ def load_cd(old_db, mid, clk, players, t0, t1):
                   for i in ivs if i["e"] > i["s"] + 0.05]
 
     keys = sorted({k for (a, k) in list(starts) + list(ends) + list(known) + list(learns)})
+    npc_of_short = {p["short"]: p["npc"] for p in players}
+    ult_table = HU.ult_norms()      # 英雄 → 该英雄大招（归一化名），供"大招就绪"标记
     key_info = {}
     for k in keys:
         short = ""
@@ -782,7 +786,8 @@ def load_cd(old_db, mid, clk, players, t0, t1):
             if os.path.exists(os.path.join(ICON_DIR, "%s.png" % cand)):
                 icon = cand
         key_info[k] = {"name": nm, "kind": "item" if k.startswith(ITEM_PREFIX) else "ability",
-                       "icon": icon, "cls": "item" if k.startswith(ITEM_PREFIX) else ability_class(k)}
+                       "icon": icon, "cls": "item" if k.startswith(ITEM_PREFIX) else ability_class(k),
+                       "ult": HU.is_ult(npc_of_short.get(short), k, ult_table)}
 
     ab, it = {}, {}
     for p in players:

@@ -69,6 +69,15 @@ python analysis/ward_analysis.py 8592126358.db 8979891001.db [--team 2|3|all]
   塔·兵营·肉山字形 / 自绘"普通攻击"字形；**解析不到就不画，文字名一律保留**），
   ±45s 团战期最多 **1785 行** → **虚拟滚动**（DOM 只画视口附近 ~160 行）+ 播放时 130ms 节流。
   逐条记录、右半屏 DOM bug（`.left` 没闭合）、**四类归属对账**（英雄↔英雄事件两侧都记；`--attr-only` 单场秒级；`--attr-scan` 全 corpus 批检 —— **970 场全跑过：0 不一致**，逐条明细合计 9,713 万条四类逐场与载荷相等）与取舍见 `Q7_SUBMISSION.md` §8。
+- **UI 迭代（owner + 朋友反馈，2026-09 这一轮）**：⑦ **拖动时间轴时滑块上方出现蓝色时间气泡**，
+  跟着当前时刻走、松手淡出（此前只有离滑块很远的"当前时刻"面板在变，实测反馈是"看不到"）；
+  ⑧ 地图英雄圆点与地图右侧头像条加**状态色**：外圈仍是队伍色，**内环 = 大招状态**（绿就绪 / 灰冷却中 /
+  深灰无数据），右上小圆点 = TP（蓝可用 / 橙冷却中），工具条上 **大招 / TP / 队伍** 三个按钮切换内环含义，
+  图例随模式变；⑨ 头像框 48 → **56px**，并修掉**地图头像被横向压扁**的老 bug
+  （英雄图是 128×72 横版卡片，以前整张铺进正方形圆点 → 现在先取中心正方形）。
+  大招对照表 `analysis/hero_ultimates.py` → `opendota_analysis/assets/hero_ultimates.json`
+  （判据是游戏文件里的 `ABILITY_TYPE_ULTIMATE`；TP 冷却 80s 读自 `items.txt`）。
+  口径、两处改名、700 场覆盖率交叉验证与 TP 只能推算的原因见 `STRATEGY/Q7_REPLAY_UI.md` §3.5 / §6.1。
 - **改动量实测（别夸大）**：`python analysis/q7_clock_check.py --scan 45` → 窗口内旧/新 |Δ显示秒| 中位 0.03~0.07s、
   最大 ≤9.6s、>30s 的 0 场；`python analysis/q5_clock_check.py --sample 40` → Q5B 逐支眼改动 **0/4591**；
   换时基后全量重跑 Q5B 并与发布版比对 → **SHA256 相同**。
@@ -81,6 +90,12 @@ python analysis/ward_analysis.py 8592126358.db 8979891001.db [--team 2|3|all]
      `item_cd_*` / `ability_known` / `purchase` / `neutral_kill` / `ward_use` / `smoke_count` / `game_state`）
      vs `dems/db_full/`（970 场，combat_log 重写版：叙事全进 `combat_log`，`game_events` 只剩
      building/ward 的空间层）。**Q1 读 `dems/db/`，Q5B/Q6/Q7 读 `dems/db_full/`** —— 跨任务比较时要注意。
+  5. **老库的技能归属会重叠**：`dems/db/` 里少数场次把**别人的**技能也挂到同一名英雄名下 ——
+     实测 62 场里 13 场有这种情况，最极端的 `shadow_demon` 一场列出 68 个技能 / 8 个大招
+     （队友每人 14~16 个）。页面侧已做规避（大招状态色与「大」角标要求技能键名含该英雄短名，
+     见 `analysis/build_q7_html.py` 的 `ultKeyOwnedBy`），但根因在数据层，要重解析 970 场才能修。
+  6. **血量可能缺格，且"有坐标但没血量"的格是存在的**：JS 里 `null <= 0` 为真，
+     早期版本因此把"没数据"显示成"阵亡"；现在缺格显示 `—`。
 
 ## Q1 地图经济价值分区（现行；旧"野区经济 proxy"已归档到 `legacy/`）
 

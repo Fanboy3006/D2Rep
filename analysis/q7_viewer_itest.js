@@ -144,7 +144,10 @@ const loadErrors = [];
 global.Image = class {
   constructor() { this.complete = false; this.naturalWidth = 0; this.naturalHeight = 0; this.width = 0; this.height = 0; }
   set src(v) {
-    this._src = v; this.complete = true; this.naturalWidth = 64; this.naturalHeight = 64;
+    /* ★ 宽高故意取**英雄卡的 128×72**（真实资产就是这个尺寸，见 opendota_analysis/assets/hero_icons）。
+       以前桩一律给 64×64 正方形，于是"把 128×72 硬塞进正方形圆点"这种横向压扁的 bug
+       在测试里完全看不出来 —— 正方形的桩算出来的裁剪量永远是 0。 */
+    this._src = v; this.complete = true; this.naturalWidth = 128; this.naturalHeight = 72;
     const self = this;
     Promise.resolve().then(() => { if (typeof self.onload === "function") { try { self.onload(); } catch (e) { loadErrors.push(String(e && e.message || e)); } } });
   }
@@ -195,7 +198,21 @@ eval(src + `
   markNear: function(){ markNear(); }, jumpTo: jumpTo, fmtTL: fmtTL,
   evEls: function(){ return evEls; },
   wardsAliveAt: wardsAliveAt, isSmoked: isSmoked, markText: markText,
-  diffEnd: function(){ return [DIFF.nw[D-1], DIFF.cg[D-1], DIFF.cx[D-1]]; }
+  diffEnd: function(){ return [DIFF.nw[D-1], DIFF.cg[D-1], DIFF.cx[D-1]]; },
+  fmt: fmt,
+  ultStateOf: ultStateOf, tpStateOf: tpStateOf, applyHeroFrames: applyHeroFrames,
+  setFrameMode: setFrameMode, getFrameMode: function(){ return frameMode; },
+  getTpCool: function(){ return TPCOOL; }, frameLegend: function(){ return FRAME_LEGEND; },
+  showSeekBub: showSeekBub, hideSeekBub: hideSeekBub,
+  seekBubEl: function(){ return seekbub; },
+  heroTitles: function(){
+    const o = {};
+    PL.forEach(function(p, i){
+      const el = document.querySelector('.hero[data-i="' + i + '"]');
+      o[i] = el ? String(el.title) : null;
+    });
+    return o;
+  }
 };
 `);
 
@@ -279,9 +296,12 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
   S.commit(T0);
   ok(S.getT() === T0, "可直接定位到 T0 = " + fmtSec(T0) + "（出门）");
   // 大条直接拖 = 绝对定位 + 小条归零
+  // ★ 目标时刻按 T1 推导：写死 1234 的话，遇到 20 分钟左右的短场会被钳制到 T1 而误报失败。
   g("small").value = 45; g("small").oninput();
-  g("big").value = 1234; g("big").oninput();
-  ok(S.getTBig() === 1234 && S.getS() === 0 && S.getT() === 1234, "拖大条 = 绝对定位 1234，小条立即归零");
+  const seekT = Math.min(1234, T1 - 5);
+  g("big").value = seekT; g("big").oninput();
+  ok(S.getTBig() === seekT && S.getS() === 0 && S.getT() === seekT,
+     "拖大条 = 绝对定位 " + seekT + "，小条立即归零");
   g("big").value = T1 + 500; g("big").oninput();  ok(S.getT() === T1, "大条超出 → 钳制到 T1");
   g("small").value = 60; g("small").oninput();
   ok(S.getT() === T1, "末尾再挂小条 +60 → 仍钳制到 T1");
@@ -697,7 +717,7 @@ const D = S.D, T0 = S.T0, T1 = S.T1, PL = S.PL;
   ok(W.length > 50, "眼位数据内嵌：" + W.length + " 支");
   const obs = W.filter((w) => w[3] === 0).length, sen = W.filter((w) => w[3] === 1).length;
   ok(obs > 0 && sen > 0, "真假眼都有（假眼 " + obs + " / 真眼 " + sen + "）");
-  ok(W.every((w) => w[5] > w[4]), "每支眼 销毁 > 放置");
+  ok(W.every((w) => w[5] >= w[4]), "每支眼 销毁 >= 放置（同一秒也算合法）");
   ok(W.every((w) => Math.abs(w[0]) <= 9000 && Math.abs(w[1]) <= 9000), "眼位坐标都在地图范围内");
   const cen = W.filter((w) => w[7] === 1);
   ok(cen.every((w) => w[6] === 2), "被截断的眼 reason 都是『被比赛结束截断』（" + cen.length + " 支）");
@@ -1065,10 +1085,12 @@ if (LITE) {
   ok(Object.keys(S.det).length === 0, "lite 版不含 ±45s 明细（载荷 0 条）");
   // 抽稀后索引仍要取到正确时刻的值：与"沿用上一格"一起验证
   S.commit(1200);
-  ok(S.diffAt("nw", 1200) !== null && S.posAt(PL[0].npc, 1200) !== null,
-     "lite 下 t=1200s 仍能取到净值差/位置");
-  const a = S.diffAt("nw", 1200), b = S.diffAt("nw", 1200 + estep - 1);
-  ok(a !== null && b !== null, "esetp 网格内相邻时刻都能取到（" + a + " / " + b + "）");
+  // 同样按 T1 推导：短场时 1200s 之后可能已经超出比赛末尾
+  const gridT = Math.max(T0, Math.min(1200, T1 - estep - 1));
+  ok(S.diffAt("nw", gridT) !== null && S.posAt(PL[0].npc, gridT) !== null,
+     "lite 下 t=" + gridT + "s 仍能取到净值差/位置");
+  const a = S.diffAt("nw", gridT), b = S.diffAt("nw", gridT + estep - 1);
+  ok(a !== null && b !== null, "estep 网格内相邻时刻都能取到（" + a + " / " + b + "）");
   ok(!!S.cd && Object.keys(S.cd.keys).length > 10, "lite 仍含技能 CD 数据");
   ok(String(g("cdboard").innerHTML).indexOf("Black King Bar") >= 0 || /TP 卷轴/.test(S.cdHTML()),
      "lite 的 CD 面板仍渲染（文字芯片）");
@@ -1101,9 +1123,23 @@ if (LITE) {
   } catch (e) { threw = e; }
   ok(!threw, "全时间轴扫描（" + times.length + " 个时刻）不抛异常" + (threw ? "：" + threw.message : ""));
   ok(bad === null, "扫描中无 NaN/undefined 单元格" + (bad ? "（" + bad + "）" : ""));
-  // 开场 +2s（英雄已出门）必须有位置/血量
+  // 开场 +2s（英雄已出门）必须有位置/血量。
+  // ★ 采样格可能整格缺数据（页面显示「—」）、也可能英雄此刻确实阵亡 —— 都算"有交代"，
+  //   但绝不能出现 undefined/空串。真正的"血量可用"用下面这条**搜索式**断言：
+  //   个别格会出现"有坐标但没有血量"，拿固定时刻断言会误报。
   g("big").value = T0 + 4 * (S.DATA.step || 1); g("big").oninput();
-  ok(/^\d+( \/ \d+)?$/.test(String(g("c-hp-0").textContent)), "开场首个采样格 hp 是数值（" + g("c-hp-0").textContent + "）");
+  const hpTxt = String(g("c-hp-0").textContent);
+  ok(/^(\d+( \/ \d+)?|—|未出场|阵亡)$/.test(hpTxt), "开场首个采样格 hp 有明确交代（" + hpTxt + "）");
+  let hpNumAt = null;
+  for (let t = T0; t <= Math.min(T1, 300); t += 5) {
+    S.commit(t);
+    if (/^\d+( \/ \d+)?$/.test(String(g("c-hp-0").textContent))) { hpNumAt = t; break; }
+  }
+  ok(hpNumAt !== null, "开场 5 分钟内存在血量数值的采样（"
+     + (hpNumAt === null ? "无" : Math.round(hpNumAt) + "s 时 " + g("c-hp-0").textContent) + "）");
+  /* ★ 把当前时刻放回"开场后 4 个采样格"：上面的搜索会停在别的时刻，
+     而紧随其后的断言（开场净值）是按这个时刻写的 —— 不改回来会把那条老断言带偏。 */
+  g("big").value = T0 + 4 * (S.DATA.step || 1); g("big").oninput();
   ok(String(g("c-nw-0").textContent).indexOf(",") > 0 || +String(g("c-nw-0").textContent).replace(/,/g, "") > 0,
      "开场首个采样格 净值有值（" + g("c-nw-0").textContent + "）");
 }
@@ -1177,6 +1213,158 @@ if (process.argv[3] && process.argv[3].indexOf("dump=") === 0) {
         labs.slice(0, 10).map(c => String(c.title).slice(0, 30)).join(" ｜ "));
     });
   });
+}
+
+/* ═══════════ 拖动进度条时的当前时间气泡（朋友的反馈） ═══════════ */
+S.commit(500);
+g("big").value = 1234; g("big").oninput();
+const bub = S.seekBubEl();
+ok(bub.classList.contains("on"), "拖大时间轴 → 蓝色时间气泡出现");
+ok(bub.textContent === S.fmt(S.getT(), true), "气泡文字 = 当前游戏时间（" + bub.textContent + " ｜ tCur=" + S.getT() + "）");
+{
+  const w = g("timeline").clientWidth || 900;
+  const left = parseFloat(String(bub.style.left));
+  ok(isFinite(left) && left >= 0 && left <= w, "气泡横向落在时间轴范围内（left=" + bub.style.left + "）");
+  ok(parseFloat(String(bub.style.top)) >= 0, "气泡在滑块上方（top=" + bub.style.top + "）");
+}
+g("small").value = 25; g("small").oninput();
+ok(bub.classList.contains("on") && bub.textContent === S.fmt(S.getT(), true),
+   "拖微调条同样显示气泡，且跟着当前时刻走（" + bub.textContent + "）");
+g("small").value = 0; g("small").oninput();
+g("big").value = 900; g("big").oninput();
+ok(S.getT() >= 880 && S.getT() <= 920, "气泡不改变定位结果（回到 " + fmtSec(S.getT()) + "）");
+
+/* ═══════════ 英雄头像：按原比例取中心正方形，不再被压扁 ═══════════ */
+S.resetZoom(); S.clearSel(); S.commit(900);
+drawImgs.length = 0;
+S.draw();
+{
+  const heroDraws = drawImgs.filter((a) => a.length === 9 && a[7] === a[8] && a[3] === a[4]);
+  ok(heroDraws.length === 10, "10 个英雄头像都按「正方形源区域」绘制（" + heroDraws.length + " 次）");
+  ok(heroDraws.every((a) => Math.abs(a[3] - 72) < 1e-9),
+     "裁出的源正方形边长 = 卡片高度 72px（实际 " + (heroDraws[0] ? heroDraws[0][3] : "-") + "）");
+  ok(heroDraws.every((a) => Math.abs(a[1] - 28) < 1e-9 && Math.abs(a[2]) < 1e-9),
+     "源裁剪从 128×72 的横向居中开始（sx=" + (heroDraws[0] ? heroDraws[0][1] : "-")
+     + "，sy=" + (heroDraws[0] ? heroDraws[0][2] : "-") + "）");
+  const old = drawImgs.filter((a) => a.length === 9 && a[3] === 128 && a[4] === 72);
+  ok(old.length === 0, "不存在「整张 128×72 塞进正方形」的老写法（" + old.length + " 次）");
+}
+
+/* ═══════════ 头像框状态：大招 / TP / 队伍 ═══════════ */
+{
+  ok(S.getTpCool() === 80, "TP 固定冷却取自游戏文件（" + S.getTpCool() + " 秒）");
+  /* 大招标记：只断言机制与一致性 —— 逐场"认出几个"是数据稀疏度问题
+     （实测 62 个切片：48 场 10/10、平均 9.0、最差 3/10），不适合当硬阈值。 */
+  const flaggedKeys = Object.keys(S.cd.keys).filter((k) => S.cd.keys[k].ult);
+  const nk = (x) => String(x).toLowerCase().replace(/[^a-z0-9]/g, "");
+  let overMax = 0, withOwn = 0, orphanFlag = 0;
+  PL.forEach((p) => {
+    const mine = (S.cd.ab[p.npc] || []).filter((e) => (S.cd.keys[e[0]] || {}).ult);
+    if (mine.length > 12) overMax++;          // 上限放宽：老库会把别人的技能重复归属给同一名英雄
+    if (mine.some((e) => nk(e[0]).indexOf(nk(p.short)) >= 0)) withOwn++;
+  });
+  flaggedKeys.forEach((k) => {
+    const inSomeList = Object.keys(S.cd.ab).some((npc) => (S.cd.ab[npc] || []).some((e) => e[0] === k));
+    if (!inSomeList) orphanFlag++;
+  });
+  ok(flaggedKeys.length >= 3, "载荷里标出了大招（本场 " + flaggedKeys.length + " 个技能被标为大招）");
+  ok(flaggedKeys.every((k) => k.indexOf("CDOTA_Ability_") === 0), "只有技能会被标成大招，道具不会");
+  ok(orphanFlag === 0, "每个被标为大招的技能都出现在某名英雄的技能表里");
+  /* 上限放到 12：老库里有少数场次把**别人的技能**重复归属到同一名英雄名下
+     （shadow_demon 一场能列出 68 个技能 / 8 个大招），极端值不许再高。 */
+  ok(overMax === 0, "没有英雄被标出超过 12 个大招（防止映射跑飞）");
+  ok(withOwn >= 3, "至少 3 名英雄的「自己的大招」在载荷里被认出来（本场 " + withOwn + "/10）");
+
+  /* 找一个「既有冷却时刻、又有就绪时刻」的英雄来验证三态。
+     ★ 不能假设"最后一段冷却结束后就就绪"：最后一段常常一直延续到比赛结束，
+       夹到 T1 附近仍然在冷却里。所以在区间序列里**搜出真实存在的两种时刻**。 */
+  let pick = -1, tCool = null, tRdy = null;
+  PL.forEach((p, i) => {
+    if (pick >= 0) return;
+    const ent = (S.cd.ab[p.npc] || []).filter((x) => (S.cd.keys[x[0]] || {}).ult);
+    const ivs = [];
+    ent.forEach((e) => (e[3] || []).forEach((iv) => ivs.push(iv)));
+    if (!ivs.length) return;
+    const cool = ivs.map((iv) => (iv[0] + iv[1]) / 2)
+      .find((t) => t > T0 + 20 && t < T1 - 20 && S.ultStateOf(p.npc, t).st === "cool");
+    const rdy = ivs.map((iv) => iv[1] + 10)
+      .find((t) => t > T0 + 20 && t < T1 - 20 && S.ultStateOf(p.npc, t).st === "ready");
+    if (cool !== undefined && rdy !== undefined) { pick = i; tCool = cool; tRdy = rdy; }
+  });
+  ok(pick >= 0, "找到同时具备「冷却中/就绪」两种时刻的英雄（英雄 #" + pick + "）");
+  if (pick >= 0) {
+    S.commit(tCool);
+    const st = S.ultStateOf(PL[pick].npc, tCool);
+    ok(st.st === "cool" && st.left > 0, "大招冷却中：剩余 " + (st.left || 0).toFixed(1) + "s（"
+       + Math.round(tCool) + "s 时）");
+    ok(g('.hero[data-i="' + pick + '"]').classList.contains("ult-cool"), "该英雄头像框上了「冷却中」的色");
+    ok(/大招冷却/.test(String(g('.hero[data-i="' + pick + '"]').title)), "头像 hover 文案写了大招冷却："
+       + String(g('.hero[data-i="' + pick + '"]').title).slice(-40));
+    S.commit(tRdy);
+    ok(S.ultStateOf(PL[pick].npc, tRdy).st === "ready", "区间之后 → 大招就绪（" + Math.round(tRdy) + "s）");
+    ok(g('.hero[data-i="' + pick + '"]').classList.contains("ult-ready"), "该英雄头像框上了「就绪」的色");
+  }
+
+  /* TP 三态：按使用时刻 + 固定共享冷却推算 */
+  const tpn = PL.map((p, i) => ({ i: i, arr: S.tput[p.npc] || [] })).filter((x) => x.arr.length)[0];
+  ok(!!tpn, "找到有 TP 使用记录的英雄（#" + (tpn ? tpn.i : "-") + "）");
+  if (tpn) {
+    const use = tpn.arr[0];
+    S.commit(use + 10);
+    const s1 = S.tpStateOf(PL[tpn.i].npc, use + 10);
+    ok(s1.st === "cd" && s1.left > 0 && s1.left < 80, "刚用过 TP → 推算冷却中（剩 "
+       + (s1.left || 0).toFixed(0) + "s）");
+    ok(g('.hero[data-i="' + tpn.i + '"]').classList.contains("tp-cd"), "TP 小圆点/环上了「冷却中」的色");
+    /* ★ 不能拿"第一次使用 + 200s"当"可用"：两次 TP 间隔常常短于 200s（推完一波又回家）。
+       所以在使用时刻序列里现搜一个真的可用的时刻。 */
+    const okT = tpn.arr.map((u) => u + 90).find((t) => t > T0 && t < T1 - 5
+      && S.tpStateOf(PL[tpn.i].npc, t).st === "ok");
+    ok(okT !== undefined, "TP 使用记录里存在「已过固定冷却」的时刻（" + (okT === undefined ? "无" : Math.round(okT) + "s") + "）");
+    if (okT !== undefined) {
+      S.commit(okT);
+      ok(S.tpStateOf(PL[tpn.i].npc, okT).st === "ok", "超过固定冷却之后 → TP 可用（" + Math.round(okT) + "s）");
+      ok(g('.hero[data-i="' + tpn.i + '"]').classList.contains("tp-ok"), "TP 状态色切到「可用」");
+    }
+    ok(/TP 冷却中约|TP 可用/.test(String(g('.hero[data-i="' + tpn.i + '"]').title)),
+       "头像 hover 文案带 TP 状态：" + String(g('.hero[data-i="' + tpn.i + '"]').title).slice(-46));
+  }
+
+  /* 模式切换 */
+  S.setFrameMode("ult");
+  ok(S.getFrameMode() === "ult" && g("avatars").className === "f-ult", "模式=大招（" + g("avatars").className + "）");
+  ok(/大招就绪/.test(g("fleg").innerHTML), "图例写明大招三态");
+  /* ★ 静态守卫：状态环的配色规则必须挂在模式类下面。
+     否则 .hero.tp-ok .ring 会盖掉 .hero.ult-ready .ring（同特异性、后者在前），
+     表现成"大招模式里所有环都是 TP 蓝" —— 第一版实测就是这样，光靠 JS 断言看不出来。 */
+  {
+    const css = raw.match(/<style>([\s\S]*?)<\/style>/)[1];
+    const unscoped = css.match(/(?:^|[};])\s*\.hero\.(?:ult|tp)-[a-z]+ \.ring\s*\{/g) || [];
+    ok(unscoped.length === 0, "状态环配色规则都按模式限定（未加 #avatars.f-* 前缀的 " + unscoped.length + " 条）");
+    ok(/#avatars\.f-ult \.hero\.ult-ready \.ring/.test(css), "大招模式：就绪色规则存在");
+    ok(/#avatars\.f-ult \.hero\.ult-cool \.ring/.test(css), "大招模式：冷却色规则存在");
+    ok(/#avatars\.f-tp \.hero\.tp-ok \.ring/.test(css), "TP 模式：可用色规则存在");
+    ok(/#avatars\.f-team \.ring\{display:none\}/.test(css), "队伍模式：不画状态环");
+    ok(/#avatars\.f-tp \.tppip\{display:none\}/.test(css), "TP 模式：TP 小圆点不重复显示");
+  }
+  S.setFrameMode("tp");
+  ok(g("avatars").className === "f-tp" && /可用/.test(g("fleg").innerHTML), "模式=TP：图例写明可用/冷却");
+  ok(/按 80 秒推算|按 \d+ 秒推算/.test(g("fleg").innerHTML), "TP 图例写明这是推算值：" + g("fleg").innerHTML.replace(/<[^>]*>/g, ""));
+  S.setFrameMode("team");
+  ok(g("avatars").className === "f-team" && /天辉/.test(g("fleg").innerHTML), "模式=队伍：图例回到双方配色");
+  S.setFrameMode("ult");
+
+  /* 全部英雄的 title 都能生成，且不出现 undefined/NaN */
+  const titles = S.heroTitles();
+  ok(Object.keys(titles).length === 10 && Object.keys(titles).every((k) => titles[k] && titles[k].length > 4),
+     "10 个头像都有 hover 文案");
+  ok(!Object.keys(titles).some((k) => /undefined|NaN/.test(titles[k])), "hover 文案里没有 undefined/NaN");
+
+  /* CD 面板：大招角标 */
+  S.select(pick >= 0 ? pick : 0);
+  ok(/class="cd[^"]*ult/.test(S.cdHTML()), "CD 面板给大招加了「大」角标");
+  ok(/可用|冷却 \d+s/.test(S.cdHTML()), "CD 面板的 TP 格子给出可用/冷却状态");
+  ok(/推算/.test(String(g("cdnote").innerHTML)), "CD 面板说明 TP 状态是按固定冷却推算的");
+  S.clearSel();
 }
 
 setTimeout(() => {

@@ -27,6 +27,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import detail_icons as DI          # noqa: E402  明细行图标（英雄头像/技能/道具/建筑/普通攻击）
+import hero_ultimates as HU        # noqa: E402  英雄 → 大招（头像框的"大招就绪"标记）
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 Q7DIR = os.path.join(ROOT, "analysis", "output_q7")
@@ -207,14 +208,23 @@ def build(mid, outdir, lite=False, step=3, fetch_icons=True):
     with open(src, encoding="utf-8") as f:
         dat = json.load(f)
 
+    # ---- 大招标记 / TP 固定冷却：切片里没有就现补（老的切片缓存因此不必重跑）----
+    #   标记写在 cd.keys[*].ult 上，页面据此给头像框画"大招就绪"色（见 hero_ultimates.py）。
+    HU.mark_ult_flags(dat.get("cd"), dat.get("players"))
+    if not dat.get("tpcool"):
+        dat["tpcool"] = float((HU.load() or {}).get("tp_cooldown") or 80.0)
+
     # ---- 图标（短名 → data URI；缺失则该英雄退化为色块）----
+    #   ★ 尺寸要够头像条用：头像框是 56px，而英雄图是 128×72 的横版卡片 —— 若按 64 缩
+    #     （64×36），`object-fit:cover` 要放大 1.56 倍才铺满方框，脸会发虚。
+    #     按原生 128 内嵌每张只多 ~4KB（10 个英雄 ≈ +39KB/页），换清晰度很值。
     icons = {}
     for p in dat["players"]:
         p["name"] = clean(p["name"])
         fp = os.path.join(ICON_DIR, p["short"] + ".png")
         if os.path.exists(fp):
             icons[p["short"]] = "data:image/png;base64," + b64_png_opt(fp, 48 if lite else 64,
-                                                                    48 if lite else 64)
+                                                                    96 if lite else 128)
 
     # ---- 技能/道具图标（只内嵌本场 CD 数据里真正用到的，64 色量化）----
     cd = dat.get("cd") or {}
@@ -495,20 +505,48 @@ h1{font-size:15px;margin:0;flex:0 0 auto}
 .tcol{display:flex;flex-direction:column;gap:4px;align-items:center}
 .tcap{font-size:10px;line-height:12px;flex:0 0 auto}
 .tdiv{width:1px;align-self:stretch;min-height:40px;background:#30363d;margin:0 2px;flex:0 0 auto}
-.hero{position:relative;width:48px;height:48px;border-radius:8px;overflow:hidden;border:2px solid #333;
+.hero{position:relative;width:56px;height:56px;border-radius:9px;overflow:hidden;border:2px solid #333;
       cursor:pointer;background:#222;flex:0 0 auto}
 .hero img{width:100%;height:100%;object-fit:cover;display:block}
 .hero .nm{position:absolute;left:0;right:0;bottom:0;font-size:9px;text-align:center;background:#000a;color:#ddd;
           overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:1px 2px}
 .hero.sel{box-shadow:0 0 0 2px var(--gold);border-color:var(--gold)}
-.hero.dead{filter:grayscale(1) brightness(.5)}
+/* 阵亡只置灰头像本身，状态环保持可读（阵亡期间冷却照样在走） */
+.hero.dead img{filter:grayscale(1) brightness(.5)}
 .hero.t2{border-color:var(--rad)}.hero.t3{border-color:var(--dire)}
 .hero .hpbar{position:absolute;left:0;top:0;height:3px;background:#3fb950}
+/* 状态环（内圈）：颜色**按当前模式**取，所以规则都挂在 #avatars 的模式类下面 ——
+   否则 .hero.tp-ok .ring 会在特异性相同时盖掉 .hero.ult-* .ring（只有 TP 一列颜色对，
+   大招模式全变成 TP 蓝；第一版就是这么错的）。 */
+.hero .ring{position:absolute;inset:0;border-radius:7px;pointer-events:none;
+            box-shadow:inset 0 0 0 3px #30363d80}
+#avatars.f-ult .hero.ult-ready .ring{box-shadow:inset 0 0 0 3px #3fb950}
+#avatars.f-ult .hero.ult-cool .ring{box-shadow:inset 0 0 0 3px #8b949e}
+#avatars.f-ult .hero.ult-none .ring{box-shadow:inset 0 0 0 3px #30363d80}
+#avatars.f-tp .hero.tp-ok .ring{box-shadow:inset 0 0 0 3px #58a6ff}
+#avatars.f-tp .hero.tp-cd .ring{box-shadow:inset 0 0 0 3px #d29922}
+.hero .tppip{position:absolute;right:3px;top:5px;width:9px;height:9px;border-radius:50%;
+             border:2px solid #0d1117;display:none}
+.hero.tp-ok .tppip{display:block;background:#58a6ff}
+.hero.tp-cd .tppip{display:block;background:#d29922}
+/* 模式：队伍＝不画状态环；TP＝环已表示 TP，小圆点多余 */
+#avatars.f-team .ring{display:none}
+#avatars.f-tp .tppip{display:none}
+.fleg{font-size:11px;color:#8b949e;white-space:nowrap}
+.fleg i{display:inline-block;width:9px;height:9px;border-radius:3px;vertical-align:middle;margin:0 3px 0 6px}
 /* 矮屏：头像缩一档，保证 5 个一列仍然塞得进左栏高度 */
-@media(max-height:860px){.hero{width:40px;height:40px}.hero .nm{font-size:8px}}
-@media(max-height:700px){.hero{width:34px;height:34px}.hero .nm{font-size:7px}}
+@media(max-height:860px){.hero{width:48px;height:48px;border-radius:8px}.hero .ring{border-radius:6px}.hero .nm{font-size:8px}}
+@media(max-height:700px){.hero{width:40px;height:40px;border-radius:7px}.hero .ring{border-radius:5px}.hero .nm{font-size:7px}}
 /* ---------- 时间轴 ---------- */
-#timeline{margin-top:0}
+#timeline{margin-top:0;position:relative}
+/* 拖动进度条时跟着滑块走的时间气泡（"拖着看不到当前时间"的反馈） */
+.seekbub{position:absolute;transform:translateX(-50%);background:#1f6feb;color:#fff;font-size:15px;
+         font-weight:700;padding:2px 9px;border-radius:7px;pointer-events:none;white-space:nowrap;
+         box-shadow:0 3px 10px #0008;opacity:0;transition:opacity .08s;z-index:9;
+         font-variant-numeric:tabular-nums}
+.seekbub.on{opacity:1}
+.seekbub::after{content:"";position:absolute;left:50%;bottom:-5px;margin-left:-5px;width:0;height:0;
+                border-left:6px solid transparent;border-right:6px solid transparent;border-top:5px solid #1f6feb}
 .tlrow{display:flex;gap:8px;align-items:center;margin:0;flex-wrap:wrap}
 .tlrow .lb{width:auto;font-size:11.5px;color:var(--dim);flex:0 0 auto}
 .tlrow .sep{color:#30363d}
@@ -594,6 +632,9 @@ tr.selrow{background:#e3b34122;outline:1px solid var(--gold)}
 .cd.track .box{border-color:#e3b341;border-width:3px}
 .cd .cap{margin-top:1px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .cd .st{color:#8b949e}
+/* 大招：左上角一个「大」角标把它和普通技能区分开 */
+.cd.ult .box::after{content:"大";position:absolute;left:-2px;top:-2px;font-size:9px;line-height:12px;
+                    padding:0 3px;border-radius:4px;background:#e3b341;color:#1b1b1b;font-weight:700}
 .kv{font-size:12px;color:var(--dim);line-height:1.8}
 .kv b{color:var(--fg)}
 details{margin-top:8px;font-size:12px;color:var(--dim)}
@@ -678,6 +719,7 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
         图标＝阵亡英雄头像 / 被毁的塔·兵营·基地·肉山 ｜ 描边色＝它属于哪一方（绿天辉·红夜魇·灰无主肉山）｜
         点图标跳到该时刻<span class="tmax">大时间轴：全场 0:00 → @@DUR@@</span></div>
     </div>
+    <div class="seekbub" id="seekbub">0:00</div>
   </div>
 
 <div class="wrap">
@@ -692,6 +734,12 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
       <span class="sep">｜</span>
       <button class="btn" onclick="resetZoom()">↺ 全图</button>
       <button class="btn" onclick="clearSel()">取消选中</button>
+      <span class="sep">｜</span>
+      <span class="lbl">头像框</span>
+      <button class="btn fbtn active" data-f="ult" onclick="setFrameMode('ult')">大招</button>
+      <button class="btn fbtn" data-f="tp" onclick="setFrameMode('tp')">TP</button>
+      <button class="btn fbtn" data-f="team" onclick="setFrameMode('team')">队伍</button>
+      <span class="fleg" id="fleg"></span>
       <span class="sep">｜</span>
       <span id="mapInfo">滚轮缩放 · 拖拽平移 · 点英雄圆点选中</span>
       <label style="margin-left:auto"><input type="checkbox" id="showBld" checked> 建筑</label>
@@ -753,14 +801,19 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
   <details open><summary>使用说明与数据说明（第一次用建议先看这里）</summary>
     <p><b>① 时间轴怎么读</b>：横轴是比赛时间，<b>0:00 = 号角响起</b>（出兵前 90 秒是选人/出门期，所以横轴左侧是负时间）。
       上方那条是<b>全场进度</b>，下方那条是<b>±60 秒微调</b>：拖微调条时画面实时跟着走，松手后全场进度推进、微调条回到中间。
+      <b>拖任意一条时间轴时，滑块上方会出现一个蓝色时间气泡</b>，跟着你走、显示当前游戏时间，松手后消失。
       快捷键：<b>空格</b>=播放/暂停，<b>← →</b>=前后 5 秒。速度可切 1×/2×/4×。</p>
     <p><b>② 时间轴上的图标</b>：<b>轴上方 = 对天辉有利</b>、<b>轴下方 = 对夜魇有利</b>；
       图标画的是"发生了什么"（阵亡英雄的头像、被摧毁的塔/兵营/基地、肉山）；
       图标外圈的<b>颜色是它属于哪一方</b>（绿=天辉、红=夜魇、灰=无主，例如肉山）。
       <b>点一下图标</b>即可跳到那一刻；播放头附近的图标会高亮。想看具体时间，勾"时间戳文字"；只想看推塔和肉山，勾"只标建筑/肉山"。</p>
-    <p><b>③ 地图</b>：滚轮缩放、拖拽平移、双击回到全图；每个英雄是一个带队伍颜色的圆点，<b>阵亡时会变灰</b>，
-      最近 40 秒有轨迹；<b>点圆点</b>就是选中这名英雄。建筑被摧毁会在图上打叉；眼位（假眼/真眼）和烟雾也画在图上，
-      鼠标移上去能看到详细信息。上方一排开关可以分别隐藏：建筑、轨迹、名字、眼位、烟雾。</p>
+    <p><b>③ 地图</b>：滚轮缩放、拖拽平移、双击回到全图；每个英雄是一个圆点，<b>外圈的颜色是队伍</b>（绿=天辉、红=夜魇），
+      圆点里那一道<b>内环是状态</b>：<b>绿=大招就绪</b>、<b>灰=大招冷却中</b>、<b>深灰=这一时刻没有数据</b>；
+      右上角的小圆点表示 <b>TP</b>（蓝=可用、橙=冷却中）。地图下方工具条上的 <b>大招 / TP / 队伍</b>三个按钮
+      可以切换内环表示什么（选"队伍"就不画内环）。地图右侧那一列头像用的是完全相同的配色，鼠标移上去有文字说明。
+      <b>阵亡时会变灰</b>，最近 40 秒有轨迹；<b>点圆点</b>就是选中这名英雄。建筑被摧毁会在图上打叉；
+      眼位（假眼/真眼）和烟雾也画在图上，鼠标移上去能看到详细信息。
+      上方一排开关可以分别隐藏：建筑、轨迹、名字、眼位、烟雾。</p>
     <p><b>④ 右侧表格</b>：<b>K/D/A</b>=击杀/阵亡/助攻，<b>正补/反补</b>=补掉对方/己方小兵的数量；
       <b>净值</b>=现金+装备总价值，<b>累计金币</b>=从击杀补刀等赚到的钱，<b>经验</b>=累计获得的经验值，<b>HP</b>=此刻血量。
       带 <b>@t</b> 的列会随着播放时刻一起变化。</p>
@@ -771,7 +824,10 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
       每行的图标是"技能/单位/英雄"的示意图，<b>文字名称一直保留</b>。</p>
     <p><b>⑥ 技能冷却</b>：显示该英雄每个技能与常用道具此刻是冷却中（灰底 + 剩余秒）、可用，还是未学习/未拥有（锁）。
       灰色数字来自录像中技能的<b>真实剩余冷却</b>（已含等级与减 CD 效果），所以不需要另配一张冷却时间表。
-      <b>回城卷轴（TP）</b>是充能制，录像里没有它的冷却/充能数据，因此只列出<b>使用时刻与次数</b>，不硬凑状态。</p>
+      <b>大招</b>在表里和头像框上都会被单独标出来（大招就绪＝绿）。
+      <b>回城卷轴（TP）</b>是充能制：录像里只有它的<b>使用时刻</b>，没有冷却/充能事件，
+      所以头像框旁的 TP 状态是<b>按 TP 卷轴那只固定的共享冷却推算</b>出来的（秒数显示在按钮旁的图例里）。
+      别的传送手段（比如飞鞋）也会占用同一只共享冷却，因此 TP 状态只能当参考，它不是录像里的原始数值。</p>
     <p><b>⑦ 数字从哪来</b>：全部来自这一场比赛的录像解析（位置、血量、经济、战斗事件、眼位、技能状态）。
       录像里的时间有两种：游戏内时间会因暂停而停住，回放时间不会；本页统一换算成<b>游戏内时间</b>并显示，
       所以你看到的时刻就是选手看到的时刻（@@PAUSE_TXT@@）。</p>
@@ -1139,7 +1195,7 @@ function render() {
     if (!q) return;
     const c = w2pView(q.x, q.y);
     const dead = (q.hp !== null && q.hp <= 0);
-    const R = (viewRect ? 15 : 11) * (selIdx === i ? 1.25 : 1);
+    const R = (viewRect ? 18 : 13) * (selIdx === i ? 1.22 : 1);
     if (c[0] < -40 || c[0] > CSX + 40 || c[1] < -40 || c[1] > CSX + 40) return;
     ctx.save();
     ctx.beginPath(); ctx.arc(c[0], c[1], R, 0, Math.PI * 2); ctx.closePath();
@@ -1147,7 +1203,13 @@ function render() {
     ctx.fillStyle = "#000"; ctx.fill();
     const im = imgs[p.short];
     if (im && im.complete && im.naturalWidth) {
-      ctx.save(); ctx.clip(); ctx.drawImage(im, c[0] - R, c[1] - R, R * 2, R * 2); ctx.restore();
+      /* ★ 英雄图是 128×72 的横版卡片：必须取**中间正方形**那块源区域再画，
+         直接把它铺进 2R×2R 的圆里会把头像横向压扁（"保持原来的比例"）。 */
+      const ss = Math.min(im.naturalWidth, im.naturalHeight);
+      const sx = (im.naturalWidth - ss) / 2, sy = (im.naturalHeight - ss) / 2;
+      ctx.save(); ctx.clip();
+      ctx.drawImage(im, sx, sy, ss, ss, c[0] - R, c[1] - R, R * 2, R * 2);
+      ctx.restore();
     } else {
       ctx.fillStyle = teamColor(p.team);
       ctx.font = "bold " + Math.round(R * 1.1) + "px sans-serif";
@@ -1161,6 +1223,23 @@ function render() {
     if (selIdx === i) {
       ctx.beginPath(); ctx.arc(c[0], c[1], R + 4, 0, Math.PI * 2);
       ctx.strokeStyle = "#e3b341"; ctx.lineWidth = 2; ctx.stroke();
+    }
+    /* 状态环画在圆内（贴着队伍色描边的里侧），和地图右侧头像条的内圈是同一套语义：
+       大招＝绿就绪 / 灰冷却中 / 深灰无数据；TP＝蓝可用 / 橙冷却中；队伍模式不画。
+       外圈留给选中（金）与烟雾（紫），互不打架。 */
+    if (frameMode !== "team") {
+      const us = ultStateOf(p.npc, tCur), ts = tpStateOf(p.npc, tCur);
+      const col = (frameMode === "tp")
+        ? (ts.st === "ok" ? "#58a6ff" : "#d29922")
+        : (us.st === "ready" ? "#3fb950" : (us.st === "cool" ? "#8b949e" : "#30363d"));
+      ctx.beginPath(); ctx.arc(c[0], c[1], R - 2.4, 0, Math.PI * 2);
+      ctx.strokeStyle = col; ctx.lineWidth = 2.4; ctx.stroke();
+      if (frameMode === "ult") {      // TP 小圆点：TP 模式下环已表示 TP，不必重复
+        ctx.beginPath(); ctx.arc(c[0] + R * 0.72, c[1] - R * 0.72, 3.6, 0, Math.PI * 2);
+        ctx.fillStyle = ts.st === "ok" ? "#58a6ff" : "#d29922";
+        ctx.fill();
+        ctx.lineWidth = 1.4; ctx.strokeStyle = "#0d1117"; ctx.stroke();
+      }
     }
     ctx.restore();
     if (showName) {
@@ -1289,6 +1368,7 @@ function buildAvatars() {
       d.setAttribute("data-i", i); d.title = p.short.replace(/_/g, " ") + "（" + p.name + "）";
       const im = ICONS[p.short];
       d.innerHTML = (im ? '<img src="' + im + '" alt="">' : "") +
+        '<div class="ring"></div><div class="tppip"></div>' +
         '<div class="nm">' + p.short.replace(/_/g, " ") + '</div>' +
         '<div class="hpbar" style="width:0%"></div>';
       d.onclick = function () { selectHero(i); };
@@ -1339,7 +1419,8 @@ function renderHeroHead() {
     + "</b>（" + (p.team === 2 ? "天辉" : "夜魇") + " · " + esc(p.name) + "）"
     + ' ｜ KDA <b>' + k.k + "/" + k.d + "/" + k.a + "</b> ｜ 正/反补 <b>" + k.lh + "/" + k.dn + "</b>"
     + " ｜ 净值 <b>" + (valAt(NW, p.npc, tCur) === null ? "—" : Math.round(valAt(NW, p.npc, tCur)).toLocaleString("en-US")) + "</b>"
-    + (q ? (" ｜ HP <b>" + (q.hp > 0 ? q.hp + " / " + (hpMaxAt(p.npc, tCur) || "?") : "阵亡") + "</b>") : " ｜ 未出场")
+    + (q ? (" ｜ HP <b>" + (q.hp > 0 ? q.hp + " / " + (hpMaxAt(p.npc, tCur) || "?")
+      : ((q.hp === null || q.hp === undefined) ? "无数据" : "阵亡")) + "</b>") : " ｜ 未出场")
     + (pinfo ? '<br>关键道具：' + pinfo : "");
 }
 
@@ -1507,10 +1588,105 @@ function cdState(ivs, t) {
   }
   return null;
 }
+/* ═══════════════ 头像框状态：大招 / TP / 队伍 ═══════════════
+   大招：取自录像里的技能冷却区间（构建期已标出哪个技能是该英雄的大招，见 hero_ultimates.py）。
+   TP：录像里只有**使用时刻**（combat_log 的 item_tpscroll），没有冷却/充能事件，所以冷却
+       中与否是按 TP 卷轴的固定冷却（秒数随载荷传入，读自游戏文件 items.txt 的
+       AbilityCooldown；它同时是和飞鞋共享的 teleport 共享冷却）**推算**的 —— 页面写明这一点。 */
+const TPCOOL = DATA.tpcool || 80;
+let frameMode = "ult";
+const FRAME_LEGEND = {
+  ult: '<i style="background:#3fb950"></i>大招就绪<i style="background:#8b949e"></i>冷却中'
+    + '<i style="background:#30363d"></i>未学/无数据',
+  tp: '<i style="background:#58a6ff"></i>可用<i style="background:#d29922"></i>冷却中（按 '
+    + Math.round(TPCOOL) + ' 秒推算）',
+  team: '<i style="background:#4aa564"></i>天辉<i style="background:#d24b4b"></i>夜魇'
+};
+function ultKeyOwnedBy(key, npc) {
+  /* 只认「这名英雄自己的」大招。两个理由：
+     ① 老库里有少数场次（shadow_demon 之类）会把**别人的**技能重复归属到同一名英雄名下
+        （实测 62 场里 13 场有这种情况），而大招标记是打在**键**上的 —— 不校验归属，
+        头像框就会把别人的大招当成他的；
+     ② 拉比克这类会把「偷来的」大招列进自己的技能表，那是偷的不算他的大招。
+     判据：技能键名里含这名英雄的短名（去掉 CDOTA_Ability_ 前缀后去下划线小写比对）。 */
+  const k = String(key).replace(/^CDOTA_Ability_/, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const h = String(npc).replace(/^npc_dota_hero_/, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  return !!h && k.indexOf(h) >= 0;
+}
+function ultStateOf(npc, t) {
+  if (!CD) return { st: "none" };
+  const ent = (CD.ab[npc] || []).filter(function (e) {
+    return (CD.keys[e[0]] || {}).ult && ultKeyOwnedBy(e[0], npc);
+  });
+  if (!ent.length) return { st: "none" };
+  let ready = false, best = null, known = false;
+  ent.forEach(function (e) {
+    const kn = (e[2] !== null && e[2] !== undefined) ? e[2] : e[1];
+    if (kn === null || kn === undefined || t < kn) return;   // 这一时刻还没学
+    known = true;
+    const s = cdState(e[3] || [], t);
+    if (s === null || s <= 0.05) ready = true;
+    else if (best === null || s > best.s) best = { s: s, name: (CD.keys[e[0]] || {}).name };
+  });
+  if (!known) return { st: "none" };
+  if (ready) return { st: "ready" };
+  return { st: "cool", left: best.s, name: best.name };
+}
+function tpStateOf(npc, t) {
+  const arr = TPUT[npc] || [];
+  let last = null;
+  for (let i = arr.length - 1; i >= 0; i--) { if (arr[i] <= t) { last = arr[i]; break; } }
+  if (last === null) return { st: "ok", last: null };
+  const left = TPCOOL - (t - last);
+  return (left > 0.5) ? { st: "cd", left: left, last: last } : { st: "ok", last: last };
+}
+function applyHeroFrames(t) {
+  const box = document.getElementById("avatars");
+  if (box) box.className = "f-" + frameMode;
+  for (let i = 0; i < PL.length; i++) {
+    const p = PL[i];
+    const el = document.querySelector('.hero[data-i="' + i + '"]');
+    if (!el) continue;
+    el.classList.remove("ult-ready", "ult-cool", "ult-none", "tp-ok", "tp-cd", "dead");
+    const q = posAt(p.npc, t);
+    const dead = !!(q && q.hp !== null && q.hp !== undefined && q.hp <= 0);
+    if (!q || dead) el.classList.add("dead");
+    const us = ultStateOf(p.npc, t), ts = tpStateOf(p.npc, t);
+    let tip = p.short.replace(/_/g, " ") + "（" + p.name + "）";
+    if (q) tip += " ｜ HP " + (q.hp > 0 ? (q.hp + " / " + (hpMaxAt(p.npc, t) || "?")) : "阵亡");
+    else tip += " ｜ 未出场";
+    if (us.st === "ready") { el.classList.add("ult-ready"); tip += " ｜ 大招就绪"; }
+    else if (us.st === "cool") {
+      el.classList.add("ult-cool");
+      tip += " ｜ 大招冷却 " + Math.ceil(us.left) + "s" + (us.name ? "（" + us.name + "）" : "");
+    } else { el.classList.add("ult-none"); tip += " ｜ 大招：这一时刻没有数据"; }
+    if (ts.st === "ok") {
+      el.classList.add("tp-ok");
+      tip += " ｜ TP 可用" + (ts.last === null ? "（本场无使用记录）"
+        : "（最近一次 " + Math.round(t - ts.last) + "s 前）");
+    } else {
+      el.classList.add("tp-cd");
+      tip += " ｜ TP 冷却中约 " + Math.ceil(ts.left) + "s（按 " + Math.round(TPCOOL) + " 秒共享冷却推算）";
+    }
+    el.title = tip;
+  }
+}
+function setFrameMode(m) {
+  frameMode = m;
+  Array.prototype.forEach.call(document.querySelectorAll(".fbtn"), function (b) {
+    b.classList.toggle("active", b.getAttribute("data-f") === m);
+  });
+  const lg = document.getElementById("fleg");
+  if (lg) lg.innerHTML = FRAME_LEGEND[m] || "";
+  applyHeroFrames(tCur);
+  draw();
+}
+let cdHeroNpc = "";      // renderCD 正在渲染哪名英雄（cdChip 判"大招"角标时要校验归属）
 function cdChip(key, name, icon, known, ivs, isItem, tracked) {
   const state = cdState(ivs, tCur);
   const locked = (known === null || known === undefined || tCur < known);
   const cls = locked ? "lock" : (state === null ? "ready" : "cool");
+  const isUlt = !isItem && !!((CD.keys || {})[key] || {}).ult && ultKeyOwnedBy(key, cdHeroNpc);
   let box;
   if (icon && ABICONS[icon]) box = '<img src="' + ABICONS[icon] + '" alt="">';
   else box = '<span class="fb">' + esc(name) + "</span>";
@@ -1518,13 +1694,15 @@ function cdChip(key, name, icon, known, ivs, isItem, tracked) {
   if (locked) st = "未" + (isItem ? "拥有" : "学");
   else if (state !== null) st = "冷却 " + state.toFixed(0) + "s";
   else st = "就绪";
-  return '<div class="cd ' + cls + (tracked ? " track" : "") + '" title="' + esc(key) + " ｜ " + esc(name) + '">'
+  return '<div class="cd ' + cls + (tracked ? " track" : "") + (isUlt ? " ult" : "")
+    + '" title="' + esc(key) + " ｜ " + esc(name) + (isUlt ? "（本英雄的大招）" : "") + '">'
     + '<div class="box">' + box + (state !== null && !locked ? '<div class="rem">' + Math.ceil(state) + "</div>" : "")
     + '</div><div class="cap">' + esc(name.length > 14 ? name.slice(0, 13) + String.fromCharCode(8230) : name) + '</div><div class="st">' + st + "</div></div>";
 }
 function renderCD() {
   if (selIdx < 0) return;
   const p = PL[selIdx], npc = p.npc;
+  cdHeroNpc = npc;
   const board = document.getElementById("cdboard"), note = document.getElementById("cdnote");
   if (!CD) {
     board.innerHTML = '<div class="tip">这场比赛没有技能冷却数据，因此这一栏暂时为空。</div>';
@@ -1554,18 +1732,21 @@ function renderCD() {
     if (!showAll && !tracked && (info.cls === "talent" || info.cls === "empty")) { hidden++; return; }
     html += cdChip(x.key, info.name, info.icon, x.known, x.ivs, x.item || info.kind === "item", tracked);
   });
-  // TP：充能制，库内无 CD/充能事件 → 只报使用记录（不硬造三态）
+  // TP：录像里只有使用时刻、没有冷却/充能事件 → 按固定的共享冷却推算状态（页面上写明这一点）
   const tp = TPUT[npc] || [];
-  const lastTp = tp.length ? tp[tp.length - 1] : null;
+  const tps = tpStateOf(npc, tCur);
+  const lastTp = tps.last;
   const stTp = lastTp === null ? "无使用记录" : ("最近 " + fmt(lastTp) + "（" + Math.round(tCur - lastTp) + "s 前）");
-  html += '<div class="cd track" title="Town Portal Scroll（充能制；库内无 CD/充能事件）">'
+  html += '<div class="cd track ' + (tps.st === "ok" ? "ready" : "cool")
+    + '" title="回城卷轴：录像里只有使用时刻，冷却中与否按 ' + Math.round(TPCOOL) + ' 秒共享冷却推算">'
     + '<div class="box"><span class="fb">TP</span></div><div class="cap">TP 卷轴</div>'
-    + '<div class="st">' + tp.length + " 次</div></div>";
+    + '<div class="st">' + (tps.st === "ok" ? "可用" : ("冷却 " + Math.ceil(tps.left) + "s")) + "</div></div>";
   board.innerHTML = html;
   note.innerHTML = "每一段灰色 = 技能/道具的一次真实冷却，灰色上的秒数就是那一刻的<b>剩余冷却时间</b>"
-    + "（直接取自录像里的技能状态，已含等级与减 CD 效果）。"
-    + "<b>回城卷轴（TP）</b>是充能制，录像里没有它的冷却/充能数据，所以只显示使用时刻与次数"
-    + "（这名英雄：" + stTp + "）。"
+    + "（直接取自录像里的技能状态，已含等级与减 CD 效果）。标了 <b>大</b> 角标的是<b>这名英雄的大招</b>。"
+    + "<b>回城卷轴（TP）</b>是充能制，录像里没有它的冷却/充能事件，所以这里的可用/冷却状态是按"
+    + "那只固定的共享冷却（<b>" + Math.round(TPCOOL) + "</b> 秒）从使用时刻<b>推算</b>的"
+    + "（这名英雄：" + stTp + "）；飞鞋等其它传送手段会占用同一只共享冷却，因此只作参考。"
     + "还没学习或还没拥有的技能/道具显示为锁定态（灰 + 🔒）。"
     + (hidden > 0 ? "另有 <b>" + hidden + "</b> 个天赋/空槽栏位按默认隐藏（勾『显示未学/未拥有』可展开）。" : "")
     + " 名字里带下划线的（如 <code>BlackDragon_Fireball</code>）是<b>从中立生物处获得的技能</b>，前缀就是来源单位。";
@@ -1630,7 +1811,10 @@ function refresh(t) {
     setCell("c-cx-" + i, c === null ? "—" : Math.round(c).toLocaleString("en-US"));
     const q = posAt(p.npc, t);
     const hpEl = document.getElementById("c-hp-" + i);
+    /* ★ 血量缺失（采样格没有这一秒）必须显示「—」，不能落到「阵亡」分支：
+       JS 里 `null <= 0` 是 true，写 `q.hp <= 0` 会把"没数据"显示成"阵亡"（开场前几秒常见）。 */
     if (!q) { hpEl.textContent = "未出场"; hpEl.style.color = "#8b949e"; }
+    else if (q.hp === null || q.hp === undefined) { hpEl.textContent = "—"; hpEl.style.color = "#8b949e"; }
     else if (q.hp <= 0) { hpEl.textContent = "阵亡"; hpEl.style.color = "#f85149"; }
     else {
       const mx = hpMaxAt(p.npc, t);
@@ -1648,10 +1832,9 @@ function refresh(t) {
         bar.style.width = (ratio * 100) + "%";
         bar.style.background = dead ? "#f85149" : (ratio < 0.3 ? "#d29922" : "#3fb950");
       }
-      hb.title = p.short.replace(/_/g, " ") + "（" + p.name + "）"
-        + (q ? (" ｜ HP " + (q.hp > 0 ? q.hp + " / " + (hpMaxAt(p.npc, t) || "?") : "阵亡")) : " ｜ 未出场");
     }
   }
+  applyHeroFrames(t);      // 头像框：大招 / TP 状态（含 title 与阵亡置灰）
   document.getElementById("biglabel").textContent = "全场进度 = " + fmt(tBig, true)
     + "（" + Math.round(tBig) + "s / " + T1 + "s）";
   document.getElementById("smalllabel").textContent = "微调 = " + (sVal > 0 ? "+" : "") + sVal
@@ -1746,8 +1929,32 @@ function commit(t) {                   // 绝对定位（大条推进到位，�
 function setBigFromSlider() {          // 用户直接拖大条
   tBig = parseFloat(big.value); sVal = 0; small.value = 0; apply();
 }
-big.oninput = setBigFromSlider;
-big.onchange = setBigFromSlider;
+/* 拖动时跟着滑块走的时间气泡：反馈"拖进度条看不到当前游戏时间"。
+   气泡按**当前时刻**对齐大条（大条覆盖全场，位置就是时间本身），位置在滑块正上方。 */
+const seekbub = document.getElementById("seekbub");
+let bubTimer = null;
+function showSeekBub() {
+  if (!seekbub) return;
+  const tl = document.getElementById("timeline");
+  if (!tl) return;
+  const r = big.getBoundingClientRect(), tr = tl.getBoundingClientRect();
+  const f = (T1 > T0) ? Math.max(0, Math.min(1, (tCur - T0) / (T1 - T0))) : 0;
+  const x = (r.left - tr.left) + f * r.width;
+  seekbub.style.left = Math.max(36, Math.min(tr.width - 36, x)) + "px";
+  seekbub.style.top = Math.max(0, (r.top - tr.top) - 27) + "px";
+  seekbub.textContent = fmt(tCur, true);
+  seekbub.classList.add("on");
+  if (bubTimer) { clearTimeout(bubTimer); bubTimer = null; }
+}
+function hideSeekBub(delay) {
+  if (bubTimer) clearTimeout(bubTimer);
+  bubTimer = setTimeout(function () {
+    if (seekbub) seekbub.classList.remove("on");
+  }, (delay === undefined) ? 500 : delay);
+}
+big.oninput = function () { setBigFromSlider(); showSeekBub(); };
+big.onchange = function () { setBigFromSlider(); hideSeekBub(420); };
+big.onpointerdown = showSeekBub;
 
 small.oninput = function () {          // 拖小条：实时联动（大条滑块跟着小幅移动 = tCur）
   smallDragging = true; smallDirty = true;
@@ -1755,11 +1962,13 @@ small.oninput = function () {          // 拖小条：实时联动（大条滑�
   tCur = Math.max(T0, Math.min(T1, tBig + sVal));
   big.value = Math.round(tCur);        // 实时反馈：大条同步"小幅"移动（±60s 在整场条上极小）
   refresh(tCur);
+  showSeekBub();
 };
 function smallCommit() {               // 松手提交：大条推进"滑过的量"，小条瞬时归零
   if (!smallDragging || !smallDirty) return;
   smallDragging = false; smallDirty = false;
   commit(tBig + parseFloat(small.value));
+  hideSeekBub(420);
 }
 small.onchange = smallCommit;
 small.onpointerup = smallCommit;
@@ -1929,6 +2138,7 @@ document.getElementById("dwrap").onscroll = detOnScroll;    // 虚拟滚动：�
   }
   /* 交互初始化：这一段的成败决定页面能不能用，必须放在文案之后单独执行 */
   buildAvatars(); buildTable(); buildTimelineEvents(); fitCanvas();
+  setFrameMode(frameMode);      // 填图例文字 + 首次给头像框上色（默认按大招）
   commit(0);          // 默认停在 0:00（号角）；往前拖 = 出门期（-1:30 起）
   /* 首帧之后再量一次：字体/图片加载完，左栏可用高度会变（避免地图第一次就取错尺寸） */
   requestAnimationFrame(function () { fitCanvas(); });

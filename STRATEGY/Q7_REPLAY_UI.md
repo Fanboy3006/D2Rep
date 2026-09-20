@@ -124,6 +124,37 @@ is_attacker_hero, is_target_hero, is_target_building, raw_json
 
 ---
 
+## 3.5 本轮迭代：拖动时间气泡 + 头像框状态色（owner + 朋友反馈）
+
+朋友反馈两条、owner 另加一条视觉修正，均已实现（回归测试 295 条断言，全绿）。
+
+**① 拖进度条时看不到当前游戏时间** → 滑块上方现在会出现一个**蓝色时间气泡**（`#seekbub`）：
+按当前时刻在整场大条上的位置定位，拖大条或小条都会出现并实时更新，松手后约 0.5 秒淡出。
+（"当前时刻"面板与工具条上的文字本来就在跟着更新，但它们离滑块远、字号小 —— 实测反馈就是"看不到"。）
+
+**② 地图上英雄头像的边框表示 TP / 大招** → 每个英雄圆点：**外圈 = 队伍色（保留）**，
+**圆内一道内环 = 状态**，右上角一个小圆点 = TP（用 hero_ultimates.py 的相关逻辑见 §6.1）。
+地图下方工具条新增 **大招 / TP / 队伍** 三个按钮切换内环含义：
+
+| 模式 | 内环 | 右上小圆点 |
+|---|---|---|
+| **大招**（默认） | 绿 = 就绪 ｜ 灰 = 冷却中 ｜ 深灰 = 该时刻没有数据 | TP：蓝 = 可用、橙 = 冷却中 |
+| **TP** | 蓝 = 可用 ｜ 橙 = 冷却中 | 隐藏（环已经在表示 TP） |
+| **队伍** | 不画内环 | TP 小圆点照旧 |
+
+按钮旁有随模式变化的小图例；地图右侧那列头像用**完全相同的配色**，hover 有文字说明。
+实现要点：内环的配色规则**必须挂在模式类下面**（`#avatars.f-ult .hero.ult-ready .ring`）——
+否则 `.hero.tp-ok .ring` 会在特异性相同时盖掉大招色，表现成"大招模式里所有环都是 TP 蓝"
+（第一版实测就是这个 bug，回归测试里加了一条 CSS 静态守卫盯着它）。
+
+**③ 头像框放大 + 不再压扁** → `.hero` 48 → **56px**（矮屏 48 / 40），
+并把地图上的头像改成"取 128×72 卡片的**中心正方形**再画进圆里" —— 此前是 `drawImage`
+把整张横版卡片直接铺进正方形圆点，横向压扁 44%（脸是扁的）。头像条用的是 `object-fit:cover`，
+本来就只裁不压。实测（1680×1100 窗口）：头像 56px、地图 314px、页面无溢出，
+**头像放大并没有挤小地图**（地图尺寸由时间轴泳道与顶部数据行决定）。
+
+---
+
 ## 4. 明细表
 
 ### 4.1 默认态（10 英雄）
@@ -176,13 +207,40 @@ is_attacker_hero, is_target_hero, is_target_building, raw_json
   - 追踪其**获得时刻**、**每次使用时刻**、**冷却区间**；BKB/刷新球按冷却常量算区间；TP 按使用/冷却/充能情况处理。
   - 道具获得：combat log `type_category='item'`（Purchase/Item/NeutralItemEarned 等）+ 背包/购买事件。
 
+### 6.1 大招识别与 TP 状态（实现口径）
+
+**大招怎么认出来的**：录像的 `ability_cd_*` 事件里**没有槽位信息**，技能键名也不带"这是大招"的标记，
+所以改用一份构建期资产 `opendota_analysis/assets/hero_ultimates.json`（由 `analysis/hero_ultimates.py`
+从 Valve 游戏文件抽取、带磁盘缓存，离线可复现）：英雄文件里每个技能的定义自带
+`"AbilityType" "ABILITY_TYPE_ULTIMATE"` 标记，据此判定，并要求该技能出现在该英雄的 `Ability1..N`
+槽位表里（**跳过 `AbilityDraftAbilities` 那一组** —— 技能征召的槽位与真实槽位不同：烬火精灵那一组的
+Ability4 是 `activate_fire_remnant`，而真大招 `fire_remnant` 在第 6 位）。
+比对时两侧都去掉 `CDOTA_Ability_` 前缀、再去掉下划线小写，所以录像里的 `Windrunner_FocusFire`
+与游戏文件的 `windrunner_focusfire` 能对上。
+
+**两处改名**（游戏文件与录像键名不一致，但是同一个技能）：`mirana_invis` ↔ `Mirana_MoonlightShadow`、
+`monkey_king_wukongs_command` ↔ `MonkeyKing_FurArmy`，在 `hero_ultimates.REPLAY_ALIASES` 里显式列出。
+
+**交叉验证**：拿 **700 场已解析库**核对覆盖率 —— 126 个出场英雄里 **123 个完全命中**，2 个就是上面那两处改名，
+1 个（虚空假面）是数据稀疏；另外用"大招通常是冷却最长的技能"做一次独立排序验证，**84% 落在前二**，
+偏离的例子恰好都能解释（卡尔的大招 `Invoke` 冷却只有几秒；拉比克榜首是他**偷来的**大招）。
+
+**TP 状态只能推算**：录像里**只有使用时刻**（`combat_log` 的 `item_tpscroll`），没有冷却/充能事件
+（解析器 `ITEM_TRACK` 只跟踪 BKB 与刷新球；给它加个名字就能产出 TP 的真实冷却，但**联赛页读的是 Q5 老库**，
+只有新解析的私人录像才有，而联赛页与私人页必须用同一套口径）。
+因此头像框与 CD 面板上的 TP"可用/冷却中"是**按固定共享冷却从使用时刻推算**的：秒数读自游戏文件
+`items.txt` 里 `item_tpscroll` 的 `AbilityCooldown`（当前 **80 秒**），随载荷传给页面（`tpcool`），
+图例里显示这个数字。注意它同时是 TP 卷轴与飞鞋共享的 `teleport` 共享冷却，而且"身上到底有没有卷轴"
+录像里查不到 —— 所以页面上写明这是**推算值、只作参考**，不是录像里的原始数值。
+
 ---
 
 ## 7. 资产复用
 
 - 底图 PNG：`opendota_analysis/assets/dota_map_1024.png` 等（同 Q5B/Q6；**沿用原底图**）。
-- 英雄头像：`opendota_analysis/assets/hero_icons/*.png`。
+- 英雄头像：`opendota_analysis/assets/hero_icons/*.png`（**128×72 的横版卡片**，画进圆点前必须先取中心正方形）。
 - 技能/道具图标：`opendota_analysis/assets/ability_icons/*.png`。
+- 大招对照表：`opendota_analysis/assets/hero_ultimates.json`（由 `analysis/hero_ultimates.py` 生成，见 §6.1）。
 - 单文件内嵌（base64），同 Q5B/Q6。
 
 ---
