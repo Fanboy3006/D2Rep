@@ -523,21 +523,22 @@ h1{font-size:15px;margin:0;flex:0 0 auto}
 .hero.dead img{filter:grayscale(1) brightness(.5)}
 .hero.t2{border-color:var(--rad)}.hero.t3{border-color:var(--dire)}
 .hero .hpbar{position:absolute;left:0;top:0;height:3px;background:#3fb950}
-/* 状态环（内圈）：颜色**按当前模式**取，所以规则都挂在 #avatars 的模式类下面 ——
-   否则 .hero.tp-ok .ring 会在特异性相同时盖掉 .hero.ult-* .ring（只有 TP 一列颜色对，
-   大招模式全变成 TP 蓝；第一版就是这么错的）。 */
-.hero .ring{position:absolute;inset:0;border-radius:7px;pointer-events:none;
-            box-shadow:inset 0 0 0 3px #30363d80}
-#avatars.f-ult .hero.ult-ready .ring{box-shadow:inset 0 0 0 3px #3fb950}
-#avatars.f-ult .hero.ult-cool .ring{box-shadow:inset 0 0 0 3px #8b949e}
-#avatars.f-ult .hero.ult-none .ring{box-shadow:inset 0 0 0 3px #30363d80}
-#avatars.f-tp .hero.tp-ok .ring{box-shadow:inset 0 0 0 3px #58a6ff}
-#avatars.f-tp .hero.tp-cd .ring{box-shadow:inset 0 0 0 3px #d29922}
+/* 大招状态：头像**内侧**一根长条（天辉在左、夜魇在右 —— 朝各自队伍的外侧）。
+   颜色＝状态：绿＝就绪、灰＝冷却中、深灰＝该时刻没有数据。
+   上下留出边距，免得和顶上的血条、底下的名字压在一起。 */
+.hero .ultbar{position:absolute;top:5px;bottom:15px;width:5px;border-radius:3px;
+              background:#30363d80;pointer-events:none}
+.hero.t2 .ultbar{left:2px}
+.hero.t3 .ultbar{right:2px}
+.hero.ult-ready .ultbar{background:#3fb950}
+.hero.ult-cool .ultbar{background:#8b949e}
+.hero.ult-none .ultbar{background:#30363d80}
 /* TP 徽标：回城卷轴的**图标**（不是色块小点）+ 冷却剩余秒。
    图标一直在（一眼看出是 TP）；冷却中把图标压暗，并在右下角挂一个小秒数牌。
    ★ 徽标与秒数牌都必须在头像框**内部**：.hero 是 overflow:hidden（用来裁圆角头像），
-     挂到框外会被裁掉（第一版把秒数牌挂到右下角外侧，数字被切了一半）。 */
-.hero .tpbadge{position:absolute;right:3px;top:2px;width:24px;height:24px;border-radius:6px;
+     挂到框外会被裁掉（第一版把秒数牌挂到右下角外侧，数字被切了一半）。
+   ★ 只出现在**地图右侧那列头像**上；地图（小地图）里的英雄圆点不再画 TP 徽标。 */
+.hero .tpbadge{position:absolute;right:5px;top:2px;width:24px;height:24px;border-radius:6px;
                background:#0d1117;border:2px solid #0d1117;box-sizing:border-box;
                display:none;align-items:center;justify-content:center;box-shadow:0 1px 4px #000b}
 .hero .tpbadge img{width:100%;height:100%;display:block;border-radius:4px}
@@ -549,14 +550,14 @@ h1{font-size:15px;margin:0;flex:0 0 auto}
 .hero.tp-cd .tpbadge{display:flex;filter:grayscale(.7) brightness(.6)}
 .hero.tp-cd .tpcd{display:block}
 .hero.tp-none .tpbadge{display:none}
-/* 模式：队伍＝不画状态环（TP 徽标照旧显示）；TP 模式＝环也表示 TP */
-#avatars.f-team .ring{display:none}
-/* 队伍模式照样显示 TP 徽标（它现在带图标和秒数，本身就是信息） */
+/* 图例：一根长条 + 一个 TP 图标的样子 */
 .fleg{font-size:11px;color:#8b949e;white-space:nowrap}
-.fleg i{display:inline-block;width:9px;height:9px;border-radius:3px;vertical-align:middle;margin:0 3px 0 6px}
+.fleg b{display:inline-block;width:5px;height:12px;border-radius:2px;vertical-align:-2px;margin:0 3px}
+.fleg em{display:inline-block;width:13px;height:13px;border-radius:3px;vertical-align:-2px;margin:0 3px;
+         border:1px solid #30363d}
 /* 矮屏：头像缩一档，保证 5 个一列仍然塞得进左栏高度 */
-@media(max-height:860px){.hero{width:48px;height:48px;border-radius:8px}.hero .ring{border-radius:6px}.hero .nm{font-size:8px}}
-@media(max-height:700px){.hero{width:40px;height:40px;border-radius:7px}.hero .ring{border-radius:5px}.hero .nm{font-size:7px}}
+@media(max-height:860px){.hero{width:48px;height:48px;border-radius:8px}.hero .ultbar{top:4px;bottom:13px}.hero .nm{font-size:8px}}
+@media(max-height:700px){.hero{width:40px;height:40px;border-radius:7px}.hero .ultbar{top:4px;bottom:12px;width:4px}.hero .nm{font-size:7px}}
 /* ---------- 时间轴 ---------- */
 #timeline{margin-top:0;position:relative}
 /* 拖动进度条时跟着滑块走的时间气泡（"拖着看不到当前时间"的反馈） */
@@ -756,10 +757,8 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
       <button class="btn" onclick="clearSel()">取消选中</button>
       <span class="sep">｜</span>
       <span class="lbl">头像框</span>
-      <button class="btn fbtn active" data-f="ult" onclick="setFrameMode('ult')">大招</button>
-      <button class="btn fbtn" data-f="tp" onclick="setFrameMode('tp')">TP</button>
-      <button class="btn fbtn" data-f="team" onclick="setFrameMode('team')">队伍</button>
-      <span class="fleg" id="fleg"></span>
+      <span class="fleg" id="fleg"><b style="background:#3fb950"></b>大招就绪<b style="background:#8b949e"></b>冷却中
+        （天辉在头像左侧 ｜ 夜魇在右侧）　<em style="background:#0d1117"></em>右上角 TP 图标：亮＝可用、带数字＝冷却秒数</span>
       <span class="sep">｜</span>
       <span id="mapInfo">滚轮缩放 · 拖拽平移 · 点英雄圆点选中</span>
       <label style="margin-left:auto"><input type="checkbox" id="showBld" checked> 建筑</label>
@@ -827,14 +826,14 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
       图标画的是"发生了什么"（阵亡英雄的头像、被摧毁的塔/兵营/基地、肉山）；
       图标外圈的<b>颜色是它属于哪一方</b>（绿=天辉、红=夜魇、灰=无主，例如肉山）。
       <b>点一下图标</b>即可跳到那一刻；播放头附近的图标会高亮。想看具体时间，勾"时间戳文字"；只想看推塔和肉山，勾"只标建筑/肉山"。</p>
-    <p><b>③ 地图</b>：滚轮缩放、拖拽平移、双击回到全图；每个英雄是一个圆点，<b>外圈的颜色是队伍</b>（绿=天辉、红=夜魇），
-      圆点里那一道<b>内环是状态</b>：<b>绿=大招就绪</b>、<b>灰=大招冷却中</b>、<b>深灰=这一时刻没有数据</b>；
-      右上角那个小方块是<b>回城卷轴的图标（TP）</b>：<b>亮着＝可用</b>，<b>压暗并显示数字＝冷却中（数字是还剩几秒）</b>。
-      地图下方工具条上的 <b>大招 / TP / 队伍</b>三个按钮可以切换内环表示什么（选"队伍"就不画内环，TP 图标照常显示）。
-      地图右侧那一列头像用的是完全相同的配色与 TP 图标，鼠标移上去有文字说明。
+    <p><b>③ 地图</b>：滚轮缩放、拖拽平移、双击回到全图；每个英雄是一个圆点，<b>圆点的颜色就是它属于哪一方</b>
+      （绿=天辉、红=夜魇）。地图上只保留队伍信息，<b>大招与 TP 的状态不画在图上</b>。
       <b>阵亡时会变灰</b>，最近 40 秒有轨迹；<b>点圆点</b>就是选中这名英雄。建筑被摧毁会在图上打叉；
       眼位（假眼/真眼）和烟雾也画在图上，鼠标移上去能看到详细信息。
-      上方一排开关可以分别隐藏：建筑、轨迹、名字、眼位、烟雾。</p>
+      上方一排开关可以分别隐藏：建筑、轨迹、名字、眼位、烟雾。
+      <b>地图右侧那一列英雄头像</b>上才显示大招与 TP：头像旁那根<b>竖长条</b>＝大招（<b>天辉在头像左侧、夜魇在右侧</b>，
+      <b>绿=就绪</b>、<b>灰=冷却中</b>、<b>深灰=这一刻没有数据</b>）；头像<b>右上角的回城卷轴图标</b>＝ TP
+      （<b>亮着＝可用</b>、<b>压暗并带数字＝冷却中，数字就是还剩几秒</b>）。鼠标移到头像上有完整文字说明。</p>
     <p><b>④ 右侧表格</b>：<b>K/D/A</b>=击杀/阵亡/助攻，<b>正补/反补</b>=补掉对方/己方小兵的数量；
       <b>净值</b>=现金+装备总价值，<b>累计金币</b>=从击杀补刀等赚到的钱，<b>经验</b>=累计获得的经验值，<b>HP</b>=此刻血量。
       带 <b>@t</b> 的列会随着播放时刻一起变化。</p>
@@ -1068,58 +1067,6 @@ const imgs = {};
 Object.keys(ICONS).forEach(function (k) { const im = new Image(); im.src = ICONS[k]; imgs[k] = im; });
 const wimgs = {};
 Object.keys(WICONS).forEach(function (k) { const im = new Image(); im.src = WICONS[k]; wimgs[k] = im; });
-const tpImg = (function () {          // 回城卷轴图标（地图上的 TP 徽标）
-  const im = new Image();
-  if (TPICON) im.src = TPICON;
-  return im;
-})();
-/* 圆角矩形路径（ctx.roundRect 不是处处都有；自己画一个，回归测试的桩里也能跑） */
-function rrect(ctx, x, y, w, h, r) {
-  r = Math.min(r, w / 2, h / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.lineTo(x + w - r, y); ctx.arcTo(x + w, y, x + w, y + r, r);
-  ctx.lineTo(x + w, y + h - r); ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
-  ctx.lineTo(x + r, y + h); ctx.arcTo(x, y + h, x, y + h - r, r);
-  ctx.lineTo(x, y + r); ctx.arcTo(x, y, x + r, y, r);
-  ctx.closePath();
-}
-/* TP 徽标（地图上的英雄圆点右上角）：回城卷轴图标 + 冷却剩余秒。
-   图标一直在（可用＝正常、蓝边；冷却中＝压暗、灰边），冷却中在右下角挂一个小秒数牌
-   —— 这样"是不是 TP"和"还差几秒"同时看得见。 */
-function drawTpBadge(ctx, cx, cy, size, ts) {
-  const h = size / 2;
-  ctx.save();
-  rrect(ctx, cx - h, cy - h, size, size, 4);
-  ctx.fillStyle = "#0d1117"; ctx.fill();
-  ctx.lineWidth = 1.2;
-  ctx.strokeStyle = (ts.st === "ok") ? "#58a6ff" : "#6e7681";
-  ctx.stroke();
-  ctx.globalAlpha = (ts.st === "ok") ? 1 : 0.55;
-  if (tpImg && tpImg.complete && tpImg.naturalWidth) {
-    const ss = Math.min(tpImg.naturalWidth, tpImg.naturalHeight);
-    const sx = (tpImg.naturalWidth - ss) / 2, sy = (tpImg.naturalHeight - ss) / 2;
-    ctx.save();
-    rrect(ctx, cx - h + 1.4, cy - h + 1.4, size - 2.8, size - 2.8, 3);
-    ctx.clip();
-    ctx.drawImage(tpImg, sx, sy, ss, ss, cx - h + 1.4, cy - h + 1.4, size - 2.8, size - 2.8);
-    ctx.restore();
-  }
-  ctx.globalAlpha = 1;
-  if (ts.st !== "ok") {
-    const txt = String(Math.max(1, Math.ceil(ts.left)));
-    ctx.font = "bold 10px 'Segoe UI',sans-serif";
-    const tw = ctx.measureText(txt).width + 7, th = 13;
-    const px = cx + h - 3, py = cy + h - 3;      // 徽标右下角（略外挂）
-    rrect(ctx, px - tw / 2, py - th / 2, tw, th, 6);
-    ctx.fillStyle = "#0b0e13"; ctx.fill();
-    ctx.lineWidth = 1; ctx.strokeStyle = "#000"; ctx.stroke();
-    ctx.fillStyle = "#ffd479";
-    ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText(txt, px, py + 0.5);
-  }
-  ctx.restore();
-}
 
 function markText(m) {
   if (m.kind === "ward") {
@@ -1298,24 +1245,10 @@ function render() {
       ctx.beginPath(); ctx.arc(c[0], c[1], R + 4, 0, Math.PI * 2);
       ctx.strokeStyle = "#e3b341"; ctx.lineWidth = 2; ctx.stroke();
     }
-    /* 状态环画在圆内（贴着队伍色描边的里侧），和地图右侧头像条的内圈是同一套语义：
-       大招＝绿就绪 / 灰冷却中 / 深灰无数据；TP＝蓝可用 / 橙冷却中；队伍模式不画。
-       外圈留给选中（金）与烟雾（紫），互不打架。 */
-    if (frameMode !== "team") {
-      const us = ultStateOf(p.npc, tCur), ts = tpStateOf(p.npc, tCur);
-      const col = (frameMode === "tp")
-        ? (ts.st === "ok" ? "#58a6ff" : "#d29922")
-        : (us.st === "ready" ? "#3fb950" : (us.st === "cool" ? "#8b949e" : "#30363d"));
-      ctx.beginPath(); ctx.arc(c[0], c[1], R - 2.4, 0, Math.PI * 2);
-      ctx.strokeStyle = col; ctx.lineWidth = 2.4; ctx.stroke();
-    }
+    /* 地图上的英雄圆点**保持干净**：只有队伍色描边（＋选中金环／烟雾紫环）。
+       大招状态在页面中间那列头像旁的长条上、TP 在头像右上角的徽标上 —— 地图上不再画这些
+       （owner 定案：小地图的英雄图标不要显示这个）。 */
     ctx.restore();
-    /* TP 徽标：右上角一个**回城卷轴图标**（可用＝正常，冷却中＝压暗 + 剩余秒）。
-       和头像条上的徽标同一套语义；尺寸随圆点缩放，略大于半径的一半以便看清。 */
-    {
-      const ts = tpStateOf(p.npc, tCur);
-      drawTpBadge(ctx, c[0] + R * 0.72, c[1] - R * 0.72, Math.round(R * 1.45), ts);
-    }
     if (showName) {
       ctx.font = "bold 11px 'Segoe UI',sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
       const label = p.short.replace(/_/g, " ");
@@ -1442,7 +1375,7 @@ function buildAvatars() {
       d.setAttribute("data-i", i); d.title = p.short.replace(/_/g, " ") + "（" + p.name + "）";
       const im = ICONS[p.short];
       d.innerHTML = (im ? '<img src="' + im + '" alt="">' : "") +
-        '<div class="ring"></div>' +
+        '<div class="ultbar"></div>' +
         '<div class="tpbadge">' + (TPICON ? '<img src="' + TPICON + '" alt="TP">' : "")
         + '<b class="tpcd"></b></div>' +
         '<div class="nm">' + p.short.replace(/_/g, " ") + '</div>' +
@@ -1670,16 +1603,6 @@ function cdState(ivs, t) {
        中与否是按 TP 卷轴的固定冷却（秒数随载荷传入，读自游戏文件 items.txt 的
        AbilityCooldown；它同时是和飞鞋共享的 teleport 共享冷却）**推算**的 —— 页面写明这一点。 */
 const TPCOOL = DATA.tpcool || 80;
-let frameMode = "ult";
-const FRAME_LEGEND = {
-  ult: '<i style="background:#3fb950"></i>大招就绪<i style="background:#8b949e"></i>冷却中'
-    + '<i style="background:#30363d"></i>未学/无数据'
-    + ' ｜ 右上角 TP 图标：亮＝可用、压暗＋数字＝冷却中',
-  tp: '<i style="background:#58a6ff"></i>可用<i style="background:#d29922"></i>冷却中（按 '
-    + Math.round(TPCOOL) + ' 秒推算） ｜ 右上角 TP 图标上的数字＝还剩几秒',
-  team: '<i style="background:#4aa564"></i>天辉<i style="background:#d24b4b"></i>夜魇'
-    + ' ｜ 右上角 TP 图标照常显示'
-};
 function ultKeyOwnedBy(key, npc) {
   /* 只认「这名英雄自己的」大招。两个理由：
      ① 老库里有少数场次（shadow_demon 之类）会把**别人的**技能重复归属到同一名英雄名下
@@ -1719,8 +1642,6 @@ function tpStateOf(npc, t) {
   return (left > 0.5) ? { st: "cd", left: left, last: last } : { st: "ok", last: last };
 }
 function applyHeroFrames(t) {
-  const box = document.getElementById("avatars");
-  if (box) box.className = "f-" + frameMode;
   for (let i = 0; i < PL.length; i++) {
     const p = PL[i];
     const el = document.querySelector('.hero[data-i="' + i + '"]');
@@ -1751,16 +1672,6 @@ function applyHeroFrames(t) {
     if (cdEl) cdEl.textContent = (ts.st === "ok") ? "" : String(Math.max(1, Math.ceil(ts.left)));
     el.title = tip;
   }
-}
-function setFrameMode(m) {
-  frameMode = m;
-  Array.prototype.forEach.call(document.querySelectorAll(".fbtn"), function (b) {
-    b.classList.toggle("active", b.getAttribute("data-f") === m);
-  });
-  const lg = document.getElementById("fleg");
-  if (lg) lg.innerHTML = FRAME_LEGEND[m] || "";
-  applyHeroFrames(tCur);
-  draw();
 }
 let cdHeroNpc = "";      // renderCD 正在渲染哪名英雄（cdChip 判"大招"角标时要校验归属）
 function cdChip(key, name, icon, known, ivs, isItem, tracked) {
@@ -2220,7 +2131,6 @@ document.getElementById("dwrap").onscroll = detOnScroll;    // 虚拟滚动：�
   }
   /* 交互初始化：这一段的成败决定页面能不能用，必须放在文案之后单独执行 */
   buildAvatars(); buildTable(); buildTimelineEvents(); fitCanvas();
-  setFrameMode(frameMode);      // 填图例文字 + 首次给头像框上色（默认按大招）
   commit(0);          // 默认停在 0:00（号角）；往前拖 = 出门期（-1:30 起）
   /* 首帧之后再量一次：字体/图片加载完，左栏可用高度会变（避免地图第一次就取错尺寸） */
   requestAnimationFrame(function () { fitCanvas(); });

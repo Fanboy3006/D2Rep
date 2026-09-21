@@ -201,8 +201,7 @@ eval(src + `
   diffEnd: function(){ return [DIFF.nw[D-1], DIFF.cg[D-1], DIFF.cx[D-1]]; },
   fmt: fmt,
   ultStateOf: ultStateOf, tpStateOf: tpStateOf, applyHeroFrames: applyHeroFrames,
-  setFrameMode: setFrameMode, getFrameMode: function(){ return frameMode; },
-  getTpCool: function(){ return TPCOOL; }, frameLegend: function(){ return FRAME_LEGEND; },
+  getTpCool: function(){ return TPCOOL; },
   showSeekBub: showSeekBub, hideSeekBub: hideSeekBub,
   seekBubEl: function(){ return seekbub; },
   heroTitles: function(){
@@ -1240,21 +1239,21 @@ drawImgs.length = 0;
 S.draw();
 {
   const heroDraws = drawImgs.filter((a) => a.length === 9 && a[7] === a[8] && a[3] === a[4]);
-  /* 9 参数绘制 = 头像与 TP 徽标两类（都取正方形源区域）。用**目标边长**区分：
-     头像 = 2R（未放大时 R=13 → 26），TP 徽标内层 ≈ 17−2.8 ≈ 14。 */
-  const avD = heroDraws.filter((a) => a[7] > 20), tpD = heroDraws.filter((a) => a[7] <= 20);
-  ok(avD.length === 10, "10 个英雄头像都按「正方形源区域」绘制（" + avD.length + " 次）");
-  ok(avD.every((a) => Math.abs(a[3] - 72) < 1e-9),
-     "裁出的源正方形边长 = 卡片高度 72px（实际 " + (avD[0] ? avD[0][3] : "-") + "）");
-  ok(avD.every((a) => Math.abs(a[1] - 28) < 1e-9 && Math.abs(a[2]) < 1e-9),
-     "源裁剪从 128×72 的横向居中开始（sx=" + (avD[0] ? avD[0][1] : "-")
-     + "，sy=" + (avD[0] ? avD[0][2] : "-") + "）");
-  ok(tpD.length >= 10, "地图上给每个英雄画了 TP 图标徽标（" + tpD.length + " 个）");
+  /* 9 参数绘制 = 英雄头像（取正方形源区域）。地图上**不再画** TP 徽标与大招内环
+     （owner 定案：小地图的英雄图标保持干净），所以这里应当**只有 10 次**。 */
+  ok(heroDraws.length === 10, "地图上只画 10 个英雄头像（" + heroDraws.length + " 次 9 参数绘制）");
+  ok(heroDraws.every((a) => Math.abs(a[3] - 72) < 1e-9),
+     "裁出的源正方形边长 = 卡片高度 72px（实际 " + (heroDraws[0] ? heroDraws[0][3] : "-") + "）");
+  ok(heroDraws.every((a) => Math.abs(a[1] - 28) < 1e-9 && Math.abs(a[2]) < 1e-9),
+     "源裁剪从 128×72 的横向居中开始（sx=" + (heroDraws[0] ? heroDraws[0][1] : "-")
+     + "，sy=" + (heroDraws[0] ? heroDraws[0][2] : "-") + "）");
+  const small = heroDraws.filter((a) => a[7] <= 20);
+  ok(small.length === 0, "地图上没有任何小徽标（TP 只画在头像列上，实际 " + small.length + " 个）");
   const old = drawImgs.filter((a) => a.length === 9 && a[3] === 128 && a[4] === 72);
   ok(old.length === 0, "不存在「整张 128×72 塞进正方形」的老写法（" + old.length + " 次）");
 }
 
-/* ═══════════ 头像框状态：大招 / TP / 队伍 ═══════════ */
+/* ═══════════ 头像状态：大招长条 + TP 徽标 ═══════════ */
 {
   ok(S.getTpCool() === 80, "TP 固定冷却取自游戏文件（" + S.getTpCool() + " 秒）");
   /* 大招标记：只断言机制与一致性 —— 逐场"认出几个"是数据稀疏度问题
@@ -1298,15 +1297,15 @@ S.draw();
   ok(pick >= 0, "找到同时具备「冷却中/就绪」两种时刻的英雄（英雄 #" + pick + "）");
   if (pick >= 0) {
     S.commit(tCool);
-    const st = S.ultStateOf(PL[pick].npc, tCool);
-    ok(st.st === "cool" && st.left > 0, "大招冷却中：剩余 " + (st.left || 0).toFixed(1) + "s（"
+    ok(S.ultStateOf(PL[pick].npc, tCool).st === "cool" && S.ultStateOf(PL[pick].npc, tCool).left > 0,
+       "大招冷却中：剩余 " + (S.ultStateOf(PL[pick].npc, tCool).left || 0).toFixed(1) + "s（"
        + Math.round(tCool) + "s 时）");
-    ok(g('.hero[data-i="' + pick + '"]').classList.contains("ult-cool"), "该英雄头像框上了「冷却中」的色");
+    ok(g('.hero[data-i="' + pick + '"]').classList.contains("ult-cool"), "该英雄头像上挂了「冷却中」状态（长条转灰）");
     ok(/大招冷却/.test(String(g('.hero[data-i="' + pick + '"]').title)), "头像 hover 文案写了大招冷却："
        + String(g('.hero[data-i="' + pick + '"]').title).slice(-40));
     S.commit(tRdy);
     ok(S.ultStateOf(PL[pick].npc, tRdy).st === "ready", "区间之后 → 大招就绪（" + Math.round(tRdy) + "s）");
-    ok(g('.hero[data-i="' + pick + '"]').classList.contains("ult-ready"), "该英雄头像框上了「就绪」的色");
+    ok(g('.hero[data-i="' + pick + '"]').classList.contains("ult-ready"), "该英雄头像上挂了「就绪」状态（长条转绿）");
   }
 
   /* TP 三态：按使用时刻 + 固定共享冷却推算 */
@@ -1338,40 +1337,33 @@ S.draw();
        "头像 hover 文案带 TP 状态：" + String(g('.hero[data-i="' + tpn.i + '"]').title).slice(-46));
   }
 
-  /* 模式切换 */
-  S.setFrameMode("ult");
-  ok(S.getFrameMode() === "ult" && g("avatars").className === "f-ult", "模式=大招（" + g("avatars").className + "）");
-  ok(/大招就绪/.test(g("fleg").innerHTML), "图例写明大招三态");
-  /* TP 徽标改成图标 + 冷却秒数（owner：不要小色点，用 TP 图标、稍微大一点） */
+  /* 大招长条 + TP 徽标（owner 定案的设计，不再是"模式切换"） */
   ok(typeof S.DATA.tpicon === "string" && S.DATA.tpicon.indexOf("data:image/png;base64,") === 0,
      "载荷内嵌回城卷轴图标（" + (S.DATA.tpicon ? Math.round(S.DATA.tpicon.length / 1024) + " KB" : "缺") + "）");
   /* 头像元素是 buildAvatars 用 createElement 造出来的，桩里不在 getElementById 表里，
      所以直接查桩的 created 列表（本文件自己维护的）。 */
   ok(created.some((e) => String(e.innerHTML).indexOf('alt="TP"') >= 0),
-     "头像条上的 TP 徽标用的是图标而不是色块");
-  ok(/TP 图标/.test(g("fleg").innerHTML), "图例说明了 TP 图标怎么读");
-  /* ★ 静态守卫：状态环的配色规则必须挂在模式类下面。
-     否则 .hero.tp-ok .ring 会盖掉 .hero.ult-ready .ring（同特异性、后者在前），
-     表现成"大招模式里所有环都是 TP 蓝" —— 第一版实测就是这样，光靠 JS 断言看不出来。 */
+     "头像上的 TP 徽标用的是图标而不是色块");
+  ok(created.some((e) => String(e.innerHTML).indexOf('class="ultbar"') >= 0),
+     "每名英雄的头像里都有一根大招长条");
+  /* 图例是静态 HTML（不再由 JS 填），桩不解析 markup，所以从产物的 markup 段里查 */
+  const markup = raw.slice(0, raw.indexOf("<script"));
+  ok(/大招就绪/.test(markup) && /TP 图标/.test(markup) && /天辉在头像左侧/.test(markup),
+     "页面上的图例同时说明了长条（含方向）与 TP 图标");
+  ok(!/setFrameMode|class="fbtn/.test(src), "模式切换按钮已移除（设计固定：长条＝大招、图标＝TP）");
   {
     const css = raw.match(/<style>([\s\S]*?)<\/style>/)[1];
-    const unscoped = css.match(/(?:^|[};])\s*\.hero\.(?:ult|tp)-[a-z]+ \.ring\s*\{/g) || [];
-    ok(unscoped.length === 0, "状态环配色规则都按模式限定（未加 #avatars.f-* 前缀的 " + unscoped.length + " 条）");
-    ok(/#avatars\.f-ult \.hero\.ult-ready \.ring/.test(css), "大招模式：就绪色规则存在");
-    ok(/#avatars\.f-ult \.hero\.ult-cool \.ring/.test(css), "大招模式：冷却色规则存在");
-    ok(/#avatars\.f-tp \.hero\.tp-ok \.ring/.test(css), "TP 模式：可用色规则存在");
-    ok(/#avatars\.f-team \.ring\{display:none\}/.test(css), "队伍模式：不画状态环");
-    ok(!/\.tppip/.test(css), "旧的小色点样式（.tppip）已移除");
+    /* ★ 长条方向必须按队伍分：天辉在头像左侧、夜魇在右侧（owner 指定） */
+    ok(/\.hero\.t2 \.ultbar\{left:2px\}/.test(css), "天辉：长条在头像左侧");
+    ok(/\.hero\.t3 \.ultbar\{right:2px\}/.test(css), "夜魇：长条在头像右侧");
+    ok(/\.hero\.ult-ready \.ultbar\{background:#3fb950\}/.test(css), "长条：就绪＝绿");
+    ok(/\.hero\.ult-cool \.ultbar\{background:#8b949e\}/.test(css), "长条：冷却中＝灰");
+    ok(!/\.hero \.ring/.test(css), "旧的圆形内环样式已移除");
+    ok(!/\.fbtn/.test(css), "模式按钮样式已移除");
     const bm = css.match(/\.hero \.tpbadge\{[^}]*width:(\d+)px/);
-    ok(bm && +bm[1] >= 20, "TP 徽标比原来的 9px 小点大（" + (bm ? bm[1] : "?") + "px）");
+    ok(bm && +bm[1] >= 20, "TP 徽标是图标尺寸而不是小色点（" + (bm ? bm[1] : "?") + "px）");
     ok(/\.hero\.tp-cd \.tpcd\{display:block\}/.test(css), "TP 冷却中会显示秒数小牌");
   }
-  S.setFrameMode("tp");
-  ok(g("avatars").className === "f-tp" && /可用/.test(g("fleg").innerHTML), "模式=TP：图例写明可用/冷却");
-  ok(/按 80 秒推算|按 \d+ 秒推算/.test(g("fleg").innerHTML), "TP 图例写明这是推算值：" + g("fleg").innerHTML.replace(/<[^>]*>/g, ""));
-  S.setFrameMode("team");
-  ok(g("avatars").className === "f-team" && /天辉/.test(g("fleg").innerHTML), "模式=队伍：图例回到双方配色");
-  S.setFrameMode("ult");
 
   /* 全部英雄的 title 都能生成，且不出现 undefined/NaN */
   const titles = S.heroTitles();
