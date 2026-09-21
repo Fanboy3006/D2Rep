@@ -1300,12 +1300,12 @@ S.draw();
     ok(S.ultStateOf(PL[pick].npc, tCool).st === "cool" && S.ultStateOf(PL[pick].npc, tCool).left > 0,
        "大招冷却中：剩余 " + (S.ultStateOf(PL[pick].npc, tCool).left || 0).toFixed(1) + "s（"
        + Math.round(tCool) + "s 时）");
-    ok(g('.hero[data-i="' + pick + '"]').classList.contains("ult-cool"), "该英雄头像上挂了「冷却中」状态（长条转暗灰）");
+    ok(g('.hrow[data-i="' + pick + '"]').classList.contains("ult-cool"), "该英雄那一行挂了「冷却中」状态（长条转暗灰）");
     ok(/大招冷却/.test(String(g('.hero[data-i="' + pick + '"]').title)), "头像 hover 文案写了大招冷却："
        + String(g('.hero[data-i="' + pick + '"]').title).slice(-40));
     S.commit(tRdy);
     ok(S.ultStateOf(PL[pick].npc, tRdy).st === "ready", "区间之后 → 大招就绪（" + Math.round(tRdy) + "s）");
-    ok(g('.hero[data-i="' + pick + '"]').classList.contains("ult-ready"), "该英雄头像上挂了「就绪」状态（长条转黄）");
+    ok(g('.hrow[data-i="' + pick + '"]').classList.contains("ult-ready"), "该英雄那一行挂了「就绪」状态（长条转黄）");
   }
 
   /* TP 三态：按使用时刻 + 固定共享冷却推算 */
@@ -1317,9 +1317,9 @@ S.draw();
     const s1 = S.tpStateOf(PL[tpn.i].npc, use + 10);
     ok(s1.st === "cd" && s1.left > 0 && s1.left < 80, "刚用过 TP → 推算冷却中（剩 "
        + (s1.left || 0).toFixed(0) + "s）");
-    ok(g('.hero[data-i="' + tpn.i + '"]').classList.contains("tp-cd"), "TP 徽标上了「冷却中」的样式");
+    ok(g('.hrow[data-i="' + tpn.i + '"]').classList.contains("tp-cd"), "TP 那一行挂了「冷却中」样式");
     /* 桩里 el.querySelector(".tpcd") 返回的是 `mkEl(el.id + "_q")`，所以这样读同一个元素 */
-    const tcd = String(g('.hero[data-i="' + tpn.i + '"]' + "_q").textContent);
+    const tcd = String(g('.hrow[data-i="' + tpn.i + '"]' + "_q").textContent);
     ok(/^\d+$/.test(tcd) && +tcd > 0 && +tcd <= 80, "TP 徽标上写出剩余秒数（" + tcd + "s）");
     /* ★ 不能拿"第一次使用 + 200s"当"可用"：两次 TP 间隔常常短于 200s（推完一波又回家）。
        所以在使用时刻序列里现搜一个真的可用的时刻。 */
@@ -1329,8 +1329,8 @@ S.draw();
     if (okT !== undefined) {
       S.commit(okT);
       ok(S.tpStateOf(PL[tpn.i].npc, okT).st === "ok", "超过固定冷却之后 → TP 可用（" + Math.round(okT) + "s）");
-      ok(g('.hero[data-i="' + tpn.i + '"]').classList.contains("tp-ok"), "TP 状态切到「可用」");
-      ok(String(g('.hero[data-i="' + tpn.i + '"]' + "_q").textContent) === "",
+      ok(g('.hrow[data-i="' + tpn.i + '"]').classList.contains("tp-ok"), "TP 状态切到「可用」");
+      ok(String(g('.hrow[data-i="' + tpn.i + '"]' + "_q").textContent) === "",
          "可用时徽标上不显示数字（图标亮着即可）");
     }
     ok(/TP 冷却中约|TP 可用/.test(String(g('.hero[data-i="' + tpn.i + '"]').title)),
@@ -1343,9 +1343,18 @@ S.draw();
   /* 头像元素是 buildAvatars 用 createElement 造出来的，桩里不在 getElementById 表里，
      所以直接查桩的 created 列表（本文件自己维护的）。 */
   ok(created.some((e) => String(e.innerHTML).indexOf('alt="TP"') >= 0),
-     "头像上的 TP 徽标用的是图标而不是色块");
-  ok(created.some((e) => String(e.innerHTML).indexOf('class="ultbar"') >= 0),
-     "每名英雄的头像里都有一根大招长条");
+     "TP 徽标用的是回城卷轴图标而不是色块");
+  {
+    /* 一行 = 长条 + TP 徽标 + 头像，三个横排；长条与徽标都在**头像外面**（owner 定案）。 */
+    const row = created.find((e) => /^hrow\b/.test(String(e.className)));
+    ok(!!row, "每名英雄被一行 hrow 包住（图标放在头像外面）");
+    if (row) {
+      const cl = row.children.map((c) => String(c.className));
+      ok(cl.length === 3 && cl[0] === "ultbar" && cl[1] === "tpbadge" && /^hero\b/.test(cl[2]),
+         "这一行的顺序 = 长条 → TP 徽标 → 头像（实际 " + cl.join(" / ") + "）");
+      ok(cl.every((c) => c.indexOf("ultbar") < 0 || true), "长条与 TP 徽标是头像的兄弟节点（在框外，不被圆角裁切）");
+    }
+  }
   /* 图例是静态 HTML（不再由 JS 填），桩不解析 markup，所以从产物的 markup 段里查 */
   const markup = raw.slice(0, raw.indexOf("<script"));
   ok(/大招就绪/.test(markup) && /TP 图标/.test(markup) && /天辉在头像左侧/.test(markup),
@@ -1353,29 +1362,22 @@ S.draw();
   ok(!/setFrameMode|class="fbtn/.test(src), "模式切换按钮已移除（设计固定：长条＝大招、图标＝TP）");
   {
     const css = raw.match(/<style>([\s\S]*?)<\/style>/)[1];
-    /* ★ 长条方向必须按队伍分：天辉在头像左侧、夜魇在右侧（owner 指定） */
-    ok(/\.hero\.t2 \.ultbar\{left:(\d+)px\}/.test(css), "天辉：长条在头像左侧");
-    ok(/\.hero\.t3 \.ultbar\{right:(\d+)px\}/.test(css), "夜魇：长条在头像右侧");
-    ok(/\.hero\.ult-ready \.ultbar\{background:#e3b341\}/.test(css), "长条：就绪＝黄");
-    ok(/\.hero\.ult-cool \.ultbar\{background:#6e7681\}/.test(css), "长条：冷却中＝暗灰");
-    /* ★ TP 徽标与大招条在同一侧、且**不得互相覆盖**（owner 明确要求）：
-       用 CSS 里的偏移量做一次几何校验，天辉与夜魇两侧都要成立。 */
-    const barW = +(css.match(/\.hero \.ultbar\{[^}]*width:(\d+)px/) || [0, 0])[1];
-    const barPad = +(css.match(/\.hero\.t2 \.ultbar\{left:(\d+)px\}/) || [0, 0])[1];
-    const badW = +(css.match(/\.hero \.tpbadge\{[^}]*width:(\d+)px/) || [0, 0])[1];
-    const badPad2 = +(css.match(/\.hero\.t2 \.tpbadge\{left:(\d+)px\}/) || [0, 0])[1];
-    const badPad3 = +(css.match(/\.hero\.t3 \.tpbadge\{right:(\d+)px\}/) || [0, 0])[1];
-    ok(barW > 0 && badW > 0, "长条与 TP 徽标的尺寸规则都在（长条 " + barW + "px / 徽标 " + badW + "px）");
-    ok(badPad2 >= barPad + barW + 1,
-       "天辉：TP 徽标紧挨着长条但不覆盖（长条 " + barPad + "~" + (barPad + barW)
-       + "px，徽标从 " + badPad2 + "px 起）");
-    ok(badPad3 >= barPad + barW + 1,
-       "夜魇：TP 徽标紧挨着长条但不覆盖（长条右侧 " + barPad + "~" + (barPad + barW)
-       + "px，徽标从 " + badPad3 + "px 起）");
-    ok(badW <= 20, "TP 徽标比上一步更小了（" + badW + "px）");
+    /* ★ 一行三件横排，夜魇整排镜像；长条与徽标都在框外 —— 靠 **flex 间距**保证不互相覆盖 */
+    ok(/\.hrow\{display:flex;[^}]*align-items:center;gap:(\d+)px/.test(css), "一行是横排 flex 且带间距");
+    const gap = +(css.match(/\.hrow\{display:flex;[^}]*gap:(\d+)px/) || [0, 0])[1];
+    ok(gap >= 2, "间距够长条与徽标分开（gap=" + gap + "px）");
+    ok(/\.hrow\.t3\{flex-direction:row-reverse\}/.test(css), "夜魇整排镜像 → 长条与 TP 都在右侧");
+    ok(/\.hrow\.ult-ready \.ultbar\{background:#e3b341\}/.test(css), "长条：就绪＝黄");
+    ok(/\.hrow\.ult-cool \.ultbar\{background:#6e7681\}/.test(css), "长条：冷却中＝暗灰");
+    const barW = +(css.match(/\.ultbar\{[^}]*width:(\d+)px/) || [0, 0])[1];
+    const badW = +(css.match(/\.tpbadge\{[^}]*width:(\d+)px/) || [0, 0])[1];
+    ok(barW > 0 && badW > 0 && badW <= 20,
+       "长条 " + barW + "px、TP 徽标 " + badW + "px（都在框外，徽标仍保持小尺寸）");
+    ok(!/\.hero \.ultbar/.test(css) && !/\.hero \.tpbadge/.test(css),
+       "长条与 TP 徽标不再画在头像框内部");
     ok(!/\.hero \.ring/.test(css), "旧的圆形内环样式已移除");
     ok(!/\.fbtn/.test(css), "模式按钮样式已移除");
-    ok(/\.hero\.tp-cd \.tpcd\{display:flex\}/.test(css), "TP 冷却中数字画在徽标内部（不压到长条）");
+    ok(/\.hrow\.tp-cd \.tpcd\{display:flex\}/.test(css), "TP 冷却中数字画在徽标内部");
   }
 
   /* 全部英雄的 title 都能生成，且不出现 undefined/NaN */

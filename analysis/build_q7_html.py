@@ -513,52 +513,47 @@ h1{font-size:15px;margin:0;flex:0 0 auto}
 .tcol{display:flex;flex-direction:column;gap:4px;align-items:center}
 .tcap{font-size:10px;line-height:12px;flex:0 0 auto}
 .tdiv{width:1px;align-self:stretch;min-height:40px;background:#30363d;margin:0 2px;flex:0 0 auto}
+/* 每名英雄一行：**大招长条 + TP 徽标 + 头像**三个横排，夜魇整排镜像（row-reverse）。
+   ★ 长条与 TP 徽标都在头像**外面**（owner 定案）——互不遮挡，也不受头像圆角裁切影响，
+     代价是这一列宽一些（owner 明确允许）。 */
+.hrow{display:flex;align-items:center;gap:3px;flex:0 0 auto}
+.hrow.t3{flex-direction:row-reverse}
+/* 长条：颜色＝大招状态（黄＝就绪、暗灰＝冷却中、更暗＝无数据） */
+.ultbar{width:5px;align-self:stretch;margin:7px 0;border-radius:3px;background:#30363d80;flex:0 0 auto}
+.hrow.ult-ready .ultbar{background:#e3b341}
+.hrow.ult-cool .ultbar{background:#6e7681}
+.hrow.ult-none .ultbar{background:#30363d80}
+/* TP 徽标：回城卷轴的**图标** + 冷却剩余秒（数字画在徽标内部） */
+.tpbadge{position:relative;width:20px;height:20px;border-radius:5px;background:#0d1117;
+         border:2px solid #0d1117;box-sizing:border-box;display:none;align-items:center;
+         justify-content:center;flex:0 0 auto}
+.tpbadge img{width:100%;height:100%;display:block;border-radius:3px}
+.tpcd{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+      border-radius:3px;background:#00000073;color:#fff;font-size:10px;font-weight:700;
+      text-shadow:0 0 3px #000,0 1px 2px #000;font-variant-numeric:tabular-nums}
+.hrow.tp-ok .tpbadge{display:flex}
+.hrow.tp-cd .tpbadge{display:flex;filter:grayscale(.7) brightness(.62)}
+.hrow.tp-cd .tpcd{display:flex}
+.hrow.tp-none .tpbadge{display:none}
 .hero{position:relative;width:56px;height:56px;border-radius:9px;overflow:hidden;border:2px solid #333;
       cursor:pointer;background:#222;flex:0 0 auto}
 .hero img{width:100%;height:100%;object-fit:cover;display:block}
 .hero .nm{position:absolute;left:0;right:0;bottom:0;font-size:9px;text-align:center;background:#000a;color:#ddd;
           overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:1px 2px}
 .hero.sel{box-shadow:0 0 0 2px var(--gold);border-color:var(--gold)}
-/* 阵亡只置灰头像本身，状态环保持可读（阵亡期间冷却照样在走） */
+/* 阵亡只置灰头像本身（长条与 TP 徽标在框外，不受影响） */
 .hero.dead img{filter:grayscale(1) brightness(.5)}
 .hero.t2{border-color:var(--rad)}.hero.t3{border-color:var(--dire)}
 .hero .hpbar{position:absolute;left:0;top:0;height:3px;background:#3fb950}
-/* 大招状态：头像**内侧**一根长条（天辉在左、夜魇在右 —— 朝各自队伍的外侧）。
-   颜色＝状态：**黄＝就绪**、暗灰＝冷却中、更暗＝该时刻没有数据。
-   上下留出边距，免得和顶上的血条、底下的名字压在一起。 */
-.hero .ultbar{position:absolute;top:5px;bottom:15px;width:5px;border-radius:3px;
-              background:#30363d80;pointer-events:none}
-.hero.t2 .ultbar{left:2px}
-.hero.t3 .ultbar{right:2px}
-.hero.ult-ready .ultbar{background:#e3b341}
-.hero.ult-cool .ultbar{background:#6e7681}
-.hero.ult-none .ultbar{background:#30363d80}
-/* TP 徽标：回城卷轴的**图标** + 冷却剩余秒。**和大招条同一侧、紧挨着它**（天辉在左、夜魇在右），
-   两者用 left/right 的偏移量错开，互不覆盖（回归测试里有几何断言盯着这一点）。
-   ★ 徽标必须整个在头像框**内部**：.hero 是 overflow:hidden（用来裁圆角头像），框外会被裁掉。
-   ★ 冷却中的数字**画在徽标内部**（不再挂到框外），因此也不会压到长条。 */
-.hero .tpbadge{position:absolute;top:3px;width:20px;height:20px;border-radius:5px;
-               background:#0d1117;border:2px solid #0d1117;box-sizing:border-box;
-               display:none;align-items:center;justify-content:center;box-shadow:0 1px 4px #000b}
-.hero.t2 .tpbadge{left:9px}
-.hero.t3 .tpbadge{right:9px}
-.hero .tpbadge img{width:100%;height:100%;display:block;border-radius:3px}
-.hero .tpcd{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
-            border-radius:3px;background:#00000073;color:#fff;font-size:10px;font-weight:700;
-            text-shadow:0 0 3px #000,0 1px 2px #000;font-variant-numeric:tabular-nums}
-.hero.tp-ok .tpbadge{display:flex}
-.hero.tp-cd .tpbadge{display:flex;filter:grayscale(.7) brightness(.62)}
-.hero.tp-cd .tpcd{display:flex}
-.hero.tp-none .tpbadge{display:none}
 /* 图例：一根长条 + 一个 TP 图标的样子 */
 .fleg{font-size:11px;color:#8b949e;white-space:nowrap}
 .fleg b{display:inline-block;width:5px;height:12px;border-radius:2px;vertical-align:-2px;margin:0 3px}
 .fleg em{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;margin:0 3px;
          border:1px solid #30363d}
 /* 矮屏：头像缩一档，保证 5 个一列仍然塞得进左栏高度 */
-@media(max-height:860px){.hero{width:48px;height:48px;border-radius:8px}.hero .ultbar{top:4px;bottom:13px}
-  .hero.t2 .tpbadge{left:8px}.hero.t3 .tpbadge{right:8px}.hero .nm{font-size:8px}}
-@media(max-height:700px){.hero{width:40px;height:40px;border-radius:7px}.hero .ultbar{top:4px;bottom:12px;width:4px}.hero .nm{font-size:7px}}
+@media(max-height:860px){.hero{width:48px;height:48px;border-radius:8px}.hero .nm{font-size:8px}}
+@media(max-height:700px){.hero{width:40px;height:40px;border-radius:7px}.ultbar{width:4px}
+  .tpbadge{width:18px;height:18px}.hero .nm{font-size:7px}}
 /* ---------- 时间轴 ---------- */
 #timeline{margin-top:0;position:relative}
 /* 拖动进度条时跟着滑块走的时间气泡（"拖着看不到当前时间"的反馈） */
@@ -1372,20 +1367,25 @@ function buildAvatars() {
     col.appendChild(cap);
     PL.forEach(function (p, i) {
       if (p.team !== tv) return;
+      /* 一行 = 大招长条 + TP 徽标 + 头像（夜魇整排镜像）；长条与徽标都在头像**外面** */
+      const row = document.createElement("div");
+      row.className = "hrow " + (p.team === 2 ? "t2" : "t3");
+      row.setAttribute("data-i", i);
+      const bar = document.createElement("div"); bar.className = "ultbar";
+      const badge = document.createElement("div"); badge.className = "tpbadge";
+      badge.innerHTML = (TPICON ? '<img src="' + TPICON + '" alt="TP">' : "") + '<b class="tpcd"></b>';
       const d = document.createElement("div");
       d.className = "hero " + (p.team === 2 ? "t2" : "t3");
       d.setAttribute("data-i", i); d.title = p.short.replace(/_/g, " ") + "（" + p.name + "）";
       const im = ICONS[p.short];
       d.innerHTML = (im ? '<img src="' + im + '" alt="">' : "") +
-        '<div class="ultbar"></div>' +
-        '<div class="tpbadge">' + (TPICON ? '<img src="' + TPICON + '" alt="TP">' : "")
-        + '<b class="tpcd"></b></div>' +
         '<div class="nm">' + p.short.replace(/_/g, " ") + '</div>' +
         '<div class="hpbar" style="width:0%"></div>';
       d.onclick = function () { selectHero(i); };
       d.onmouseenter = function () { hoverRow(i); };
       d.onmouseleave = function () { hoverRow(-1); };
-      col.appendChild(d);
+      row.appendChild(bar); row.appendChild(badge); row.appendChild(d);
+      col.appendChild(row);
     });
     box.appendChild(col);
     return col;
@@ -1647,8 +1647,11 @@ function applyHeroFrames(t) {
   for (let i = 0; i < PL.length; i++) {
     const p = PL[i];
     const el = document.querySelector('.hero[data-i="' + i + '"]');
-    if (!el) continue;
-    el.classList.remove("ult-ready", "ult-cool", "ult-none", "tp-ok", "tp-cd", "tp-none", "dead");
+    /* 大招/TP 的状态类挂在**这一行**上（长条与 TP 徽标都是头像的兄弟节点） */
+    const row = document.querySelector('.hrow[data-i="' + i + '"]') || el;
+    if (!el || !row) continue;
+    row.classList.remove("ult-ready", "ult-cool", "ult-none", "tp-ok", "tp-cd", "tp-none");
+    el.classList.remove("dead");
     const q = posAt(p.npc, t);
     const dead = !!(q && q.hp !== null && q.hp !== undefined && q.hp <= 0);
     if (!q || dead) el.classList.add("dead");
@@ -1656,21 +1659,21 @@ function applyHeroFrames(t) {
     let tip = p.short.replace(/_/g, " ") + "（" + p.name + "）";
     if (q) tip += " ｜ HP " + (q.hp > 0 ? (q.hp + " / " + (hpMaxAt(p.npc, t) || "?")) : "阵亡");
     else tip += " ｜ 未出场";
-    if (us.st === "ready") { el.classList.add("ult-ready"); tip += " ｜ 大招就绪"; }
+    if (us.st === "ready") { row.classList.add("ult-ready"); tip += " ｜ 大招就绪"; }
     else if (us.st === "cool") {
-      el.classList.add("ult-cool");
+      row.classList.add("ult-cool");
       tip += " ｜ 大招冷却 " + Math.ceil(us.left) + "s" + (us.name ? "（" + us.name + "）" : "");
-    } else { el.classList.add("ult-none"); tip += " ｜ 大招：这一时刻没有数据"; }
+    } else { row.classList.add("ult-none"); tip += " ｜ 大招：这一时刻没有数据"; }
     if (ts.st === "ok") {
-      el.classList.add("tp-ok");
+      row.classList.add("tp-ok");
       tip += " ｜ TP 可用" + (ts.last === null ? "（本场无使用记录）"
         : "（最近一次 " + Math.round(t - ts.last) + "s 前）");
     } else {
-      el.classList.add("tp-cd");
+      row.classList.add("tp-cd");
       tip += " ｜ TP 冷却中约 " + Math.ceil(ts.left) + "s（按 " + Math.round(TPCOOL) + " 秒共享冷却推算）";
     }
     /* TP 徽标上的剩余秒：冷却中才显示数字（可用时留空，图标本身就说明了） */
-    const cdEl = el.querySelector(".tpcd");
+    const cdEl = row.querySelector(".tpcd");
     if (cdEl) cdEl.textContent = (ts.st === "ok") ? "" : String(Math.max(1, Math.ceil(ts.left)));
     el.title = tip;
   }
