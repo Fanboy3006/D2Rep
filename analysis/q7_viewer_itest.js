@@ -1300,12 +1300,12 @@ S.draw();
     ok(S.ultStateOf(PL[pick].npc, tCool).st === "cool" && S.ultStateOf(PL[pick].npc, tCool).left > 0,
        "大招冷却中：剩余 " + (S.ultStateOf(PL[pick].npc, tCool).left || 0).toFixed(1) + "s（"
        + Math.round(tCool) + "s 时）");
-    ok(g('.hero[data-i="' + pick + '"]').classList.contains("ult-cool"), "该英雄头像上挂了「冷却中」状态（长条转灰）");
+    ok(g('.hero[data-i="' + pick + '"]').classList.contains("ult-cool"), "该英雄头像上挂了「冷却中」状态（长条转暗灰）");
     ok(/大招冷却/.test(String(g('.hero[data-i="' + pick + '"]').title)), "头像 hover 文案写了大招冷却："
        + String(g('.hero[data-i="' + pick + '"]').title).slice(-40));
     S.commit(tRdy);
     ok(S.ultStateOf(PL[pick].npc, tRdy).st === "ready", "区间之后 → 大招就绪（" + Math.round(tRdy) + "s）");
-    ok(g('.hero[data-i="' + pick + '"]').classList.contains("ult-ready"), "该英雄头像上挂了「就绪」状态（长条转绿）");
+    ok(g('.hero[data-i="' + pick + '"]').classList.contains("ult-ready"), "该英雄头像上挂了「就绪」状态（长条转黄）");
   }
 
   /* TP 三态：按使用时刻 + 固定共享冷却推算 */
@@ -1354,15 +1354,28 @@ S.draw();
   {
     const css = raw.match(/<style>([\s\S]*?)<\/style>/)[1];
     /* ★ 长条方向必须按队伍分：天辉在头像左侧、夜魇在右侧（owner 指定） */
-    ok(/\.hero\.t2 \.ultbar\{left:2px\}/.test(css), "天辉：长条在头像左侧");
-    ok(/\.hero\.t3 \.ultbar\{right:2px\}/.test(css), "夜魇：长条在头像右侧");
-    ok(/\.hero\.ult-ready \.ultbar\{background:#3fb950\}/.test(css), "长条：就绪＝绿");
-    ok(/\.hero\.ult-cool \.ultbar\{background:#8b949e\}/.test(css), "长条：冷却中＝灰");
+    ok(/\.hero\.t2 \.ultbar\{left:(\d+)px\}/.test(css), "天辉：长条在头像左侧");
+    ok(/\.hero\.t3 \.ultbar\{right:(\d+)px\}/.test(css), "夜魇：长条在头像右侧");
+    ok(/\.hero\.ult-ready \.ultbar\{background:#e3b341\}/.test(css), "长条：就绪＝黄");
+    ok(/\.hero\.ult-cool \.ultbar\{background:#6e7681\}/.test(css), "长条：冷却中＝暗灰");
+    /* ★ TP 徽标与大招条在同一侧、且**不得互相覆盖**（owner 明确要求）：
+       用 CSS 里的偏移量做一次几何校验，天辉与夜魇两侧都要成立。 */
+    const barW = +(css.match(/\.hero \.ultbar\{[^}]*width:(\d+)px/) || [0, 0])[1];
+    const barPad = +(css.match(/\.hero\.t2 \.ultbar\{left:(\d+)px\}/) || [0, 0])[1];
+    const badW = +(css.match(/\.hero \.tpbadge\{[^}]*width:(\d+)px/) || [0, 0])[1];
+    const badPad2 = +(css.match(/\.hero\.t2 \.tpbadge\{left:(\d+)px\}/) || [0, 0])[1];
+    const badPad3 = +(css.match(/\.hero\.t3 \.tpbadge\{right:(\d+)px\}/) || [0, 0])[1];
+    ok(barW > 0 && badW > 0, "长条与 TP 徽标的尺寸规则都在（长条 " + barW + "px / 徽标 " + badW + "px）");
+    ok(badPad2 >= barPad + barW + 1,
+       "天辉：TP 徽标紧挨着长条但不覆盖（长条 " + barPad + "~" + (barPad + barW)
+       + "px，徽标从 " + badPad2 + "px 起）");
+    ok(badPad3 >= barPad + barW + 1,
+       "夜魇：TP 徽标紧挨着长条但不覆盖（长条右侧 " + barPad + "~" + (barPad + barW)
+       + "px，徽标从 " + badPad3 + "px 起）");
+    ok(badW <= 20, "TP 徽标比上一步更小了（" + badW + "px）");
     ok(!/\.hero \.ring/.test(css), "旧的圆形内环样式已移除");
     ok(!/\.fbtn/.test(css), "模式按钮样式已移除");
-    const bm = css.match(/\.hero \.tpbadge\{[^}]*width:(\d+)px/);
-    ok(bm && +bm[1] >= 20, "TP 徽标是图标尺寸而不是小色点（" + (bm ? bm[1] : "?") + "px）");
-    ok(/\.hero\.tp-cd \.tpcd\{display:block\}/.test(css), "TP 冷却中会显示秒数小牌");
+    ok(/\.hero\.tp-cd \.tpcd\{display:flex\}/.test(css), "TP 冷却中数字画在徽标内部（不压到长条）");
   }
 
   /* 全部英雄的 title 都能生成，且不出现 undefined/NaN */

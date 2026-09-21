@@ -524,39 +524,40 @@ h1{font-size:15px;margin:0;flex:0 0 auto}
 .hero.t2{border-color:var(--rad)}.hero.t3{border-color:var(--dire)}
 .hero .hpbar{position:absolute;left:0;top:0;height:3px;background:#3fb950}
 /* 大招状态：头像**内侧**一根长条（天辉在左、夜魇在右 —— 朝各自队伍的外侧）。
-   颜色＝状态：绿＝就绪、灰＝冷却中、深灰＝该时刻没有数据。
+   颜色＝状态：**黄＝就绪**、暗灰＝冷却中、更暗＝该时刻没有数据。
    上下留出边距，免得和顶上的血条、底下的名字压在一起。 */
 .hero .ultbar{position:absolute;top:5px;bottom:15px;width:5px;border-radius:3px;
               background:#30363d80;pointer-events:none}
 .hero.t2 .ultbar{left:2px}
 .hero.t3 .ultbar{right:2px}
-.hero.ult-ready .ultbar{background:#3fb950}
-.hero.ult-cool .ultbar{background:#8b949e}
+.hero.ult-ready .ultbar{background:#e3b341}
+.hero.ult-cool .ultbar{background:#6e7681}
 .hero.ult-none .ultbar{background:#30363d80}
-/* TP 徽标：回城卷轴的**图标**（不是色块小点）+ 冷却剩余秒。
-   图标一直在（一眼看出是 TP）；冷却中把图标压暗，并在右下角挂一个小秒数牌。
-   ★ 徽标与秒数牌都必须在头像框**内部**：.hero 是 overflow:hidden（用来裁圆角头像），
-     挂到框外会被裁掉（第一版把秒数牌挂到右下角外侧，数字被切了一半）。
-   ★ 只出现在**地图右侧那列头像**上；地图（小地图）里的英雄圆点不再画 TP 徽标。 */
-.hero .tpbadge{position:absolute;right:5px;top:2px;width:24px;height:24px;border-radius:6px;
+/* TP 徽标：回城卷轴的**图标** + 冷却剩余秒。**和大招条同一侧、紧挨着它**（天辉在左、夜魇在右），
+   两者用 left/right 的偏移量错开，互不覆盖（回归测试里有几何断言盯着这一点）。
+   ★ 徽标必须整个在头像框**内部**：.hero 是 overflow:hidden（用来裁圆角头像），框外会被裁掉。
+   ★ 冷却中的数字**画在徽标内部**（不再挂到框外），因此也不会压到长条。 */
+.hero .tpbadge{position:absolute;top:3px;width:20px;height:20px;border-radius:5px;
                background:#0d1117;border:2px solid #0d1117;box-sizing:border-box;
                display:none;align-items:center;justify-content:center;box-shadow:0 1px 4px #000b}
-.hero .tpbadge img{width:100%;height:100%;display:block;border-radius:4px}
-.hero .tpcd{position:absolute;right:-1px;bottom:-2px;display:none;min-width:12px;padding:0 3px;
-            border-radius:7px;background:#0b0e13;border:1px solid #000;color:#ffd479;
-            font-size:10px;line-height:14px;font-weight:700;text-align:center;
-            font-variant-numeric:tabular-nums}
+.hero.t2 .tpbadge{left:9px}
+.hero.t3 .tpbadge{right:9px}
+.hero .tpbadge img{width:100%;height:100%;display:block;border-radius:3px}
+.hero .tpcd{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+            border-radius:3px;background:#00000073;color:#fff;font-size:10px;font-weight:700;
+            text-shadow:0 0 3px #000,0 1px 2px #000;font-variant-numeric:tabular-nums}
 .hero.tp-ok .tpbadge{display:flex}
-.hero.tp-cd .tpbadge{display:flex;filter:grayscale(.7) brightness(.6)}
-.hero.tp-cd .tpcd{display:block}
+.hero.tp-cd .tpbadge{display:flex;filter:grayscale(.7) brightness(.62)}
+.hero.tp-cd .tpcd{display:flex}
 .hero.tp-none .tpbadge{display:none}
 /* 图例：一根长条 + 一个 TP 图标的样子 */
 .fleg{font-size:11px;color:#8b949e;white-space:nowrap}
 .fleg b{display:inline-block;width:5px;height:12px;border-radius:2px;vertical-align:-2px;margin:0 3px}
-.fleg em{display:inline-block;width:13px;height:13px;border-radius:3px;vertical-align:-2px;margin:0 3px;
+.fleg em{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;margin:0 3px;
          border:1px solid #30363d}
 /* 矮屏：头像缩一档，保证 5 个一列仍然塞得进左栏高度 */
-@media(max-height:860px){.hero{width:48px;height:48px;border-radius:8px}.hero .ultbar{top:4px;bottom:13px}.hero .nm{font-size:8px}}
+@media(max-height:860px){.hero{width:48px;height:48px;border-radius:8px}.hero .ultbar{top:4px;bottom:13px}
+  .hero.t2 .tpbadge{left:8px}.hero.t3 .tpbadge{right:8px}.hero .nm{font-size:8px}}
 @media(max-height:700px){.hero{width:40px;height:40px;border-radius:7px}.hero .ultbar{top:4px;bottom:12px;width:4px}.hero .nm{font-size:7px}}
 /* ---------- 时间轴 ---------- */
 #timeline{margin-top:0;position:relative}
@@ -757,8 +758,8 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
       <button class="btn" onclick="clearSel()">取消选中</button>
       <span class="sep">｜</span>
       <span class="lbl">头像框</span>
-      <span class="fleg" id="fleg"><b style="background:#3fb950"></b>大招就绪<b style="background:#8b949e"></b>冷却中
-        （天辉在头像左侧 ｜ 夜魇在右侧）　<em style="background:#0d1117"></em>右上角 TP 图标：亮＝可用、带数字＝冷却秒数</span>
+      <span class="fleg" id="fleg"><b style="background:#e3b341"></b>大招就绪<b style="background:#6e7681"></b>冷却中
+        （天辉在头像左侧 ｜ 夜魇在右侧）　<em style="background:#0d1117"></em>紧挨着长条的 TP 图标：亮＝可用、带数字＝冷却秒数</span>
       <span class="sep">｜</span>
       <span id="mapInfo">滚轮缩放 · 拖拽平移 · 点英雄圆点选中</span>
       <label style="margin-left:auto"><input type="checkbox" id="showBld" checked> 建筑</label>
@@ -832,8 +833,9 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
       眼位（假眼/真眼）和烟雾也画在图上，鼠标移上去能看到详细信息。
       上方一排开关可以分别隐藏：建筑、轨迹、名字、眼位、烟雾。
       <b>地图右侧那一列英雄头像</b>上才显示大招与 TP：头像旁那根<b>竖长条</b>＝大招（<b>天辉在头像左侧、夜魇在右侧</b>，
-      <b>绿=就绪</b>、<b>灰=冷却中</b>、<b>深灰=这一刻没有数据</b>）；头像<b>右上角的回城卷轴图标</b>＝ TP
-      （<b>亮着＝可用</b>、<b>压暗并带数字＝冷却中，数字就是还剩几秒</b>）。鼠标移到头像上有完整文字说明。</p>
+      <b>黄＝就绪</b>、<b>暗灰＝冷却中</b>、<b>更暗＝这一刻没有数据</b>）；<b>紧挨着长条</b>（同一侧）那个
+      <b>回城卷轴图标</b>＝ TP（<b>亮着＝可用</b>、<b>压暗并带数字＝冷却中，数字就是还剩几秒</b>）。
+      长条与 TP 图标各自占一块地方、互不遮挡。鼠标移到头像上有完整文字说明。</p>
     <p><b>④ 右侧表格</b>：<b>K/D/A</b>=击杀/阵亡/助攻，<b>正补/反补</b>=补掉对方/己方小兵的数量；
       <b>净值</b>=现金+装备总价值，<b>累计金币</b>=从击杀补刀等赚到的钱，<b>经验</b>=累计获得的经验值，<b>HP</b>=此刻血量。
       带 <b>@t</b> 的列会随着播放时刻一起变化。</p>
