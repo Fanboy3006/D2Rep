@@ -78,6 +78,14 @@ python analysis/ward_analysis.py 8592126358.db 8979891001.db [--team 2|3|all]
   大招对照表 `analysis/hero_ultimates.py` → `opendota_analysis/assets/hero_ultimates.json`
   （判据是游戏文件里的 `ABILITY_TYPE_ULTIMATE`；TP 冷却 80s 读自 `items.txt`）。
   口径、两处改名、700 场覆盖率交叉验证与 TP 只能推算的原因见 `STRATEGY/Q7_REPLAY_UI.md` §3.5 / §6.1。
+- **战斗回顾（复现游戏的 Fight Recap 面板）**：`analysis/q7_fights.py` 自动识别团战
+  （12 秒内 ≥2 名英雄阵亡算一波；窗口 = 首次阵亡前 20s ~ 末次阵亡后 8s），按游戏面板的七段
+  （阵亡 / 金钱变化 / 经验变化 / 造成伤害 / 总治疗量 / 已使用的技能 / 已使用的物品）逐人聚合；
+  页面右栏多一个**战斗回顾**面板（「天辉 ｜ 两队合计 ｜ 夜魇」三段式、逐人条、图标×次数），
+  时间轴多一条**团战标记带**（可点跳转），完整版另加第 ⑧ 段**按技能拆分的伤害**。
+  游戏侧依据（本地化字符串 + `panorama/layout/hud/dota_hud_fightrecap.xml`）、四个数据坑
+  （事件"属于谁"在哪一列 / 物品"使用"与"购买" / gold int32 下溢 / 本地库多一层目录）与
+  **买活做不到**的原因，见 `STRATEGY/Q7_REPLAY_UI.md` §3.6。
 - **改动量实测（别夸大）**：`python analysis/q7_clock_check.py --scan 45` → 窗口内旧/新 |Δ显示秒| 中位 0.03~0.07s、
   最大 ≤9.6s、>30s 的 0 场；`python analysis/q5_clock_check.py --sample 40` → Q5B 逐支眼改动 **0/4591**；
   换时基后全量重跑 Q5B 并与发布版比对 → **SHA256 相同**。

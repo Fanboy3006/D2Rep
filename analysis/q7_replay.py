@@ -43,6 +43,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import timebase as tb   # noqa: E402  数据层共享时基（号角/结束/暂停感知折算 + gold int32 还原）
 import hero_ultimates as HU   # noqa: E402  英雄 → 大招（构建期资产，标记"大招就绪"用）
+import q7_fights as QF        # noqa: E402  战斗回顾：团战检测 + 七段聚合（复现游戏 Fight Recap）
 
 DBFULL = os.path.join(ROOT, "dems", "db_full")
 DBOLD = os.path.join(ROOT, "dems", "db")          # Q5 版散装 extractor（技能/道具 CD 在这里）
@@ -407,6 +408,13 @@ def parse_match(db, match_id, league, with_detail=True):
     smoke, smoked = load_smoke(con, players, horn_cle, t0, t1, pos, t0)
     tl = build_timeline(con, match_id, players, kills, horn_cle, t0, t1)
 
+    # 2g. 战斗回顾（复现游戏的 Fight Recap 面板）：自动检测团战 + 逐段聚合
+    #   游戏侧依据见 analysis/q7_fights.py 的模块说明（面板结构文件 + 本地化字符串）。
+    #   完整版带"按技能拆分的伤害"（游戏面板没有这层），lite 版不带以控体积。
+    _fights = QF.build_fights(con, players, horn_cle, t0, t1)
+    fight_names = QF.names_used(_fights)
+    fights = QF.pack(_fights, players, with_dba=with_detail)
+
     con.close()
 
     # --- 队伍合计/差值（两套源）---
@@ -462,6 +470,8 @@ def parse_match(db, match_id, league, with_detail=True):
         "buildings": buildings,
         "detail": detail,
         "detail_names": names,
+        "fights": fights,
+        "fight_names": fight_names,
         "attr_check": attr_check,
         "cd": cd,
         "tp": tpu,

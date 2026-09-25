@@ -160,6 +160,61 @@ is_attacker_hero, is_target_hero, is_target_building, raw_json
 
 ---
 
+## 3.6 复现游戏里的 **Fight Recap**（战斗回放）面板
+
+owner 2026 提的："研究一下游戏里有没有 show fight recap 之类的内容，看看能不能复现这个"。
+结论：**有，而且能复现**（已实现并发布）。
+
+### 3.6.1 游戏里它是什么（证据来自游戏文件本身，不是转述）
+
+| 来源 | 内容 |
+|---|---|
+| `resource/localization/dota_english.txt` / `dota_schinese.txt` | `fight_recap_show`=**显示战斗回放** ｜ `fight_recap_hide` ｜ `fight_recap_pause`=**显示战斗回放时暂停游戏** ｜ `UI_Fight_Recap_Terse`=**团战简要回顾**（还有个精简版）｜ 七个段名：`fight_recap_gold`=**金钱变化情况**、`fight_recap_xp`=**经验变化情况**、`fight_recap_dmg`=**造成伤害**、`fight_recap_heal`=**总治疗量**、`fight_recap_abilites_used`=**已使用的技能**、`fight_recap_items_used`=**已使用的物品**、`fight_recap_totals`=**总计** |
+| `panorama/layout/hud/dota_hud_fightrecap.xml` | 面板结构：**每一段一行「天辉容器 ｜ 中间两队合计 ｜ 夜魇容器」**；数值段逐人一根条/箭头（`{i:dmg_value}`、`{i:radiant_damage_done}`…），技能段与物品段每侧 **4 行「图标 + x{usage_count}」**，死亡段是头像 + **买活图标**（`DeathBuybackIcon`） |
+| 相邻但不同的两个功能 | `dota_settings_death_summary`=**死亡汇总**（死亡时刻的伤害来源）；`DOTA_CombatLog*`=**战斗日志**（攻击者/目标/技能/物品/窗口）——后者我们早就复现了，就是现在的 ±45s 明细 |
+
+### 3.6.2 我们怎么复现（`analysis/q7_fights.py` + 页面第三个面板）
+
+**团战由录像自动识别**（owner 定案）：12 秒内 ≥2 名英雄阵亡算一波；窗口 = 首次阵亡前 20s ~ 末次阵亡后 8s。
+时间轴上多了一条**团战标记带**（每波一根可点的小条，数字＝该波阵亡人数），右栏多了**第三个面板**
+（默认列表 ｜ 英雄明细 ｜ **战斗回顾**，三者互斥），面板里照游戏的七段布局渲染，
+并支持"上一波/下一波"与"跟随当前时刻"。
+
+**比游戏多一段**：录像里每条伤害都带来源技能（`inflictor`），所以完整版加第 ⑧ 段
+**按技能拆分的伤害** —— 这正是打开这个面板通常想知道的事。
+
+### 3.6.3 数据侧踩到的坑（都可复现，务必记牢）
+
+1. **"属于谁"不在同一列**：`damage`/`healing`/`ability` 在 **attacker**；`gold`/`xp` **在 target**。
+   弄错的表现是"金钱与经验两段全 0"（第一版就是这样，窗口里明明有 72 条 gold）。
+2. **物品"使用"与"购买"是两种行**：使用 = `type='DotaCombatlogItem'`（人在 attacker、物品在 inflictor）；
+   购买 = `DotaCombatlogPurchase`（人在 target）。不区分就会把"买装备"算成"用装备"。
+3. **金钱 int32 下溢**：`gold_reason=1`（死亡扣钱）的负值按 uint32 落库，必须过
+   `analysis/timebase.py::gold_i32()` 还原（全库 1.4% 的 gold 行受影响）。
+4. **`n` 用窗口内阵亡数**（不是"簇内"人数）：窗口比簇宽，两者不等；统一成窗口内人数，
+   才能让"头部数字 == 面板阵亡段 == 时间轴标记"三者自洽。
+5. **本地录像的库多一层目录**（`db_full/local/<scope>/`），按 match_id 找库要**递归** glob，
+   否则私人场次会算出 0 波。
+
+### 3.6.4 做不到的一项（如实标注）
+
+**买活**：库里 `type='DotaCombatlogBuyback'` 的行没有英雄字段（attacker/target 都空、
+`value_name` 是 `item_ward_dispenser` 之类、值只有个位数），是解析噪声；
+`gold_reason` 的实测码表（`analysis/DATA_DICT.md`）里也没有买活项。
+所以面板**不画买活图标**，而不是硬凑一个。
+
+### 3.6.5 体积与工程取舍
+
+- 团战载荷**建站时压缩**：英雄用**下标**、技能/物品名建**键表** → 实测 36 波 47.7 KB（完整）/ 35.4 KB（lite），
+  约 1 KB/波。原始写法（每次重复 `npc_dota_hero_xxx` 与技能名）是 143 KB。
+- **老切片不必重跑**：切片里没有 `fights` 就从主库**现算**（与切片期同一份 `q7_fights.py`），
+  实测 3 秒/场 —— 否则要重跑 60 场切片（一两个小时）。
+- **团战图标单独一套（18px）**：一场团战会用到 120~150 个不同的技能/物品名，
+  若复用明细那套 28px（2.7 KB/个）会让每个 lite 页面 +450 KB；18px/48 色约 0.62 KB，
+  总体 +80 KB 左右（lite 页面 0.64 → 0.80 MB）。
+
+---
+
 ## 4. 明细表
 
 ### 4.1 默认态（10 英雄）

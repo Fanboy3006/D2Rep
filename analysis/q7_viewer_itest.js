@@ -202,6 +202,9 @@ eval(src + `
   fmt: fmt,
   ultStateOf: ultStateOf, tpStateOf: tpStateOf, applyHeroFrames: applyHeroFrames,
   getTpCool: function(){ return TPCOOL; },
+  fights: FIGHTS, openRecap: function(i){ openRecap(i); }, closeRecap: function(){ closeRecap(); },
+  recapJump: function(d){ recapJump(d); }, recapIdx: function(){ return recapIdx; },
+  renderRecap: function(){ renderRecap(); },
   showSeekBub: showSeekBub, hideSeekBub: hideSeekBub,
   seekBubEl: function(){ return seekbub; },
   heroTitles: function(){
@@ -847,8 +850,11 @@ if (!LITE) {
     const selfN = Object.keys(S.selficons || {}).length;
     ok(selfN === 10, "10 个本英雄头像都内嵌（" + selfN + "）");
     const css = (raw.match(/<style id="dicss">([\s\S]*?)<\/style>/) || [, ""])[1];
-    ok(css.length > 1000 && (css.match(/\.dc\d+\{/g) || []).length === nIcon,
-       "每张图标一条 CSS 规则（" + (css.match(/\.dc\d+\{/g) || []).length + " 条 / " + nIcon + " 张）");
+    /* 一套 CSS 规则现在服务两组图标：明细行图标 + 战斗回顾用的团战图标（18px，独立一套） */
+    const nFI = (S.DATA.fighticons || []).filter((x) => !!x).length;
+    ok(css.length > 1000 && (css.match(/\.dc\d+\{/g) || []).length === nIcon + nFI,
+       "每张图标一条 CSS 规则（" + (css.match(/\.dc\d+\{/g) || []).length + " 条 = 明细 "
+       + nIcon + " + 团战 " + nFI + "）");
     ok(css.indexOf("data:image/png;base64,") > 0, "图标以 data URI 内嵌（单文件、无外链）");
     // 表头列序
     const hdr = (raw.match(/<table id="dtbl">[\s\S]*?<\/thead>/) || [""])[0];
@@ -1182,6 +1188,26 @@ if (LITE) {
    例：   node analysis/q7_viewer_itest.js 8955197224 dump=5@1500  */
 if (process.argv[3] && process.argv[3].indexOf("dump=") === 0) {
   const spec = process.argv[3].slice(5);
+  /* dump=recap[.<波次>]：把"战斗回顾"面板渲染成文本（不用浏览器就能核对内容） */
+  if (spec.indexOf("recap") === 0) {
+    const strip = (h) => String(h).replace(/<\/(div|span|i)>/g, " ").replace(/<[^>]*>/g, "")
+      .replace(/\s+/g, " ").trim();
+    const only = spec.split(".")[1] ? parseInt(spec.split(".")[1], 10) - 1 : null;
+    const F = S.fights || [];
+    const idxs = only === null ? F.map((_f, i) => i) : [only];
+    idxs.forEach(function (i) {
+      S.commit(F[i].t0 + 1);
+      S.openRecap(i);
+      console.log("\n" + "=".repeat(96));
+      console.log("第 " + F[i].i + " 波 ｜ " + fmtSec(F[i].t0) + " ~ " + fmtSec(F[i].t1) + " ｜ 阵亡 " + F[i].n);
+      console.log("-- 头部 --\n" + strip(g("recapHead").innerHTML));
+      String(g("recapBody").innerHTML).split('<div class="rcseg">').slice(1).forEach(function (s) {
+        console.log("   • " + strip(s).slice(0, 320));
+      });
+      S.closeRecap();
+    });
+    process.exit(0);
+  }
   spec.split(",").forEach(function (s) {
     const m = s.split("@");
     const i = parseInt(m[0], 10), t = parseFloat(m[1]);
@@ -1392,6 +1418,82 @@ S.draw();
   ok(/可用|冷却 \d+s/.test(S.cdHTML()), "CD 面板的 TP 格子给出可用/冷却状态");
   ok(/推算/.test(String(g("cdnote").innerHTML)), "CD 面板说明 TP 状态是按固定冷却推算的");
   S.clearSel();
+}
+
+/* ═══════════ 战斗回顾（复现游戏里的 Fight Recap 面板） ═══════════ */
+{
+  const seg = S.DATA.fights || { keys: [], list: [] };
+  const F = seg.list || [], K = seg.keys || [];
+  ok(F.length > 0, "切片里带团战检测结果（" + F.length + " 波）");
+  ok(K.length > 0, "团战的技能/物品名做成了键表（" + K.length + " 个）");
+  const FI = S.DATA.fighticons || [];
+  ok(FI.length === K.length && FI.filter((x) => !!x).length >= K.length * 0.9,
+     "团战图标表与键表一一对应且有图（" + FI.filter((x) => !!x).length + "/" + K.length + "）");
+  const badWin = F.filter((f) => !(f.t1 > f.t0) || f.t0 < T0 - 0.01 || f.t1 > T1 + 0.01);
+  ok(badWin.length === 0, "每波窗口都落在比赛时间轴内（越界 " + badWin.length + " 波）");
+  const segKeys = ["d", "g", "x", "dm", "hl", "ab", "it"];
+  const hardKeys = ["d", "g", "x", "dm", "ab", "it"];   // 这六段每波都该有内容
+  const missing = [];
+  let withHeal = 0;
+  F.forEach((f) => {
+    hardKeys.forEach((k) => { if (!f[k] || !f[k].length) missing.push(f.i + ":" + k); });
+    if (f.hl && f.hl.length) withHeal++;
+    const dn = (f.d || []).reduce((a, e) => a + e[1], 0);
+    if (dn !== f.n) missing.push(f.i + ":n≠Σd");
+  });
+  ok(missing.length === 0, "每波的六段硬指标都有内容、阵亡数自洽（异常 " + missing.slice(0, 4).join(",") + "）");
+  ok(withHeal >= F.length * 0.5,
+     "治疗段大多数波次有内容（" + withHeal + "/" + F.length + "，本来就可能没人治疗）");
+  ok(F.some((f) => f.dba && f.dba.length) === !LITE,
+     LITE ? "lite 版不带「按技能拆分的伤害」（控体积）" : "完整版带「按技能拆分的伤害」");
+  let oob = 0;
+  F.forEach((f) => {
+    segKeys.forEach((k) => {
+      (f[k] || []).forEach((e) => { if (!(e[0] >= 0 && e[0] < PL.length)) oob++; });
+    });
+  });
+  ok(oob === 0, "团战载荷里的英雄下标都合法（越界 " + oob + " 个）");
+  ok((g("fightLane").children || []).length === F.length,
+     "时间轴上的团战标记数 == 波数（" + (g("fightLane").children || []).length + "）");
+
+  S.select(-1);
+  S.commit(F[0].t0 + 1);
+  S.openRecap();
+  ok(S.recapIdx() >= 0, "点开战斗回顾 → 第 " + (S.recapIdx() + 1) + " 波");
+  ok(g("paneRecap").style.display !== "none", "右栏切到战斗回顾面板");
+  /* ★ 三个面板必须互斥：开回顾时默认列表与英雄面板都要收起
+     （第一版 openRecap 末尾调 selectHero(-1) 又把列表放了出来，回顾被挤到列表下面）。 */
+  ok(g("paneList").style.display === "none" && g("paneHero").style.display === "none",
+     "开回顾时默认列表与英雄面板都收起（list=" + g("paneList").style.display
+     + " / hero=" + g("paneHero").style.display + "）");
+  const body = String(g("recapBody").innerHTML);
+  ok(/阵亡/.test(body) && /金钱变化情况/.test(body) && /经验变化情况/.test(body)
+     && /造成伤害/.test(body) && /总治疗量/.test(body) && /已使用的技能/.test(body)
+     && /已使用的物品/.test(body), "七个板块都渲染出来了");
+  ok((body.match(/class="rcseg"/g) || []).length >= 7,
+     "段数 ≥7（实际 " + (body.match(/class="rcseg"/g) || []).length + "）");
+  ok(/class="rcside/.test(body) && /class="rcmid/.test(body), "每段是「天辉 ｜ 合计 ｜ 夜魇」三段式");
+  ok((body.match(/class="di /g) || []).length > 0,
+     "技能/物品用图标展示（" + (body.match(/class="di /g) || []).length + " 个）");
+  /* ★ 必须先剥掉内嵌图片（data URI）：base64 里随机出现的 "NaN"/"undefined" 是字母巧合，
+     不是渲染出错 —— 页面自己的文案守卫也是这么做的。 */
+  const noData = body.replace(/data:image\/[a-z+]*;base64,[A-Za-z0-9+/=]+/g, "<img>");
+  const badTxt = noData.match(/.{0,50}(?:undefined|NaN).{0,50}/);
+  ok(!badTxt, "回顾面板里没有 undefined/NaN" + (badTxt ? "（" + badTxt[0].replace(/\s+/g, " ") + "）" : ""));
+  const i0 = S.recapIdx();
+  S.recapJump(1);
+  ok(S.recapIdx() === Math.min(F.length - 1, i0 + 1), "「下一波」翻到第 " + (S.recapIdx() + 1) + " 波");
+  S.recapJump(-1);
+  ok(S.recapIdx() === i0, "「上一波」翻回第 " + (S.recapIdx() + 1) + " 波");
+  S.closeRecap();
+  ok(S.recapIdx() === -1 && g("paneRecap").style.display === "none", "收起回顾 → 回到默认面板");
+  S.openRecap();
+  S.select(0);
+  ok(S.recapIdx() === -1 && g("paneHero").style.display === "", "点英雄 → 自动收起回顾、切到英雄面板");
+  ok(g("paneList").style.display === "none" && g("paneRecap").style.display === "none",
+     "此时列表与回顾都不显示（list=" + g("paneList").style.display + "）");
+  S.clearSel();
+  ok(g("paneList").style.display === "", "取消选中 → 回到默认列表");
 }
 
 setTimeout(() => {

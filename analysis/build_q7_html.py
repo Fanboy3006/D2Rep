@@ -197,6 +197,35 @@ def decimate(a, step, fill=0):
     return out
 
 
+def _fights_from_db(dat, lite):
+    """老切片没有 `fights` 字段时，按 match_id 找到主库现算团战（与切片期同一份代码）。
+
+    返回 (紧凑载荷, 用到的技能/物品名列表)；算不出来就返回 (空载荷, [])，页面显示"这一场没有团战数据"。
+    """
+    import glob
+    import sqlite3
+    import q7_fights as QF
+    import timebase as tb
+    mid = dat.get("match_id")
+    # ★ 递归匹配：联赛库是 dems/db_full/<league>/<mid>.db，而私人录像多一层
+    #   dems/db_full/local/<scope>/<mid>.db —— 少一层通配符就会漏掉本地场次（实测踩过）。
+    cand = glob.glob(os.path.join(ROOT, "dems", "db_full", "**", "%s.db" % mid), recursive=True)
+    if not cand:
+        return {"keys": [], "list": []}, []
+    con = sqlite3.connect("file:%s?mode=ro" % cand[0].replace("\\", "/"), uri=True)
+    con.row_factory = sqlite3.Row
+    players = [{"npc": p["npc"], "team": p["team"], "short": p["short"]} for p in dat["players"]]
+    try:
+        horn = tb.Clock(con, str(mid)).horn_cle
+        raw = QF.build_fights(con, players, horn, dat["t0"], dat["t1"])
+    except Exception as e:
+        print("  ⚠ 现算团战失败（%s）→ 战斗回顾为空" % str(e)[:70])
+        con.close()
+        return {"keys": [], "list": []}, []
+    con.close()
+    return QF.pack(raw, players, with_dba=not lite), QF.names_used(raw)
+
+
 def build(mid, outdir, lite=False, step=3, fetch_icons=True):
     src = os.path.join(Q7DIR, "q7_%s.json" % mid)
     if lite:
@@ -208,6 +237,15 @@ def build(mid, outdir, lite=False, step=3, fetch_icons=True):
                          % (src, mid, " --lite" if lite else ""))
     with open(src, encoding="utf-8") as f:
         dat = json.load(f)
+
+    # ---- 战斗回顾（复现游戏的 Fight Recap）：切片里没有就从数据库现算 ----
+    #   团战由构建期自动识别（analysis/q7_fights.py 与 q7_replay.py 共用同一份代码）。
+    #   为什么允许"现算"：老切片是以前生成的、没有 fights 字段，而重跑 60 场切片要一两个小时；
+    #   这里按 match_id 找到主库 + timebase 的号角时刻，直接算出来（几秒/场）。
+    fights = dat.get("fights")
+    fight_names = dat.get("fight_names") or []
+    if not fights or not (fights.get("list")):
+        fights, fight_names = _fights_from_db(dat, lite)
 
     # ---- 大招标记 / TP 固定冷却：切片里没有就现补（老的切片缓存因此不必重跑）----
     #   标记写在 cd.keys[*].ult 上，页面据此给头像框画"大招就绪"色（见 hero_ultimates.py）。
@@ -250,7 +288,8 @@ def build(mid, outdir, lite=False, step=3, fetch_icons=True):
     #   只内嵌**本场明细里真正出现**的名字；联网取图带缓存（见 detail_icons.py），--no-fetch 可关。
     dc_css, dicons, dic_stat = [], [], None
     dnames_all = dat.get("detail_names") or []
-    if not lite and dnames_all:
+    dnames = [] if lite else list(dnames_all)
+    if dnames:
         cnt = {}
         for _npc, _rows in (dat.get("detail") or {}).items():
             for r in _rows:
@@ -258,8 +297,8 @@ def build(mid, outdir, lite=False, step=3, fetch_icons=True):
                     cnt[r[2]] = cnt.get(r[2], 0) + 1
                     cnt[r[3]] = cnt.get(r[3], 0) + 1
         rs = DI.Resolver(allow_fetch=fetch_icons)
-        got = rs.prepare(dnames_all, cnt)
-        for i in range(len(dnames_all)):
+        got = rs.prepare(dnames, cnt)
+        for i in range(len(dnames)):
             r = got.get(i)
             if not r:
                 dicons.append("")
@@ -267,7 +306,7 @@ def build(mid, outdir, lite=False, step=3, fetch_icons=True):
             kind, fp = r
             # 小兵类字形按阵营上色（goodguys_/badguys_ → 天辉绿 / 夜魇红），其余保持原色
             if kind == "unit":
-                tm = DI.team_of(dnames_all[i])
+                tm = DI.team_of(dnames[i])
                 if tm:
                     fp = DI.tint_glyph(fp, tm) or fp
             key = "dc%d" % len(dc_css)
@@ -279,6 +318,35 @@ def build(mid, outdir, lite=False, step=3, fetch_icons=True):
                 continue
             dicons.append(key)
         dic_stat = rs.stats()
+
+    # ---- 战斗回顾里用到的技能/物品图标（**独立一套**，与上面的明细图标解耦）----
+    #   为什么单独做：团战面板在 lite 版也要能用，而一场比赛团战里会用到 120~150 个不同的
+    #   技能/物品 —— 按明细那套 28px 内嵌要 2.7KB/个（lite 页面直接 +450KB）。这里用
+    #   **18px / 48 色**（约 0.62KB/个），显示尺寸只有 ~15px，清晰度够，总体 +80KB 左右。
+    fight_icons = []
+    fkeys = (fights or {}).get("keys") or []
+    if fkeys:
+        rsf = DI.Resolver(allow_fetch=fetch_icons)
+        gotf = rsf.prepare(fkeys, {i: 1 for i in range(len(fkeys))})
+        for i in range(len(fkeys)):
+            r = gotf.get(i)
+            if not r:
+                fight_icons.append("")
+                continue
+            kind, fp = r
+            if kind == "unit":
+                tm = DI.team_of(fkeys[i])
+                if tm:
+                    fp = DI.tint_glyph(fp, tm) or fp
+            key = "dc%d" % len(dc_css)
+            try:
+                dc_css.append(".%s{background-image:url(data:image/png;base64,%s)}"
+                              % (key, DI.b64_png(fp, 18, 48)))
+            except Exception:
+                fight_icons.append("")
+                continue
+            fight_icons.append(key)
+        dic_stat = rsf.stats()
 
     # ---- 本英雄头像（选中那个英雄，日志第 2 列用）----
     self_icons = {}
@@ -370,8 +438,10 @@ def build(mid, outdir, lite=False, step=3, fetch_icons=True):
         "buildings": dat.get("buildings", []),
         "kda": dat["kda"],
         "detail": ({} if lite else dat.get("detail", {})),
-        "dnames": ([] if lite else dat.get("detail_names", [])),
+        "dnames": dnames,
         "dicons": dicons,
+        "fights": fights,
+        "fighticons": fight_icons,
         "selficons": self_icons,
         "attr": (dat.get("attr_check") or []),
         "cd": cd,
@@ -663,6 +733,7 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
     background-color:#15181d;border:1px solid #30363d;border-radius:4px;vertical-align:middle;flex:0 0 auto}
 .di.self{border-radius:50%;border-color:#8b949e}
 .di.big{width:26px;height:26px}
+.di.rci{width:16px;height:16px;border-radius:3px;vertical-align:-3px}   /* 战斗回顾里的技能/物品图标 */
 .dirow{display:flex;align-items:center;gap:6px}
 .dirow .txt{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #dtbl td.dc{text-align:center;width:1%;padding-left:4px;padding-right:4px}
@@ -671,6 +742,42 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
 #dtbl td.do .txt{display:inline-block;max-width:120px;overflow:hidden;text-overflow:ellipsis;
                  vertical-align:middle}
 #dtbl td.dn2{white-space:nowrap;max-width:330px}
+/* ---------- 战斗回顾（复现游戏里的 Fight Recap 面板；口径见 analysis/q7_fights.py）----------
+   游戏侧：每一段都是「天辉容器 ｜ 中间两队合计 ｜ 夜魇容器」，逐人一根条；
+   技能/物品段是「图标 + x次数」；死亡段是头像。这里照同一套结构做。 */
+#fightLane{position:relative;height:14px;margin-top:1px}
+#fightLane .fbar{position:absolute;top:2px;height:10px;border-radius:3px;box-sizing:border-box;
+                 background:#39414f;border:1px solid #5b667899;cursor:pointer}
+#fightLane .fbar:hover{background:#4a5568;border-color:#8b949e}
+#fightLane .fbar.on{background:#e3b341;border-color:#ffe08a}
+#fightLane .fbar b{position:absolute;left:50%;top:-2px;transform:translateX(-50%);
+                   font-size:9px;font-weight:700;color:#c9d1d9}
+#fightLane .fbar.on b{color:#1b1b1b}
+#paneRecap .rcbar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0;font-size:12px}
+#paneRecap .rcseg{border-top:1px solid #21262d;padding:5px 0 3px}
+#paneRecap .rchead{font-size:11.5px;color:#79c0ff;margin-bottom:3px}
+#paneRecap .rchead span{color:#8b949e;font-weight:400}
+.rcbody3{display:flex;align-items:flex-start;gap:6px}
+.rcside{flex:1 1 0;min-width:0}
+.rcside.dire .rcent{flex-direction:row-reverse}
+.rcmid{flex:0 0 104px;text-align:center;font-size:11px;color:#c9d1d9;
+       font-variant-numeric:tabular-nums;line-height:15px;padding-top:1px}
+.rcmid .d{color:#8b949e}
+.rcent{display:flex;align-items:center;gap:4px;font-size:11px;line-height:16px;margin-bottom:1px}
+.rcent img.av{width:15px;height:15px;border-radius:3px;flex:0 0 auto;object-fit:cover}
+.rcent .bar{height:8px;border-radius:2px;flex:0 0 auto;background:#4a5568}
+.rcent.t2 .bar{background:#4aa564}.rcent.t3 .bar{background:#d24b4b}
+.rcent .val{font-variant-numeric:tabular-nums;flex:0 0 auto;min-width:44px;text-align:right;color:#c9d1d9}
+.rcent .val.pos{color:#3fb950}.rcent .val.neg{color:#f85149}
+.rcdie{display:inline-flex;align-items:center;gap:4px;margin:0 8px 2px 0;font-size:11px}
+.rcdie img{width:18px;height:18px;border-radius:4px}
+.rcdie .x{color:#f85149;font-weight:700}
+.rcico{display:inline-flex;align-items:center;gap:3px;margin:0 7px 2px 0;font-size:10px;color:#8b949e}
+.rchero{display:flex;align-items:flex-start;gap:4px;margin-bottom:2px}
+.rchero img.av{width:15px;height:15px;border-radius:3px;flex:0 0 auto;margin-top:3px;object-fit:cover}
+.rchero .list{min-width:0;line-height:15px}
+.rchero .list .k{color:#8b949e}
+.rcdba{margin-top:3px;font-size:10.5px;color:#8b949e;line-height:1.6}
 </style>
 <style id="dicss">@@DICSS@@</style>
 </head><body>
@@ -731,6 +838,7 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
       <div class="axrow">
         <input type="range" id="big" min="0" max="1" value="0" step="0.5">
       </div>
+      <div id="fightLane"></div>
       <div class="evlane" id="evDn"></div>
       <div class="evhint">▲ 上＝对<b class="dr">天辉</b>有利 ｜ ▼ 下＝对<b class="dd">夜魇</b>有利 ｜
         图标＝阵亡英雄头像 / 被毁的塔·兵营·基地·肉山 ｜ 描边色＝它属于哪一方（绿天辉·红夜魇·灰无主肉山）｜
@@ -751,6 +859,8 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
       <span class="sep">｜</span>
       <button class="btn" onclick="resetZoom()">↺ 全图</button>
       <button class="btn" onclick="clearSel()">取消选中</button>
+      <span class="sep">｜</span>
+      <button class="btn" id="btnRecap" onclick="openRecap()">战斗回顾</button>
       <span class="sep">｜</span>
       <span class="lbl">头像框</span>
       <span class="fleg" id="fleg"><b style="background:#e3b341"></b>大招就绪<b style="background:#6e7681"></b>冷却中
@@ -783,6 +893,18 @@ code{background:#21262d;padding:1px 4px;border-radius:3px;font-size:11px}
       地图、表格、胜率、眼位、烟雾、技能冷却都在。想看逐条战斗记录，请打开同一文件夹里的<b>完整版</b>页面。</div>
     <div class="tip"><b>点任意英雄</b>（表格行 / 地图上方的头像 / 地图上的标记）→ 这里换成这名英雄的
       <b>战斗记录</b>（当前时刻前后各 45 秒）和<b>技能冷却</b>。</div>
+  </div>
+
+  <div id="paneRecap" style="display:none">
+    <div class="rcbar">
+      <button class="btn" onclick="recapJump(-1)">← 上一波</button>
+      <button class="btn" onclick="recapJump(1)">下一波 →</button>
+      <label class="toggle"><input type="checkbox" id="tcfollow" checked onchange="renderRecap()"> 跟随当前时刻</label>
+      <button class="btn" onclick="closeRecap()">✕ 收起</button>
+      <span class="tip" style="margin-left:auto">团战由录像自动识别（12 秒内 ≥2 名英雄阵亡算一波）</span>
+    </div>
+    <div class="kv" id="recapHead">—</div>
+    <div id="recapBody"></div>
   </div>
 
   <div id="paneHero" style="display:none">
@@ -1411,6 +1533,13 @@ function selectHero(i) {
   document.getElementById("paneList").style.display = (selIdx < 0) ? "" : "none";
   document.getElementById("paneHero").style.display = (selIdx < 0) ? "none" : "";
   if (selIdx >= 0) { detAbs(selIdx); renderHeroHead(); renderDetail(); renderCD(); }
+  /* 右栏三个面板互斥：点英雄时收起"战斗回顾"。
+     ★ 必须放在上面两行**之后**：closeRecap() 会按 selIdx 重新决定列表是否显示，
+       放前面会被它覆盖（第一版就是这个顺序问题，表现成"列表和英雄面板同时显示"）。 */
+  if (selIdx >= 0 && typeof recapIdx === "number" && recapIdx >= 0) {
+    document.getElementById("paneList").style.display = "none";
+    closeRecap();
+  }
   draw();
 }
 
@@ -1750,6 +1879,213 @@ function renderCD() {
     + " 名字里带下划线的（如 <code>BlackDragon_Fireball</code>）是<b>从中立生物处获得的技能</b>，前缀就是来源单位。";
 }
 function clearSel() { if (selIdx >= 0) selectHero(selIdx); }
+
+/* ═══════════════ 战斗回顾（复现游戏的 Fight Recap 面板） ═══════════════
+   游戏侧依据：`panorama/layout/hud/dota_hud_fightrecap.xml` —— 七段
+   （死亡 / 金钱变化 / 经验变化 / 造成伤害 / 总治疗量 / 已使用的技能 / 已使用的物品），
+   每段一行「天辉容器 ｜ 中间两队合计 ｜ 夜魇容器」，逐人一根条；
+   技能与物品段是「图标 + x次数」。团战由构建期自动识别（见 analysis/q7_fights.py）。
+   比游戏多一层：完整版带**按技能拆分的伤害**（我们的 combat_log 每条伤害都带 inflictor）。 */
+const FIGHTS = ((DATA.fights || {}).list) || [];
+const FKEYS = ((DATA.fights || {}).keys) || [];
+const FICONS = DATA.fighticons || [];      // 与 FKEYS 一一对应（独立的一套 18px 小图标）
+let recapIdx = -1;          // 当前打开的波次；-1 = 没打开
+function fightAt(t) {       // 包含当前时刻的波次；落在波次之间就取"下一波"
+  if (!FIGHTS.length) return -1;
+  for (let i = 0; i < FIGHTS.length; i++) {
+    if (t >= FIGHTS[i].t0 && t <= FIGHTS[i].t1) return i;
+  }
+  for (let i = 0; i < FIGHTS.length; i++) { if (FIGHTS[i].t0 > t) return i; }
+  return FIGHTS.length - 1;
+}
+function heroAvatar(i, cls) {
+  const im = ICONS[PL[i].short];
+  return im ? '<img class="' + (cls || "av") + '" src="' + im + '" alt="">' : '<span class="' + (cls || "av") + '"></span>';
+}
+function recapIconTag(kidx) {
+  const cls = FICONS[kidx];
+  return cls ? '<i class="di rci ' + cls + '"></i>' : "";
+}
+function buildFightLane() {
+  const lane = document.getElementById("fightLane");
+  if (!lane) return;
+  lane.innerHTML = "";
+  const span = Math.max(1, T1 - T0);
+  FIGHTS.forEach(function (f, i) {
+    const el = document.createElement("div");
+    el.className = "fbar";
+    el.style.left = ((f.t0 - T0) / span * 100) + "%";
+    el.style.width = Math.max(0.6, (f.t1 - f.t0) / span * 100) + "%";
+    el.title = "第 " + f.i + " 波 ｜ " + fmt(f.t0, true) + "~" + fmt(f.t1, true)
+      + " ｜ 阵亡 " + f.n + " 人（天辉 " + f.tot.d[0] + " / 夜魇 " + f.tot.d[1] + "）";
+    el.innerHTML = "<b>" + f.n + "</b>";
+    el.onclick = function () { openRecap(i); };
+    lane.appendChild(el);
+  });
+}
+function markFightLane() {
+  const lane = document.getElementById("fightLane");
+  if (!lane) return;
+  Array.prototype.forEach.call(lane.children, function (el, i) {
+    el.classList.toggle("on", i === recapIdx);
+  });
+}
+function recapNum(per, i) { return per[i] || 0; }
+/* 一段数值（金钱/经验/伤害/治疗）：两边各列各人 + 中间两队合计 */
+function rcNumSeg(title, key, signed) {
+  const seg = FIGHTS[recapIdx];
+  const per = {};
+  (seg[key] || []).forEach(function (e) { per[e[0]] = e[1]; });
+  const val = function (i) { return recapNum(per, i); };
+  const mx = Math.max(1, PL.map(function (p, i) { return Math.abs(val(i)); }).reduce(function (a, b) {
+    return Math.max(a, b);
+  }, 0));
+  const sign = function (v) {
+    const cls = !signed ? "" : (v > 0 ? " pos" : (v < 0 ? " neg" : ""));
+    return '<span class="val' + cls + '">' + (signed && v > 0 ? "+" : "") + Math.round(v).toLocaleString("en-US") + "</span>";
+  };
+  const side = function (team) {
+    const rows = PL.map(function (p, i) { return i; })
+      .filter(function (i) { return PL[i].team === team && val(i); })
+      .sort(function (a, b) { return Math.abs(val(b)) - Math.abs(val(a)); });
+    return '<div class="rcside' + (team === 3 ? " dire" : "") + '" data-team="' + team + '">'
+      + (rows.length ? rows.map(function (i) {
+        const w = Math.max(2, Math.round(Math.abs(val(i)) / mx * 72));
+        return '<div class="rcent ' + (team === 2 ? "t2" : "t3") + '">' + heroAvatar(i)
+          + '<span class="bar" style="width:' + w + 'px"></span>' + sign(val(i)) + "</div>";
+      }).join("") : '<div class="tip">—</div>')
+      + "</div>";
+  };
+  return rcSeg(title, side(2)
+    + '<div class="rcmid"><span class="dr">' + fmtNum(seg.tot[key][0]) + '</span><br>'
+    + '<span class="dd">' + fmtNum(seg.tot[key][1]) + "</span></div>"
+    + side(3));
+}
+function rcSeg(title, inner, sub) {
+  return '<div class="rcseg"><div class="rchead">' + title
+    + (sub ? ' <span>' + sub + "</span>" : "") + "</div>" + inner + "</div>";
+}
+function rcDeaths() {
+  const seg = FIGHTS[recapIdx];
+  const per = {};
+  (seg.d || []).forEach(function (e) { per[e[0]] = e[1]; });
+  const side = function (team) {
+    const rows = PL.map(function (p, i) { return i; })
+      .filter(function (i) { return PL[i].team === team && per[i]; });
+    return '<div class="rcside' + (team === 3 ? " dire" : "") + '">'
+      + (rows.length ? rows.map(function (i) {
+        return '<span class="rcdie">' + heroAvatar(i) + '<span class="x">×' + per[i] + "</span></span>";
+      }).join("") : '<div class="tip">—</div>') + "</div>";
+  };
+  return rcSeg("① 阵亡", '<div class="rcbody3">' + side(2)
+    + '<div class="rcmid"><span class="dr">' + seg.tot.d[0] + '</span><br>'
+    + '<span class="dd">' + seg.tot.d[1] + "</span></div>" + side(3) + "</div>");
+}
+function rcIcons(key, title, sub) {
+  const seg = FIGHTS[recapIdx];
+  const per = {};
+  (seg[key] || []).forEach(function (e) { per[e[0]] = e[1]; });
+  const side = function (team) {
+    const rows = PL.map(function (p, i) { return i; })
+      .filter(function (i) { return PL[i].team === team && per[i]; });
+    if (!rows.length) return '<div class="rcside' + (team === 3 ? " dire" : "") + '"><div class="tip">—</div></div>';
+    return '<div class="rcside' + (team === 3 ? " dire" : "") + '">'
+      + rows.map(function (i) {
+        return '<div class="rchero">' + heroAvatar(i) + '<div class="list">'
+          + per[i].map(function (e) {
+            return '<span class="rcico">' + recapIconTag(e[0]) + "×" + e[1] + "</span>";
+          }).join("") + "</div></div>";
+      }).join("") + "</div>";
+  };
+  return rcSeg(title, '<div class="rcbody3">' + side(2) + '<div class="rcmid d">—</div>' + side(3) + "</div>", sub);
+}
+/* 比游戏多的一层：按技能拆分的伤害（每人前 6 项） */
+function rcDba() {
+  const seg = FIGHTS[recapIdx];
+  if (!seg.dba) return "";
+  const side = function (team) {
+    const rows = PL.map(function (p, i) { return i; })
+      .filter(function (i) { return PL[i].team === team && (seg.dba || []).some(function (e) { return e[0] === i; }); });
+    return '<div class="rcside' + (team === 3 ? " dire" : "") + '">'
+      + rows.map(function (i) {
+        const items = (seg.dba.filter(function (e) { return e[0] === i; })[0] || [])[1] || [];
+        return '<div class="rchero">' + heroAvatar(i) + '<div class="list"><span class="k">'
+          + PL[i].short.replace(/_/g, " ") + "</span> "
+          + items.map(function (e) {
+            return '<span class="rcico">' + recapIconTag(e[0]) + " " + Math.round(e[1]).toLocaleString("en-US") + "</span>";
+          }).join("") + "</div></div>";
+      }).join("") + "</div>";
+  };
+  return rcSeg("⑧ 按技能拆分的伤害 <span>（游戏面板没有这一层：录像里每条伤害都标了来源技能）</span>",
+    '<div class="rcbody3">' + side(2) + '<div class="rcmid d">—</div>' + side(3) + "</div>");
+}
+function renderRecap() {
+  const seg = FIGHTS[recapIdx];
+  const head = document.getElementById("recapHead");
+  if (!seg) {
+    if (head) head.textContent = FIGHTS.length ? "这场比赛没有识别到团战" : "这一场没有团战数据（切片较老）";
+    const b = document.getElementById("recapBody");
+    if (b) b.innerHTML = "";
+    markFightLane();
+    return;
+  }
+  if (head) {
+    head.innerHTML = "<b>第 " + seg.i + " / " + FIGHTS.length + " 波</b> ｜ "
+      + fmt(seg.t0, true) + " ~ " + fmt(seg.t1, true) + "（" + Math.round(seg.t1 - seg.t0) + " 秒）"
+      + " ｜ 阵亡 <b>" + seg.n + "</b> 人（天辉 " + seg.tot.d[0] + " / 夜魇 " + seg.tot.d[1] + "）"
+      + '<br><span class="tip">每一段左边是天辉、右边是夜魇，中间是两队的合计；条的长度＝数值大小。'
+      + "团战由录像自动识别（12 秒内 ≥2 名英雄阵亡算一波）。</span>";
+  }
+  document.getElementById("recapBody").innerHTML =
+    rcDeaths()
+    + rcNumSeg("② 金钱变化情况", "g", true)
+    + rcNumSeg("③ 经验变化情况", "x", true)
+    + rcNumSeg("④ 造成伤害", "dm", false)
+    + rcNumSeg("⑤ 总治疗量", "hl", false)
+    + rcIcons("ab", "⑥ 已使用的技能")
+    + rcIcons("it", "⑦ 已使用的物品")
+    + rcDba();
+  markFightLane();
+}
+function openRecap(idx) {
+  if (!FIGHTS.length) { alert("这一场没有识别到团战（或切片较老，需要重跑切片）"); return; }
+  /* 先取消英雄选中（它会重排右栏面板），再统一设一次显示状态：
+     ★ 顺序反了的话 paneList 会被重新显示出来，回顾面板被挤到列表下面（第一版实测如此）。 */
+  if (selIdx >= 0) selectHero(selIdx);
+  recapIdx = (idx === undefined || idx === null) ? fightAt(tCur) : idx;
+  if (recapIdx < 0) recapIdx = 0;
+  document.getElementById("paneList").style.display = "none";
+  document.getElementById("paneHero").style.display = "none";
+  document.getElementById("paneRecap").style.display = "";
+  document.getElementById("btnRecap").classList.add("active");
+  const f = document.getElementById("tcfollow");
+  if (f) { f.checked = true; }
+  renderRecap();
+  draw();
+}
+function closeRecap() {
+  recapIdx = -1;
+  document.getElementById("paneRecap").style.display = "none";
+  /* 只有"没选中英雄"时才把默认列表放回来 */
+  document.getElementById("paneList").style.display = (selIdx < 0) ? "" : "none";
+  document.getElementById("btnRecap").classList.remove("active");
+  markFightLane();
+}
+function recapJump(d) {
+  if (!FIGHTS.length) return;
+  const f = document.getElementById("tcfollow");
+  if (f) { f.checked = false; }
+  recapIdx = Math.max(0, Math.min(FIGHTS.length - 1, recapIdx + d));
+  renderRecap();
+  commit(FIGHTS[recapIdx].t0 + 1);
+}
+function recapFollowTick() {   // 播放/拖动时：跟随当前时刻换波次
+  if (recapIdx < 0) return;
+  const f = document.getElementById("tcfollow");
+  if (!f || !f.checked) return;
+  const i = fightAt(tCur);
+  if (i >= 0 && i !== recapIdx) { recapIdx = i; renderRecap(); }
+}
 function buildTable() {
   const tb = document.querySelector("#tbl tbody");
   tb.innerHTML = "";
@@ -1833,6 +2169,7 @@ function refresh(t) {
     }
   }
   applyHeroFrames(t);      // 头像框：大招 / TP 状态（含 title 与阵亡置灰）
+  recapFollowTick();       // 战斗回顾打开且勾了"跟随当前时刻"时，跟着换波次
   document.getElementById("biglabel").textContent = "全场进度 = " + fmt(tBig, true)
     + "（" + Math.round(tBig) + "s / " + T1 + "s）";
   document.getElementById("smalllabel").textContent = "微调 = " + (sVal > 0 ? "+" : "") + sVal
@@ -2135,7 +2472,7 @@ document.getElementById("dwrap").onscroll = detOnScroll;    // 虚拟滚动：�
     if (typeof console !== "undefined" && console.warn) console.warn("文案填充出错（不影响交互）：", e);
   }
   /* 交互初始化：这一段的成败决定页面能不能用，必须放在文案之后单独执行 */
-  buildAvatars(); buildTable(); buildTimelineEvents(); fitCanvas();
+  buildAvatars(); buildTable(); buildTimelineEvents(); buildFightLane(); fitCanvas();
   commit(0);          // 默认停在 0:00（号角）；往前拖 = 出门期（-1:30 起）
   /* 首帧之后再量一次：字体/图片加载完，左栏可用高度会变（避免地图第一次就取错尺寸） */
   requestAnimationFrame(function () { fitCanvas(); });
